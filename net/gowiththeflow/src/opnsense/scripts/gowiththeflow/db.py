@@ -100,46 +100,75 @@ def init_schema(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
-def record_diff(conn: sqlite3.Connection, diff: DiffResult, now: float | None = None) -> None:
+def record_diff(
+    conn: sqlite3.Connection,
+    diff: DiffResult,
+    now: float | None = None,
+    resolve_hostname=None,
+) -> None:
     """Writes one poll's open/update/close events into live_sessions and
     connections_raw. Byte/packet counters are pf's own cumulative values
-    (see pf_state_poller), so this never sums deltas itself."""
+    (see pf_state_poller), so this never sums deltas itself.
+
+    `resolve_hostname`, if given, is called as resolve_hostname(snap) for
+    every opened/updated snapshot and should return (hostname, source) or
+    (None, None) -- see correlator.py. A None result never blanks out a
+    hostname a session already had (e.g. a live SNI hint expiring between
+    polls shouldn't make a session's display flicker back to a bare IP),
+    via COALESCE against the existing column value. Closed sessions simply
+    carry forward whatever hostname/source their live_sessions row already
+    had -- the "hostname snapshotted at write time" behavior from the
+    project plan."""
     now_i = int(now if now is not None else time.time())
+
+    def _resolve(snap):
+        if resolve_hostname is None:
+            return None, None
+        return resolve_hostname(snap)
 
     for snap in diff.opened:
         first_seen = now_i - snap.age_s
+        hostname, source = _resolve(snap)
         conn.execute(
             """
             INSERT INTO live_sessions
                 (proto, local_ip, local_port, remote_ip, remote_port,
+                 remote_hostname, hostname_source,
                  first_seen, last_seen, bytes_in, bytes_out, pkts_in, pkts_out,
                  last_checkpoint_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(proto, local_ip, local_port, remote_ip, remote_port)
             DO UPDATE SET
                 last_seen=excluded.last_seen,
                 bytes_in=excluded.bytes_in,
                 bytes_out=excluded.bytes_out,
                 pkts_in=excluded.pkts_in,
-                pkts_out=excluded.pkts_out
+                pkts_out=excluded.pkts_out,
+                remote_hostname=COALESCE(excluded.remote_hostname, remote_hostname),
+                hostname_source=COALESCE(excluded.hostname_source, hostname_source)
             """,
             (
                 snap.key.proto, snap.key.local_ip, snap.key.local_port,
                 snap.key.remote_ip, snap.key.remote_port,
+                hostname, source,
                 first_seen, now_i, snap.bytes_in, snap.bytes_out,
                 snap.pkts_in, snap.pkts_out, first_seen,
             ),
         )
 
     for snap in diff.updated:
+        hostname, source = _resolve(snap)
         conn.execute(
             """
             UPDATE live_sessions
-            SET last_seen=?, bytes_in=?, bytes_out=?, pkts_in=?, pkts_out=?
+            SET last_seen=?, bytes_in=?, bytes_out=?, pkts_in=?, pkts_out=?,
+                remote_hostname=COALESCE(?, remote_hostname),
+                hostname_source=COALESCE(?, hostname_source)
             WHERE proto=? AND local_ip=? AND local_port=? AND remote_ip=? AND remote_port=?
             """,
             (
                 now_i, snap.bytes_in, snap.bytes_out, snap.pkts_in, snap.pkts_out,
+                hostname, source,
                 snap.key.proto, snap.key.local_ip, snap.key.local_port,
                 snap.key.remote_ip, snap.key.remote_port,
             ),
@@ -148,7 +177,7 @@ def record_diff(conn: sqlite3.Connection, diff: DiffResult, now: float | None = 
     for snap in diff.closed:
         row = conn.execute(
             """
-            SELECT first_seen, last_seen FROM live_sessions
+            SELECT first_seen, last_seen, remote_hostname, hostname_source FROM live_sessions
             WHERE proto=? AND local_ip=? AND local_port=? AND remote_ip=? AND remote_port=?
             """,
             (
@@ -158,21 +187,25 @@ def record_diff(conn: sqlite3.Connection, diff: DiffResult, now: float | None = 
         ).fetchone()
         if row is None:
             # Never actually recorded as opened (e.g. daemon restarted
-            # mid-session) -- fall back to the closed snapshot's own age.
+            # mid-session) -- fall back to the closed snapshot's own age;
+            # no prior hostname to carry forward either.
             first_seen = now_i - snap.age_s
             ended_at = now_i
+            hostname, source = None, None
         else:
             first_seen, ended_at = row["first_seen"], row["last_seen"]
+            hostname, source = row["remote_hostname"], row["hostname_source"]
 
         conn.execute(
             """
             INSERT INTO connections_raw
-                (proto, local_ip, remote_ip, remote_port,
+                (proto, local_ip, remote_ip, remote_port, remote_hostname, hostname_source,
                  started_at, ended_at, duration_s, bytes_in, bytes_out, pkts_in, pkts_out)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 snap.key.proto, snap.key.local_ip, snap.key.remote_ip, snap.key.remote_port,
+                hostname, source,
                 first_seen, ended_at, max(ended_at - first_seen, 0),
                 snap.bytes_in, snap.bytes_out, snap.pkts_in, snap.pkts_out,
             ),
