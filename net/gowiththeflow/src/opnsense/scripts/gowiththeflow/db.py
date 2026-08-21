@@ -23,6 +23,12 @@ CREATE TABLE IF NOT EXISTS live_sessions (
   first_seen INTEGER NOT NULL, last_seen INTEGER NOT NULL,
   bytes_in INTEGER NOT NULL DEFAULT 0, bytes_out INTEGER NOT NULL DEFAULT 0,
   pkts_in INTEGER NOT NULL DEFAULT 0, pkts_out INTEGER NOT NULL DEFAULT 0,
+  -- pf's counters are cumulative-since-creation and never reset, so an
+  -- hourly checkpoint (rollup.py) can't zero bytes_in/out -- it records how
+  -- much of the cumulative total is already reflected in connections_raw.
+  last_checkpoint_at INTEGER NOT NULL DEFAULT 0,
+  baseline_bytes_in INTEGER NOT NULL DEFAULT 0, baseline_bytes_out INTEGER NOT NULL DEFAULT 0,
+  baseline_pkts_in INTEGER NOT NULL DEFAULT 0, baseline_pkts_out INTEGER NOT NULL DEFAULT 0,
   UNIQUE(proto, local_ip, local_port, remote_ip, remote_port)
 );
 CREATE INDEX IF NOT EXISTS idx_live_local ON live_sessions(local_ip);
@@ -106,8 +112,9 @@ def record_diff(conn: sqlite3.Connection, diff: DiffResult, now: float | None = 
             """
             INSERT INTO live_sessions
                 (proto, local_ip, local_port, remote_ip, remote_port,
-                 first_seen, last_seen, bytes_in, bytes_out, pkts_in, pkts_out)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 first_seen, last_seen, bytes_in, bytes_out, pkts_in, pkts_out,
+                 last_checkpoint_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(proto, local_ip, local_port, remote_ip, remote_port)
             DO UPDATE SET
                 last_seen=excluded.last_seen,
@@ -120,7 +127,7 @@ def record_diff(conn: sqlite3.Connection, diff: DiffResult, now: float | None = 
                 snap.key.proto, snap.key.local_ip, snap.key.local_port,
                 snap.key.remote_ip, snap.key.remote_port,
                 first_seen, now_i, snap.bytes_in, snap.bytes_out,
-                snap.pkts_in, snap.pkts_out,
+                snap.pkts_in, snap.pkts_out, first_seen,
             ),
         )
 
