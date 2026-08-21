@@ -1,0 +1,3 @@
+? (192.168.1.50) at aa:bb:cc:dd:ee:01 on igb0 expires in 1180 seconds [ethernet]
+? (192.168.1.99) at aa:bb:cc:dd:ee:99 on igb0 expires in 900 seconds [ethernet]
+? (192.168.1.1) at (incomplete) on igb0 expires in 20 seconds [ethernet]
