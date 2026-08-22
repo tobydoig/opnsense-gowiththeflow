@@ -21,6 +21,18 @@ def _fresh_conn(tmp_path):
     return conn
 
 
+def test_connect_creates_missing_parent_directory(tmp_path):
+    # Regression test: a fresh install has no reason to have
+    # /var/db/gowiththeflow already -- only pytest's tmp_path (already a
+    # real directory) or the dev VM's long-since-manually-created
+    # /var/db/gowiththeflow ever masked this. sqlite3.connect() doesn't
+    # create missing parent directories itself.
+    db_path = tmp_path / "nested" / "does" / "not" / "exist" / "flows.db"
+    conn = db.connect(str(db_path))
+    db.init_schema(conn)
+    assert db_path.exists()
+
+
 def test_opened_sessions_land_in_live_sessions_with_backdated_first_seen(tmp_path):
     conn = _fresh_conn(tmp_path)
     poller = PfStatePoller(LOCAL_SUBNETS)

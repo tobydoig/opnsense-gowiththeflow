@@ -8,6 +8,7 @@ filled in later by correlator.py.
 
 from __future__ import annotations
 
+import os
 import sqlite3
 import time
 
@@ -88,6 +89,15 @@ CREATE TABLE IF NOT EXISTS rollup_state (
 
 
 def connect(db_path: str) -> sqlite3.Connection:
+    # sqlite3.connect() doesn't create missing parent directories, and
+    # nothing else in the install path does either -- a genuinely fresh
+    # install (unlike the dev VM's /var/db/gowiththeflow, which has existed
+    # since early manual testing, long before packaging did) has no reason
+    # to have this directory, and connect() failing here means the daemon
+    # dies before Daemonize even logs anything, silently.
+    parent_dir = os.path.dirname(db_path)
+    if parent_dir:
+        os.makedirs(parent_dir, exist_ok=True)
     conn = sqlite3.connect(db_path)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA auto_vacuum=INCREMENTAL")
