@@ -280,19 +280,30 @@
      regression test using a genuinely nonexistent nested path rather
      than pytest's `tmp_path` (which is always already a real directory,
      exactly the blind spot that let this ship in the first place).
-  Rebuilt and republished `os-gowiththeflow` 1.0.0 (same version number
-  -- the earlier 1.0.0 never actually worked on a fresh install, so no
-  reason to bump for a fix to something that never worked in the wild)
-  with all three fixes, verified against a fully clean install cycle on
-  the VM: no pre-existing data directory, no manual configd restart, no
-  manual menu-cache clear -- `pkg add` alone now gets a genuinely
-  working, running service.
+  Rebuilt and republished as `os-gowiththeflow` **1.0.1** (a real bump,
+  not the earlier throwaway 1.0.1 test artifact -- a same-numbered
+  rebuild wouldn't have been detected as an upgrade by `pkg`, since it
+  compares version strings, not content) with all three fixes, verified
+  against a fully clean install cycle on the VM: no pre-existing data
+  directory, no manual configd restart, no manual menu-cache clear --
+  `pkg add` alone now gets a genuinely working, running service.
+- **Real-box validation, end to end.** The user upgraded on their actual
+  home box (nostromo) via the real GUI path (System > Firmware >
+  Plugins > Update), not a manual `pkg` command -- first real proof the
+  whole one-liner-repo-config -> GUI-driven-lifecycle story holds up.
+  One more expected (non-bug) wrinkle: a `pkg upgrade` replaces files and
+  our `pre-deinstall` stops the *old* version, but nothing restarts the
+  *new* one automatically -- consistent with how OPNsense plugin updates
+  generally work (the Settings "Apply" button is the actual restart
+  trigger), and confirmed: hitting Apply after the upgrade brought the
+  daemon up and the Live grid started showing real traffic on the user's
+  actual home network.
 - **Not yet started**: the deferred History chart and staticOverrides
   grid editor, proper repo signing before this pkg-repo is relied on for
-  anything that matters, actually finishing Phase D on the real home box
-  now that the daemon starts reliably (core-up-to-date check, the
-  rctl/reboot conversation, `mkdir -p /var/db/gowiththeflow` or a
-  reinstall from the fixed package).
+  anything that matters, the rest of Phase D on the real home box (the
+  core-up-to-date check was never actually done before installing, and
+  the rctl/reboot conversation is still outstanding -- caps aren't
+  active yet on nostromo).
 - **Distribution repos**: both GitHub repos created and pushed —
   `github.com/tobydoig/opnsense-gowiththeflow` (private, source, this repo)
   and `github.com/tobydoig/gowiththeflow-pkg-repo` (public, placeholder
