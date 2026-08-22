@@ -1,6 +1,6 @@
 {
   "name": "os-gowiththeflow",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "origin": "net/os-gowiththeflow",
   "comment": "Per-host connection and bandwidth tracking with hostname resolution",
   "desc": "Go With The Flow tracks, per local host, which remote hosts it talks to and how many bytes in/out, both live and historically. Remote hostnames are resolved via passive DNS and TLS SNI observation rather than raw IPs alone.",
@@ -17,7 +17,7 @@
     }
   },
   "scripts": {
-    "post-install": "#!/bin/sh\nservice configd restart 2>/dev/null || true\nrm -f /var/lib/php/tmp/opnsense_menu_cache.xml\n",
+    "post-install": "#!/bin/sh\nservice configd restart 2>/dev/null || true\nrm -f /var/lib/php/tmp/opnsense_menu_cache.xml\nconfigctl template reload OPNsense/GoWithTheFlow >/dev/null 2>&1\nif [ -f /var/etc/gowiththeflow.json ] && /usr/local/bin/jq -e '.enabled == 1' /var/etc/gowiththeflow.json >/dev/null 2>&1; then\n    /usr/local/etc/rc.d/gowiththeflow onestart >/dev/null 2>&1 || true\nfi\n",
     "pre-deinstall": "#!/bin/sh\n/usr/local/etc/rc.d/gowiththeflow onestop 2>/dev/null || true\n"
   }
 }
