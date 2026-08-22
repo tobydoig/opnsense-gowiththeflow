@@ -221,7 +221,7 @@ net/gowiththeflow/
     │   │   │   ├── GowiththeFlow.xml           # DONE -- enable, interfaces, subnets, retention, rctl caps, hostname tuning
     │   │   │   ├── GowiththeFlow.php           # DONE -- plain BaseModel, no custom validation needed
     │   │   │   ├── ACL/ACL.xml                 # DONE -- ui/gowiththeflow/*, api/gowiththeflow/*
-    │   │   │   └── Menu/Menu.xml               # DONE -- Reporting > Flow Monitor > Live, History, Top Talkers, Settings
+    │   │   │   └── Menu/Menu.xml               # DONE -- Reporting > Flow Monitor > Live/History/Top Talkers; Services > Flow Monitor > Settings
     │   │   └── views/OPNsense/GowiththeFlow/
     │   │       ├── live.volt                   # DONE -- Bootgrid with byte/duration formatters
     │   │       ├── history.volt                # DONE -- Bootgrid breakdown table + day-range/local-host filters
@@ -513,12 +513,14 @@ Planned split (unchanged in spirit, just not one shared shell):
   `staticOverrides` field exists in the model and is reachable via direct
   API calls, just without a polished grid+dialog editor yet.
 
-Menu/ACL: `Menu.xml` adds a "Flow Monitor" entry (under Reporting) with the
-four tab URLs; `ACL.xml` grants `ui/gowiththeflow/*` and
-`api/gowiththeflow/*`. A shared `formatHost(name, ip)` Vue helper
-(`name ? "${name} (${ip})" : ip`) is used consistently across all grids and
-chart tooltips, satisfying the "always show a hostname where known, else
-IP" requirement everywhere.
+Menu/ACL: `Menu.xml` adds two "Flow Monitor" entries — Live/History/Top
+Talkers under **Reporting**, Settings under **Services** (confirmed the
+same tag name under two different top-level parents renders cleanly, no
+collision); `ACL.xml` grants `ui/gowiththeflow/*` and `api/gowiththeflow/*`
+under one key covering both. A shared `formatHost($hostname, $ip)` PHP
+helper (`DbApiControllerBase::formatHost()`) is used consistently across
+all three data grids, satisfying the "always show a hostname where known,
+else IP" requirement everywhere.
 
 ## Distribution: custom pkg repo, one command then 1-click GUI install
 
