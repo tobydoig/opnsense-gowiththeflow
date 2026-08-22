@@ -82,11 +82,16 @@
   "monitoring stops, internet doesn't" design claim, not just an
   assumption.
 - **Not yet started**: the deferred History chart and staticOverrides
-  grid editor, Phase C (packaging), Phase D (production rollout).
-- **Distribution repos**: local git repo initialized and committed at
-  `D:\code\opnsense-gowiththeflow`; the two GitHub repos described below
-  (`opnsense-gowiththeflow` private, `gowiththeflow-pkg-repo` public) have
-  **not yet been created** — still local-only. TODO before Phase C.
+  grid editor, the rest of Phase C (port build, package, repo catalog, VM
+  install test), Phase D (production rollout).
+- **Distribution repos**: both GitHub repos created and pushed —
+  `github.com/tobydoig/opnsense-gowiththeflow` (private, source, this repo)
+  and `github.com/tobydoig/gowiththeflow-pkg-repo` (public, placeholder
+  README only — no package published yet, that's the rest of Phase C).
+  Push access uses a dedicated passphrase-free deploy key
+  (`~/.ssh/gowiththeflow_deploy`, ed25519) added to the GitHub account —
+  needed because the existing personal keys were passphrase-protected and
+  `ssh`/`ssh-add` can't prompt for a passphrase in a non-interactive shell.
 
 ## Context
 
