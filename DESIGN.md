@@ -1,4 +1,4 @@
-# GoWithTheFlow — OPNsense per-host connection & bandwidth tracking plugin
+# Go With The Flow — OPNsense per-host connection & bandwidth tracking plugin
 
 ## Status (updated as work progresses)
 
@@ -51,7 +51,7 @@
   the whole URL slug (confirmed against the real `NetworkinsightController`
   example). Dropped the originally-planned separate `sort_by` param —
   Bootgrid's native column-click sorting covers it for free.
-- **Phase B5 — complete.** The full Settings surface: `GowiththeFlow`
+- **Phase B5 — complete.** The full Settings surface: `GoWithTheFlow`
   config model, `ServiceController` (start/stop/restart/status/
   reconfigure via `ApiMutableServiceControllerBase`), `SettingsController`
   + `settings.volt` (declarative form, save/apply, two housekeeping
@@ -74,6 +74,13 @@
   The `staticOverrides` grid+dialog editor is deliberately deferred
   (same pattern as the History chart) — the model/schema already support
   it via direct API calls without a polished grid UI.
+- **Phase B6 — complete.** Resilience check: `kill -9`'d the running
+  daemon on the real VM and confirmed pf (still enabled, uptime
+  uninterrupted), `dnsmasq` (same PID, unaffected), Unbound (unchanged
+  from its pre-existing baseline state), and internet connectivity (ping
+  still worked) were all completely unaffected — concrete proof of the
+  "monitoring stops, internet doesn't" design claim, not just an
+  assumption.
 - **Not yet started**: the deferred History chart and staticOverrides
   grid editor, Phase C (packaging), Phase D (production rollout).
 - **Distribution repos**: local git repo initialized and committed at
@@ -204,7 +211,7 @@ net/gowiththeflow/
     │   │   ├── db.py                       # SQLite connection mgmt (WAL, batched writes)
     │   │   └── rollup.py                   # hourly/daily rollup + raw-retention pruning job
     │   ├── mvc/app/                        # Phase B2-B5 -- all done
-    │   │   ├── controllers/OPNsense/GowiththeFlow/
+    │   │   ├── controllers/OPNsense/GoWithTheFlow/
     │   │   │   ├── LiveController.php          # DONE -- UI page controller (extends IndexController, picks live.volt)
     │   │   │   ├── HistoryController.php       # DONE
     │   │   │   ├── ToptalkersController.php    # DONE -- note: single-capitalized-word class name (see below)
@@ -217,12 +224,12 @@ net/gowiththeflow/
     │   │   │       ├── ToptalkersController.php # DONE -- localAction()/remoteAction(), ranks by bytes/connections
     │   │   │       ├── ServiceController.php   # DONE -- trivial ApiMutableServiceControllerBase subclass
     │   │   │       └── SettingsController.php  # DONE -- ApiMutableModelControllerBase + clearData/resetHostnameCache
-    │   │   ├── models/OPNsense/GowiththeFlow/
-    │   │   │   ├── GowiththeFlow.xml           # DONE -- enable, interfaces, subnets, retention, rctl caps, hostname tuning
-    │   │   │   ├── GowiththeFlow.php           # DONE -- plain BaseModel, no custom validation needed
+    │   │   ├── models/OPNsense/GoWithTheFlow/
+    │   │   │   ├── GoWithTheFlow.xml           # DONE -- enable, interfaces, subnets, retention, rctl caps, hostname tuning
+    │   │   │   ├── GoWithTheFlow.php           # DONE -- plain BaseModel, no custom validation needed
     │   │   │   ├── ACL/ACL.xml                 # DONE -- ui/gowiththeflow/*, api/gowiththeflow/*
-    │   │   │   └── Menu/Menu.xml               # DONE -- Reporting > Flow Monitor > Live/History/Top Talkers; Services > Flow Monitor > Settings
-    │   │   └── views/OPNsense/GowiththeFlow/
+    │   │   │   └── Menu/Menu.xml               # DONE -- Reporting > Go With The Flow > Live/History/Top Talkers; Services > Go With The Flow > Settings
+    │   │   └── views/OPNsense/GoWithTheFlow/
     │   │       ├── live.volt                   # DONE -- Bootgrid with byte/duration formatters
     │   │       ├── history.volt                # DONE -- Bootgrid breakdown table + day-range/local-host filters
     │   │       ├── toptalkers.volt              # DONE -- two Bootgrids (local/remote) + shared days selector
@@ -417,7 +424,7 @@ nothing reads them into an actual `rctl` rule yet. TODO before Phase D.)*
   The Settings page's Apply button calls `reconfigure`, not a plain
   `restart` — matching the real base class's behavior (stop/start/reload
   based on the model's `enabled` field), not a hand-rolled restart call.
-- Settings model (`GowiththeFlow.xml`), scoped to "Essential + hostname
+- Settings model (`GoWithTheFlow.xml`), scoped to "Essential + hostname
   tuning" per user decision, all fields implemented and confirmed
   round-tripping through `config.xml`:
   - **Essential**: `enabled` (default false — installing the package does
@@ -513,7 +520,7 @@ Planned split (unchanged in spirit, just not one shared shell):
   `staticOverrides` field exists in the model and is reachable via direct
   API calls, just without a polished grid+dialog editor yet.
 
-Menu/ACL: `Menu.xml` adds two "Flow Monitor" entries — Live/History/Top
+Menu/ACL: `Menu.xml` adds two "Go With The Flow" entries — Live/History/Top
 Talkers under **Reporting**, Settings under **Services** (confirmed the
 same tag name under two different top-level parents renders cleanly, no
 collision); `ACL.xml` grants `ui/gowiththeflow/*` and `api/gowiththeflow/*`
@@ -649,10 +656,7 @@ only be in stage N's new code, not a tangle of everything built so far.
    verified end-to-end (see Status above): settings save to config.xml,
    `service/reconfigure` genuinely starts/stops the daemon based on the
    model's `enabled` field.
-6. **Resilience check**: deliberately `kill -9` the daemon mid-capture and
-   confirm pf/DHCP/DNS on the VM are completely unaffected — the concrete
-   proof of the "monitoring stops, internet doesn't" claim above, not
-   just an assumption.
+6. **DONE.** Resilience check — see Status above.
 
 ### Phase C — packaging & distribution (still in the VM) — not started
 
