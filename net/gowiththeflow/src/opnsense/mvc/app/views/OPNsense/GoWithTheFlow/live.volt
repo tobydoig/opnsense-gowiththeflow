@@ -1,4 +1,6 @@
 <script>
+    'use strict';
+
     $( document ).ready(function() {
         $("#grid-live").UIBootgrid({
             search:'/api/gowiththeflow/live/search/',
@@ -15,6 +17,32 @@
                 }
             }
         });
+
+        // Same convention as Reporting > Traffic's interval dropdown:
+        // same option values/labels, localStorage-persisted, self-rescheduling
+        // poller so a mid-flight change takes effect on the next tick without
+        // needing to tear down and rebuild anything.
+        const storageKey = 'gowiththeflow.live.interval';
+        if (window.localStorage) {
+            let stored = window.localStorage.getItem(storageKey);
+            if (stored) {
+                $("#interval").val(stored).selectpicker('refresh');
+            }
+        }
+
+        $("#interval").change(function () {
+            if (window.localStorage) {
+                window.localStorage.setItem(storageKey, $(this).val());
+            }
+        });
+
+        (function livePoller() {
+            let interval = parseInt($("#interval").val(), 10) || 2000;
+            setTimeout(function () {
+                $("#grid-live").bootgrid('reload');
+                livePoller();
+            }, interval);
+        })();
     });
 
     function formatBytesGWTF(bytes) {
@@ -46,6 +74,16 @@
     }
 </script>
 
+<div class="content-box col-xs-12 __mb" style="text-align: right; padding-bottom: 6px;">
+    <label for="interval" style="font-weight: normal; margin-right: 4px;">{{ lang._('Refresh every') }}</label>
+    <select class="selectpicker" id="interval" data-width="150">
+        <option value="500">500 {{ lang._('Milliseconds') }}</option>
+        <option value="1000">1 {{ lang._('Second') }}</option>
+        <option value="2000" selected="selected">2 {{ lang._('Seconds') }}</option>
+        <option value="5000">5 {{ lang._('Seconds') }}</option>
+        <option value="10000">10 {{ lang._('Seconds') }}</option>
+    </select>
+</div>
 <div class="tab-content content-box col-xs-12 __mb">
     <table id="grid-live" class="table table-condensed table-hover table-striped table-responsive">
         <thead>
