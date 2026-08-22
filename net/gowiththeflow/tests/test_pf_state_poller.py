@@ -2,7 +2,13 @@ import os
 
 import pytest
 
-from pf_state_poller import PfStatePoller, StateKey, classify_local_remote, parse_pfctl_state_text
+from pf_state_poller import (
+    PfStatePoller,
+    StateKey,
+    StateSnapshot,
+    classify_local_remote,
+    parse_pfctl_state_text,
+)
 
 FIXTURES_DIR = os.path.join(os.path.dirname(__file__), "fixtures")
 LOCAL_SUBNETS = ["192.168.1.0/24"]
@@ -113,6 +119,39 @@ def test_poller_reports_open_update_close_across_polls():
     assert opened.key.local_ip == "192.168.1.71"
     assert opened.bytes_out == 1200
     assert opened.bytes_in == 800
+
+
+def test_seed_lets_first_poll_after_restart_close_out_gone_sessions():
+    # Regression test for a real bug found on a live production box: every
+    # daemon restart starts _prev empty, so a session that was open before
+    # the restart and had genuinely closed for real (in pf) by the time
+    # polling resumed was invisible to poll()'s diff -- missing from
+    # `current`, but with nothing in `_prev` to compare against, it was
+    # never reported as closed either. It just stayed in live_sessions
+    # forever, since nothing else ever removed it. seed() (called with
+    # whatever was persisted in live_sessions at daemon startup) fixes
+    # this by giving the first real poll something to diff against.
+    stale_key = StateKey("tcp", "192.168.1.99", 54321, "203.0.113.5", 443)
+    stale_snapshot = StateSnapshot(
+        key=stale_key, bytes_out=4075, bytes_in=1361, pkts_out=12, pkts_in=13, age_s=0
+    )
+
+    poller = PfStatePoller(LOCAL_SUBNETS)
+    poller.seed([stale_snapshot])
+
+    # pfctl_state_poll_1.txt contains no state at all for 203.0.113.5 --
+    # simulating that it genuinely closed while the daemon was down.
+    result = poller.poll(_load_fixture("pfctl_state_poll_1.txt"))
+
+    assert len(result.closed) == 1
+    assert result.closed[0].key == stale_key
+    assert result.closed[0].bytes_out == 4075
+    assert result.closed[0].bytes_in == 1361
+
+    # The fixture's own two real states are still correctly new opens,
+    # not swallowed by the seeded entry.
+    assert len(result.opened) == 2
+    assert result.updated == []
 
 
 def test_parses_ipv6_bracket_port_notation():

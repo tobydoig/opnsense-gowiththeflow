@@ -21,6 +21,29 @@ def _fresh_conn(tmp_path):
     return conn
 
 
+def test_load_live_sessions_as_snapshots_round_trips_for_seeding(tmp_path):
+    # Regression test companion to pf_state_poller's seed() -- confirms
+    # what actually gets persisted to live_sessions round-trips back into
+    # StateSnapshot form correctly (right key, right cumulative counters)
+    # so seed() can hand it straight back to PfStatePoller at daemon
+    # restart.
+    conn = _fresh_conn(tmp_path)
+    poller = PfStatePoller(LOCAL_SUBNETS)
+    diff = poller.poll(_load_fixture("pfctl_state_poll_1.txt"))
+    db.record_diff(conn, diff, now=NOW1)
+
+    snapshots = db.load_live_sessions_as_snapshots(conn)
+
+    assert len(snapshots) == len(diff.opened)
+    by_key = {s.key: s for s in snapshots}
+    for opened in diff.opened:
+        loaded = by_key[opened.key]
+        assert loaded.bytes_in == opened.bytes_in
+        assert loaded.bytes_out == opened.bytes_out
+        assert loaded.pkts_in == opened.pkts_in
+        assert loaded.pkts_out == opened.pkts_out
+
+
 def test_connect_creates_missing_parent_directory(tmp_path):
     # Regression test: a fresh install has no reason to have
     # /var/db/gowiththeflow already -- only pytest's tmp_path (already a

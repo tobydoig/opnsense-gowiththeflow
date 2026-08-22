@@ -83,6 +83,7 @@ def run(config: Config) -> None:
     db.init_schema(conn)
 
     poller = PfStatePoller(config.local_subnets)
+    poller.seed(db.load_live_sessions_as_snapshots(conn))
     flow_hints = FlowHintCache()
     static_overrides = correlator.parse_static_overrides(config.static_overrides)
     ptr = ptr_resolver.PtrResolver(ptr_resolver.live_resolve_fn) if config.enable_ptr_fallback else None

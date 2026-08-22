@@ -12,7 +12,7 @@ import os
 import sqlite3
 import time
 
-from pf_state_poller import DiffResult
+from pf_state_poller import DiffResult, StateKey, StateSnapshot
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS live_sessions (
@@ -108,6 +108,32 @@ def connect(db_path: str) -> sqlite3.Connection:
 def init_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA_SQL)
     conn.commit()
+
+
+def load_live_sessions_as_snapshots(conn: sqlite3.Connection) -> list[StateSnapshot]:
+    """For seeding PfStatePoller.seed() at daemon startup -- see its
+    docstring for why a restart needs this to correctly close out
+    sessions that stopped existing while the daemon was down."""
+    rows = conn.execute(
+        """
+        SELECT proto, local_ip, local_port, remote_ip, remote_port,
+               bytes_in, bytes_out, pkts_in, pkts_out
+        FROM live_sessions
+        """
+    ).fetchall()
+    return [
+        StateSnapshot(
+            key=StateKey(
+                r["proto"], r["local_ip"], r["local_port"], r["remote_ip"], r["remote_port"]
+            ),
+            bytes_out=r["bytes_out"],
+            bytes_in=r["bytes_in"],
+            pkts_out=r["pkts_out"],
+            pkts_in=r["pkts_in"],
+            age_s=0,
+        )
+        for r in rows
+    ]
 
 
 def record_diff(

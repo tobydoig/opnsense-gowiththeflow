@@ -220,6 +220,22 @@ class PfStatePoller:
         self._local_subnets = local_subnets
         self._prev: dict[StateKey, StateSnapshot] = {}
 
+    def seed(self, snapshots: Iterable[StateSnapshot]) -> None:
+        """Pre-populates the previous-poll snapshot set, e.g. from
+        persisted live_sessions rows at daemon startup.
+
+        Every restart otherwise starts _prev empty, so any session that
+        was open before the restart and had already closed for real by
+        the time polling resumes is invisible to the very first poll's
+        diff -- it's simply missing from `current`, but with nothing in
+        `_prev` to compare against, poll() never emits it as `closed`
+        either. It just sits in live_sessions forever, since nothing else
+        ever removes it. Seeding _prev from the DB means the first real
+        poll after a restart still correctly closes out anything that
+        stopped existing while the daemon was down."""
+        for snap in snapshots:
+            self._prev[snap.key] = snap
+
     def poll(self, pfctl_output_text: str) -> DiffResult:
         records = parse_pfctl_state_text(pfctl_output_text)
         current = {
