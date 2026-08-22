@@ -17,7 +17,7 @@ def _load_fixture(name: str) -> str:
         return f.read()
 
 
-def test_parse_leases_json_extracts_hostname_ip_and_reservation_status():
+def test_parse_leases_json_extracts_hostname_ip_and_source():
     identities = parse_leases_json(_load_fixture("dnsmasq_leases.json"))
     by_mac = {i.mac: i for i in identities}
     assert len(identities) == 3
@@ -29,7 +29,7 @@ def test_parse_leases_json_extracts_hostname_ip_and_reservation_status():
 
     nas = by_mac["aa:bb:cc:dd:ee:03"]
     assert nas.hostname == "nas"
-    assert nas.source == "static_mapping"
+    assert nas.source == "dhcp_lease"
 
 
 def test_parse_leases_json_treats_dnsmasq_wildcard_hostname_as_unknown():
@@ -39,8 +39,14 @@ def test_parse_leases_json_treats_dnsmasq_wildcard_hostname_as_unknown():
 
 
 def test_parse_leases_json_skips_records_without_a_mac():
-    raw = '{"leases": [{"address": "192.168.1.5", "hostname": "x"}]}'
+    raw = '{"records": [{"address": "192.168.1.5", "hostname": "x"}]}'
     assert parse_leases_json(raw) == []
+
+
+def test_parse_leases_json_handles_the_real_empty_response():
+    # Verbatim output from `configctl dnsmasq list leases` on an OPNsense
+    # 26.7 test VM with no active leases yet.
+    assert parse_leases_json('{"records":[]}') == []
 
 
 def test_parse_arp_output_extracts_ip_mac_pairs_and_skips_incomplete():

@@ -3,12 +3,19 @@ service, via the same backend the GUI/API uses (`configctl dnsmasq list
 leases`) rather than parsing dnsmasq's raw lease file directly, so this
 keeps working if the on-disk format ever changes.
 
-Stage A6: parse_leases_json() is tested against a *mocked* JSON fixture
-shaped like what `configctl dnsmasq list leases` is expected to return
-(OPNsense\\Dnsmasq\\Api\\LeasesController::searchAction's backend). That
-shape is a documented assumption -- to be confirmed against real command
-output in Phase B, once an actual OPNsense box is involved. `arp -an`
-parsing is the last-resort fallback for devices with no lease at all.
+Confirmed against the real backend script on an OPNsense 26.7 test VM
+(/usr/local/opnsense/scripts/dnsmasq/get_dnsmasq_leases.py). Two
+corrections from Stage A6's original mocked-fixture assumption: the
+top-level JSON key is `records`, not `leases`; and there is no
+`is_reserved` field at this layer at all (that only exists in the richer
+PHP web API controller, OPNsense\\Dnsmasq\\Api\\LeasesController, which
+enriches this same raw data -- not in what `configctl` itself returns, which
+is what a daemon actually shells out to). So the dhcp_lease/static_mapping
+distinction this module originally planned to surface isn't obtainable
+from this source; every lease-derived record is just labeled "dhcp_lease"
+regardless of whether it happens to be a static reservation -- a
+documented simplification, not a silent gap. `arp -an` parsing is the
+last-resort fallback for devices with no lease record at all.
 """
 
 from __future__ import annotations
@@ -25,25 +32,18 @@ class LocalHostIdentity:
     mac: str
     ip: str | None
     hostname: str | None
-    source: str  # dhcp_lease | static_mapping | arp
-
-
-def _is_static(is_reserved) -> bool:
-    if isinstance(is_reserved, dict):
-        return any(is_reserved.values())
-    if isinstance(is_reserved, list):
-        return len(is_reserved) > 0
-    return bool(is_reserved)
+    source: str  # dhcp_lease | arp
 
 
 def parse_leases_json(raw_json: str) -> list[LocalHostIdentity]:
     """Parses the JSON returned by `configctl dnsmasq list leases` into
     LocalHostIdentity records. Skips any record missing a MAC address
-    (nothing to key on); treats dnsmasq's '*' hostname placeholder, and any
+    (nothing to key on -- e.g. IPv6-only leases, which key on an IAID
+    instead); treats dnsmasq's '*' hostname placeholder, and any
     blank/whitespace-only hostname, as unknown (None)."""
     data = json.loads(raw_json)
     identities = []
-    for lease in data.get("leases", []):
+    for lease in data.get("records", []):
         mac = lease.get("hwaddr")
         if not mac:
             continue
@@ -57,7 +57,7 @@ def parse_leases_json(raw_json: str) -> list[LocalHostIdentity]:
                 mac=mac.lower(),
                 ip=lease.get("address"),
                 hostname=hostname,
-                source="static_mapping" if _is_static(lease.get("is_reserved")) else "dhcp_lease",
+                source="dhcp_lease",
             )
         )
     return identities
@@ -91,8 +91,8 @@ def merge_identities(
     """Merges lease-derived and ARP-derived identities keyed by MAC, with
     lease data always winning for a MAC that has one (leases can carry a
     hostname; ARP never does) -- ARP only fills in devices Dnsmasq has no
-    lease record for at all (e.g. a statically-configured device that never
-    went through DHCP)."""
+    lease record for at all (e.g. a statically-IP-configured device that
+    never went through DHCP)."""
     merged: dict[str, LocalHostIdentity] = {}
     for identity in lease_identities:
         merged[identity.mac] = identity

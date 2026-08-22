@@ -1,7 +1,7 @@
 {
-  "leases": [
-    {"address": "192.168.1.50", "hwaddr": "AA:BB:CC:DD:EE:01", "hostname": "laptop", "if": "lan", "if_descr": "LAN", "is_reserved": {"static": false}},
-    {"address": "192.168.1.71", "hwaddr": "AA:BB:CC:DD:EE:02", "hostname": "*", "if": "lan", "if_descr": "LAN", "is_reserved": {"static": false}},
-    {"address": "192.168.1.10", "hwaddr": "AA:BB:CC:DD:EE:03", "hostname": "nas", "if": "lan", "if_descr": "LAN", "is_reserved": {"static": true}}
+  "records": [
+    {"expire": 1780000000, "hwaddr": "AA:BB:CC:DD:EE:01", "iaid": "", "address": "192.168.1.50", "hostname": "laptop", "client_id": "01:aa:bb:cc:dd:ee:01", "if": "lan"},
+    {"expire": 1780000000, "hwaddr": "AA:BB:CC:DD:EE:02", "iaid": "", "address": "192.168.1.71", "hostname": "*", "client_id": "01:aa:bb:cc:dd:ee:02", "if": "lan"},
+    {"expire": 1780000000, "hwaddr": "AA:BB:CC:DD:EE:03", "iaid": "", "address": "192.168.1.10", "hostname": "nas", "client_id": "01:aa:bb:cc:dd:ee:03", "if": "lan"}
   ]
 }
