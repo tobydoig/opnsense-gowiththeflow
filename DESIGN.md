@@ -116,6 +116,29 @@
      so the Live/History/TopTalkers grids and the housekeeping buttons
      were reading/clearing a file the daemon never touches. Both fixed
      to the real path.
+- **Phase B8 — complete.** rctl (CPU/memory caps) actually wired up,
+  ahead of the real home-box deployment. `general.cpuLimitPct`/
+  `memLimitMB` now flow into `/var/etc/gowiththeflow.json` (added to the
+  config template) and `rc.d/gowiththeflow`'s new `start_postcmd` applies
+  `rctl -a process:$pid:pcpu:deny=<pct>` and
+  `process:$pid:memoryuse:deny=<mb>M` once the daemon's real pid is
+  known. Two real findings from testing this on the VM:
+  1. `kern.racct.enable` is a boot-time-only tunable (`/boot/loader.conf`,
+     not settable live via `sysctl`) -- added via the proper OPNsense
+     Tunables mechanism (`OPNsense\Core\Tunables` model +
+     `configctl service restart login/sysctl`, matching what the real
+     Tunables GUI page does), then a VM reboot to activate. **This means
+     enabling caps on the real home box will require the same reboot --
+     flag this to the user and get explicit confirmation before doing it,
+     since it's a brief internet outage for the whole household, not
+     something to do silently.**
+  2. `pcpu:throttle` -- the action documented for CPU limiting -- returned
+     `EOPNOTSUPP` on this kernel; `pcpu:deny` is the portable choice and
+     is what's actually used.
+  3. `start_postcmd` fires before Daemonize's double-fork has necessarily
+     written the pidfile (`_run_rc_doit` returns as soon as the *first*
+     fork's parent exits) -- fixed with a short poll loop (up to 2s)
+     rather than assuming the pidfile already exists.
 - **Not yet started**: the deferred History chart and staticOverrides
   grid editor, the rest of Phase C (port build, package, repo catalog, VM
   install test), Phase D (production rollout).

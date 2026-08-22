@@ -34,5 +34,7 @@
   "enable_ptr_fallback": {{ 1 if GoWithTheFlow.hostname.enablePtrFallback == '1' else 0 }},
   "raw_retention_days": {{ GoWithTheFlow.general.rawRetentionDays }},
   "rollup_hourly_retention_days": {{ GoWithTheFlow.general.rollupHourlyRetentionDays }},
-  "rollup_daily_retention_days": {{ GoWithTheFlow.general.rollupDailyRetentionDays }}
+  "rollup_daily_retention_days": {{ GoWithTheFlow.general.rollupDailyRetentionDays }},
+  "cpu_limit_pct": {{ GoWithTheFlow.general.cpuLimitPct }},
+  "mem_limit_mb": {{ GoWithTheFlow.general.memLimitMB }}
 }

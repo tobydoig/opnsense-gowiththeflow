@@ -17,6 +17,43 @@ load_rc_config $name
 : ${gowiththeflow_enable:=NO}
 
 stop_cmd=gowiththeflow_stop
+start_postcmd=gowiththeflow_poststart
+
+# rctl caps (general.cpuLimitPct / general.memLimitMB in Settings) need
+# kern.racct.enable="1" in /boot/loader.conf -- it's a boot-time tunable,
+# not settable at runtime, and requires a reboot to take effect. Skip
+# quietly rather than fail the whole start if it isn't set, since that's
+# a legitimate (if non-default) state, not an error in this plugin.
+gowiththeflow_poststart()
+{
+    if [ "$(/sbin/sysctl -n kern.racct.enable 2>/dev/null)" != "1" ]; then
+        warn "kern.racct.enable is not set -- ${name}'s CPU/memory caps are not active. Add kern.racct.enable=\"1\" to /boot/loader.conf and reboot to enable them."
+        return 0
+    fi
+
+    # _run_rc_doit returns as soon as gowiththeflowd.py's first fork exits
+    # (standard daemonize double-fork) -- the grandchild that actually
+    # writes $pidfile via Daemonize hasn't necessarily done so yet, so
+    # poll briefly rather than race it.
+    gowiththeflow_pid=""
+    for i in $(seq 1 20); do
+        gowiththeflow_pid=$(cat "$pidfile" 2>/dev/null)
+        [ -n "$gowiththeflow_pid" ] && break
+        sleep 0.1
+    done
+    if [ -z "$gowiththeflow_pid" ]; then
+        warn "${name}: pidfile never appeared -- resource caps not applied."
+        return 0
+    fi
+
+    cpu_limit=$(/usr/local/bin/jq -r '.cpu_limit_pct // 10' /var/etc/gowiththeflow.json 2>/dev/null)
+    mem_limit=$(/usr/local/bin/jq -r '.mem_limit_mb // 256' /var/etc/gowiththeflow.json 2>/dev/null)
+    # "throttle" is documented for pcpu but not supported on every kernel
+    # build (confirmed EOPNOTSUPP on the real test VM) -- "deny" is the
+    # portable choice.
+    /usr/bin/rctl -a process:${gowiththeflow_pid}:pcpu:deny=${cpu_limit} 2>/dev/null
+    /usr/bin/rctl -a process:${gowiththeflow_pid}:memoryuse:deny=${mem_limit}M 2>/dev/null
+}
 
 gowiththeflow_stop()
 {
