@@ -48,9 +48,26 @@
             }
         });
 
+        addCsvExportButtonGWTF('grid-history', 'gowiththeflow-history.csv');
+
         $("#days-selection-wrapper").detach().insertAfter('#grid-history-header .search');
         $("#local-host-selection-wrapper").detach().insertAfter("#days-selection-wrapper");
     });
+
+    // Reuses the grid's own action-button row (the same one the built-in
+    // reset/maximize buttons live in) rather than a separate ad-hoc button,
+    // and Tabulator's own download() so it respects whatever's currently
+    // sorted/filtered/loaded rather than us re-serializing the data by hand.
+    function addCsvExportButtonGWTF(gridId, filename) {
+        $(`
+            <button id="${gridId}-export" class="btn btn-default" type="button" data-toggle="tooltip"
+                    title="{{ lang._('Export CSV') }}">
+                <span class="icon fa-solid fa-download"></span>
+            </button>
+        `).on('click', function () {
+            $("#" + gridId).data('UIBootgrid').getTable().download("csv", filename);
+        }).appendTo('#' + gridId + '-actions-group');
+    }
 
     function formatBytesGWTF(bytes) {
         if (bytes === undefined || bytes === null) {

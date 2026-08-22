@@ -17,6 +17,7 @@
                 }
             }
         });
+        addCsvExportButtonGWTF('grid-live', 'gowiththeflow-live.csv');
 
         // Same convention as Reporting > Traffic's interval dropdown:
         // same option values/labels, localStorage-persisted, self-rescheduling
@@ -38,12 +39,33 @@
 
         (function livePoller() {
             let interval = parseInt($("#interval").val(), 10) || 2000;
+            if (interval <= 0) {
+                // "Don't refresh" -- do nothing, but keep checking in case
+                // the user changes the dropdown again later.
+                setTimeout(livePoller, 2000);
+                return;
+            }
             setTimeout(function () {
                 $("#grid-live").bootgrid('reload');
                 livePoller();
             }, interval);
         })();
     });
+
+    // Reuses the grid's own action-button row (the same one the built-in
+    // reset/maximize buttons live in) rather than a separate ad-hoc button,
+    // and Tabulator's own download() so it respects whatever's currently
+    // sorted/filtered/loaded rather than us re-serializing the data by hand.
+    function addCsvExportButtonGWTF(gridId, filename) {
+        $(`
+            <button id="${gridId}-export" class="btn btn-default" type="button" data-toggle="tooltip"
+                    title="{{ lang._('Export CSV') }}">
+                <span class="icon fa-solid fa-download"></span>
+            </button>
+        `).on('click', function () {
+            $("#" + gridId).data('UIBootgrid').getTable().download("csv", filename);
+        }).appendTo('#' + gridId + '-actions-group');
+    }
 
     function formatBytesGWTF(bytes) {
         if (bytes === undefined || bytes === null) {
@@ -82,6 +104,7 @@
         <option value="2000" selected="selected">2 {{ lang._('Seconds') }}</option>
         <option value="5000">5 {{ lang._('Seconds') }}</option>
         <option value="10000">10 {{ lang._('Seconds') }}</option>
+        <option value="0">{{ lang._("Don't refresh") }}</option>
     </select>
 </div>
 <div class="tab-content content-box col-xs-12 __mb">
