@@ -41,9 +41,18 @@
   design is deliberately deferred (Chart.js confirmed bundled on the VM
   as `chart.umd.min.js`), not dropped — the breakdown table was this
   stage's core deliverable.
-- **Not yet started**: Phase B4 (TopTalkers), Phase B5 (Settings/
-  ServiceController), the deferred History chart, Phase C (packaging),
-  Phase D (production rollout).
+- **Phase B4 — complete.** `ToptalkersController`/`Api/ToptalkersController.php`/
+  `toptalkers.volt` built and verified end-to-end against the real VM
+  (local/remote ranking totals, and the `local_host` filter correctly
+  isolating one host's share of a shared-IP remote rather than the
+  combined total). One real bug found: `TopTalkersController` (a compound
+  two-word class name) 404'd until renamed to `ToptalkersController` —
+  Phalcon's URL-to-class convention capitalizes only the first letter of
+  the whole URL slug (confirmed against the real `NetworkinsightController`
+  example). Dropped the originally-planned separate `sort_by` param —
+  Bootgrid's native column-click sorting covers it for free.
+- **Not yet started**: Phase B5 (Settings/ServiceController), the deferred
+  History chart, Phase C (packaging), Phase D (production rollout).
 - **Distribution repos**: local git repo initialized and committed at
   `D:\code\opnsense-gowiththeflow`; the two GitHub repos described below
   (`opnsense-gowiththeflow` private, `gowiththeflow-pkg-repo` public) have
@@ -171,29 +180,38 @@ net/gowiththeflow/
     │   │   ├── ptr_resolver.py             # rate-limited reverse-DNS fallback, negative caching
     │   │   ├── db.py                       # SQLite connection mgmt (WAL, batched writes)
     │   │   └── rollup.py                   # hourly/daily rollup + raw-retention pruning job
-    │   ├── mvc/app/                        # Phase B2+ -- Live/History done, rest pending
+    │   ├── mvc/app/                        # Phase B2+ -- Live/History/TopTalkers done, Settings pending
     │   │   ├── controllers/OPNsense/GowiththeFlow/
     │   │   │   ├── LiveController.php          # DONE -- UI page controller (extends IndexController, picks live.volt)
     │   │   │   ├── HistoryController.php       # DONE
-    │   │   │   ├── TopTalkersController.php    # [not yet written]
+    │   │   │   ├── ToptalkersController.php    # DONE -- note: single-capitalized-word class name (see below)
     │   │   │   ├── SettingsController.php      # [not yet written]
     │   │   │   └── Api/
-    │   │   │       ├── DbApiControllerBase.php # DONE -- shared DB_PATH/openDb()/formatHost(), used by Live+History
+    │   │   │       ├── DbApiControllerBase.php # DONE -- shared DB_PATH/openDb()/formatHost()/rollupTableForDays()
     │   │   │       ├── LiveController.php      # DONE -- reads live_sessions via native SQLite3, searchRecordsetBase()
     │   │   │       ├── HistoryController.php   # DONE -- aggregates rollup_hourly/rollup_daily by (local_ip, remote_ip)
+    │   │   │       ├── ToptalkersController.php # DONE -- localAction()/remoteAction(), ranks by bytes/connections
     │   │   │       ├── ServiceController.php   # [not yet written] extends ApiMutableServiceControllerBase
-    │   │   │       ├── SettingsController.php  # [not yet written]
-    │   │   │       └── TopTalkersController.php # [not yet written]
+    │   │   │       └── SettingsController.php  # [not yet written]
     │   │   ├── models/OPNsense/GowiththeFlow/
     │   │   │   ├── GowiththeFlow.xml           # [not yet written] config.xml-backed model: enable, iface, retention
     │   │   │   ├── GowiththeFlow.php           # [not yet written]
     │   │   │   ├── ACL/ACL.xml                 # DONE -- ui/gowiththeflow/*, api/gowiththeflow/*
-    │   │   │   └── Menu/Menu.xml               # DONE -- Reporting > Flow Monitor > Live, History (TopTalkers/Settings to add per-stage)
+    │   │   │   └── Menu/Menu.xml               # DONE -- Reporting > Flow Monitor > Live, History, Top Talkers (Settings to add in B5)
     │   │   └── views/OPNsense/GowiththeFlow/
     │   │       ├── live.volt                   # DONE -- Bootgrid with byte/duration formatters
     │   │       ├── history.volt                # DONE -- Bootgrid breakdown table + day-range/local-host filters
-    │   │       ├── toptalkers.volt              # [not yet written]
+    │   │       ├── toptalkers.volt              # DONE -- two Bootgrids (local/remote) + shared days selector
     │   │       └── settings.volt                # [not yet written]
+    │
+    │   Naming gotcha (confirmed on the real VM): OPNsense/Phalcon's
+    │   URL-to-controller-class convention capitalizes only the *first*
+    │   letter of the whole URL slug -- a controller serving
+    │   /ui/gowiththeflow/toptalkers must be class `ToptalkersController`,
+    │   not `TopTalkersController` (compare the real core example,
+    │   `NetworkinsightController`, not `NetworkInsightController`). Any
+    │   future compound-word page name needs the same single-capitalized-
+    │   word treatment.
     │   └── service/conf/actions.d/          # [not yet written -- Phase C]
     │       └── actions_gowiththeflow.conf       # configd actions wrapping rc.d script
     └── etc/rc.d/gowiththeflow                   # [not yet written -- Phase C] rc(8) script starting/stopping gowiththeflowd.py
@@ -409,8 +427,8 @@ controller's job is just: query SQLite, build that array, hand it off.
 | POST | `/api/gowiththeflow/live/search/` | Bootgrid standard (`current`, `rowCount`, `sort`, `searchPhrase`) | **DONE.** local/remote (`hostname (ip)`), proto, port, bytes in/out, live-computed duration |
 | POST | `/api/gowiththeflow/history/search/` | + `days`, `local_host?` | **DONE.** rollup rows aggregated by (local_ip, remote_ip), granularity auto-picked by `days` vs. the 45-day hourly-retention threshold, plus a `local_hosts` map for the filter dropdown |
 | — | *(deferred)* timeseries endpoint for the History chart | `local_host`, `remote_host`, `days`, `bucket=hour\|day` | `{ts, bytes_in, bytes_out}[]` for charting (not a Bootgrid search — a plain data endpoint) |
-| POST | `/api/gowiththeflow/toptalkers/local/search/` | + `days`, `sort_by=bytes\|connections` | ranked local hosts |
-| POST | `/api/gowiththeflow/toptalkers/remote/search/` | + `days`, `local_host?`, `sort_by` | ranked remote hosts |
+| POST | `/api/gowiththeflow/toptalkers/local` | `days` | **DONE.** ranked local hosts by total bytes/connections (sortable by clicking either column — no separate `sort_by` param needed) |
+| POST | `/api/gowiththeflow/toptalkers/remote` | `days`, `local_host?` | **DONE.** ranked remote hosts; filtering by `local_host` correctly shows only that host's share of a shared-IP remote, not the combined total |
 | * | `/api/gowiththeflow/service/*`, `/api/gowiththeflow/settings/*` | — | standard OPNsense service/settings envelopes |
 | POST | `/api/gowiththeflow/settings/clearData` | — | truncates `connections_raw`/`rollup_hourly`/`rollup_daily`/`live_sessions` (housekeeping action button) |
 | POST | `/api/gowiththeflow/settings/resetHostnameCache` | — | truncates `ip_hostname_cache` only, forcing re-learning (housekeeping action button) |
@@ -586,9 +604,9 @@ only be in stage N's new code, not a tangle of everything built so far.
 3. **DONE.** `HistoryController`/`history.volt` — verified against
    synthetic rollup data shaped like real `rollup.py` output (see Status
    above).
-4. **NEXT.** `TopTalkersController`/`toptalkers.volt` — verify rankings against
-   known synthetic traffic volumes.
-5. `SettingsController`/`settings.volt` + `ServiceController` (enable/
+4. **DONE.** `ToptalkersController`/`toptalkers.volt` — verified rankings
+   against synthetic traffic volumes (see Status above).
+5. **NEXT.** `SettingsController`/`settings.volt` + `ServiceController` (enable/
    disable/restart, every toggle from the Settings section above) —
    verify each toggle actually changes daemon behavior.
 6. **Resilience check**: deliberately `kill -9` the daemon mid-capture and
