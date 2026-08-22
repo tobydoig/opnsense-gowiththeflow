@@ -2,20 +2,13 @@
 
 namespace OPNsense\GowiththeFlow\Api;
 
-use OPNsense\Base\ApiControllerBase;
-
-class LiveController extends ApiControllerBase
+class LiveController extends DbApiControllerBase
 {
-    // TODO(Phase B5): move to the Settings model once it exists.
-    // Production path will be /var/db/gowiththeflow/flows.db.
-    private const DB_PATH = '/tmp/test_flows.db';
-
     public function searchAction()
     {
         $records = [];
-        if (file_exists(self::DB_PATH)) {
-            $db = new \SQLite3(self::DB_PATH, SQLITE3_OPEN_READONLY);
-            $db->busyTimeout(5000);
+        $db = $this->openDb();
+        if ($db !== null) {
             $result = $db->query(
                 'SELECT ls.proto, ls.local_ip, ls.local_port, ls.remote_ip, ls.remote_port,
                         ls.remote_hostname, ls.hostname_source,
@@ -43,10 +36,5 @@ class LiveController extends ApiControllerBase
         }
 
         return $this->searchRecordsetBase($records, null, 'last_seen');
-    }
-
-    private function formatHost($hostname, $ip)
-    {
-        return !empty($hostname) ? sprintf('%s (%s)', $hostname, $ip) : $ip;
     }
 }
