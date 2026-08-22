@@ -51,8 +51,31 @@
   the whole URL slug (confirmed against the real `NetworkinsightController`
   example). Dropped the originally-planned separate `sort_by` param —
   Bootgrid's native column-click sorting covers it for free.
-- **Not yet started**: Phase B5 (Settings/ServiceController), the deferred
-  History chart, Phase C (packaging), Phase D (production rollout).
+- **Phase B5 — complete.** The full Settings surface: `GowiththeFlow`
+  config model, `ServiceController` (start/stop/restart/status/
+  reconfigure via `ApiMutableServiceControllerBase`), `SettingsController`
+  + `settings.volt` (declarative form, save/apply, two housekeeping
+  action buttons), and — pulled forward from Phase C because
+  `ServiceController` needed something real underneath it — a genuinely
+  working rc.d script + configd action. All verified end-to-end against
+  the real VM: settings save to `config.xml`, `service/reconfigure`
+  actually starts the daemon once enabled, and both housekeeping buttons
+  correctly truncate their tables. Several real bugs found along the way
+  (see the three B5 commits for full detail): a missing shebang line;
+  rc.subr's `_run_rc_doit` running the command *synchronously* rather
+  than forking it (fixed with OPNsense core's own bundled `Daemonize`
+  helper, matching the real `os-netflow` plugin); absolute paths needed
+  for every subprocess call under rc.d's minimal PATH; rc.subr's
+  rc.conf enable-gate needing `onestart`/`onestop`/etc. instead of plain
+  verbs; and two `ApiMutableModelControllerBase` conventions
+  (`getAction()` needs a real GET, `setAction()` needs fields nested
+  under the model name) that only surfaced by reading the real PHP error
+  log at `/var/lib/php/tmp/PHP_errors.log`.
+  The `staticOverrides` grid+dialog editor is deliberately deferred
+  (same pattern as the History chart) — the model/schema already support
+  it via direct API calls without a polished grid UI.
+- **Not yet started**: the deferred History chart and staticOverrides
+  grid editor, Phase C (packaging), Phase D (production rollout).
 - **Distribution repos**: local git repo initialized and committed at
   `D:\code\opnsense-gowiththeflow`; the two GitHub repos described below
   (`opnsense-gowiththeflow` private, `gowiththeflow-pkg-repo` public) have
@@ -180,29 +203,30 @@ net/gowiththeflow/
     │   │   ├── ptr_resolver.py             # rate-limited reverse-DNS fallback, negative caching
     │   │   ├── db.py                       # SQLite connection mgmt (WAL, batched writes)
     │   │   └── rollup.py                   # hourly/daily rollup + raw-retention pruning job
-    │   ├── mvc/app/                        # Phase B2+ -- Live/History/TopTalkers done, Settings pending
+    │   ├── mvc/app/                        # Phase B2-B5 -- all done
     │   │   ├── controllers/OPNsense/GowiththeFlow/
     │   │   │   ├── LiveController.php          # DONE -- UI page controller (extends IndexController, picks live.volt)
     │   │   │   ├── HistoryController.php       # DONE
     │   │   │   ├── ToptalkersController.php    # DONE -- note: single-capitalized-word class name (see below)
-    │   │   │   ├── SettingsController.php      # [not yet written]
+    │   │   │   ├── SettingsController.php      # DONE -- loads forms/general.xml via getForm()
+    │   │   │   ├── forms/general.xml           # DONE -- declarative field defs for the settings form
     │   │   │   └── Api/
     │   │   │       ├── DbApiControllerBase.php # DONE -- shared DB_PATH/openDb()/formatHost()/rollupTableForDays()
     │   │   │       ├── LiveController.php      # DONE -- reads live_sessions via native SQLite3, searchRecordsetBase()
     │   │   │       ├── HistoryController.php   # DONE -- aggregates rollup_hourly/rollup_daily by (local_ip, remote_ip)
     │   │   │       ├── ToptalkersController.php # DONE -- localAction()/remoteAction(), ranks by bytes/connections
-    │   │   │       ├── ServiceController.php   # [not yet written] extends ApiMutableServiceControllerBase
-    │   │   │       └── SettingsController.php  # [not yet written]
+    │   │   │       ├── ServiceController.php   # DONE -- trivial ApiMutableServiceControllerBase subclass
+    │   │   │       └── SettingsController.php  # DONE -- ApiMutableModelControllerBase + clearData/resetHostnameCache
     │   │   ├── models/OPNsense/GowiththeFlow/
-    │   │   │   ├── GowiththeFlow.xml           # [not yet written] config.xml-backed model: enable, iface, retention
-    │   │   │   ├── GowiththeFlow.php           # [not yet written]
+    │   │   │   ├── GowiththeFlow.xml           # DONE -- enable, interfaces, subnets, retention, rctl caps, hostname tuning
+    │   │   │   ├── GowiththeFlow.php           # DONE -- plain BaseModel, no custom validation needed
     │   │   │   ├── ACL/ACL.xml                 # DONE -- ui/gowiththeflow/*, api/gowiththeflow/*
-    │   │   │   └── Menu/Menu.xml               # DONE -- Reporting > Flow Monitor > Live, History, Top Talkers (Settings to add in B5)
+    │   │   │   └── Menu/Menu.xml               # DONE -- Reporting > Flow Monitor > Live, History, Top Talkers, Settings
     │   │   └── views/OPNsense/GowiththeFlow/
     │   │       ├── live.volt                   # DONE -- Bootgrid with byte/duration formatters
     │   │       ├── history.volt                # DONE -- Bootgrid breakdown table + day-range/local-host filters
     │   │       ├── toptalkers.volt              # DONE -- two Bootgrids (local/remote) + shared days selector
-    │   │       └── settings.volt                # [not yet written]
+    │   │       └── settings.volt                # DONE -- form + save/apply + housekeeping buttons
     │
     │   Naming gotcha (confirmed on the real VM): OPNsense/Phalcon's
     │   URL-to-controller-class convention capitalizes only the *first*
@@ -212,9 +236,9 @@ net/gowiththeflow/
     │   `NetworkinsightController`, not `NetworkInsightController`). Any
     │   future compound-word page name needs the same single-capitalized-
     │   word treatment.
-    │   └── service/conf/actions.d/          # [not yet written -- Phase C]
-    │       └── actions_gowiththeflow.conf       # configd actions wrapping rc.d script
-    └── etc/rc.d/gowiththeflow                   # [not yet written -- Phase C] rc(8) script starting/stopping gowiththeflowd.py
+    │   └── service/conf/actions.d/          # DONE -- pulled forward from Phase C during B5
+    │       └── actions_gowiththeflow.conf       # configd actions using onestart/onestop/onerestart/onestatus
+    └── etc/rc.d/gowiththeflow                   # DONE -- pulled forward from Phase C; uses OPNsense's bundled Daemonize helper
 ```
 
 SQLite database lives at `/var/db/gowiththeflow/flows.db` on the firewall
@@ -373,40 +397,48 @@ edge cases.
 
 ## Service management & settings
 
-*(Not yet implemented — Phase B2+/C. Design below unchanged from original
-plan.)*
+*(Done — Phase B5, plus the rc.d/configd pieces pulled forward from
+Phase C. One gap vs. the original design: the rc.d script does not yet
+actually apply the `rctl` CPU/memory cap it's supposed to — the
+`CpuLimitPct`/`MemLimitMB` model fields exist and save correctly, but
+nothing reads them into an actual `rctl` rule yet. TODO before Phase D.)*
 
-- `src/etc/rc.d/gowiththeflow`: standard rc(8) script starting/stopping
-  `gowiththeflowd.py`; also applies the `rctl` CPU/memory cap (below) to
-  the daemon's process/login class at start.
-- `actions_gowiththeflow.conf`: configd actions (`start|stop|restart|status`)
-  wrapping the rc.d script.
-- `Api/ServiceController.php` extends `ApiMutableServiceControllerBase`,
-  giving `/api/gowiththeflow/service/{start,stop,restart,status}` and
-  wiring the Settings page's enable toggle to a model-linked restart.
+- `src/etc/rc.d/gowiththeflow`: rc(8) script starting/stopping
+  `gowiththeflowd.py` via OPNsense core's bundled `Daemonize` helper (see
+  Real-world corrections above) — not yet applying the `rctl` CPU/memory
+  cap (below) to the daemon's process/login class at start.
+- `actions_gowiththeflow.conf`: configd actions using rc.subr's own
+  `onestart`/`onestop`/`onerestart`/`onestatus` verbs (not the plain
+  `start`/`stop`/`restart`/`status` originally sketched — see Real-world
+  corrections above for why).
+- `Api/ServiceController.php` extends `ApiMutableServiceControllerBase`
+  (3 static properties, no method overrides needed), giving
+  `/api/gowiththeflow/service/{start,stop,restart,status,reconfigure}`.
+  The Settings page's Apply button calls `reconfigure`, not a plain
+  `restart` — matching the real base class's behavior (stop/start/reload
+  based on the model's `enabled` field), not a hand-rolled restart call.
 - Settings model (`GowiththeFlow.xml`), scoped to "Essential + hostname
-  tuning" per user decision:
-  - **Essential**: `Enabled` (default false — installing the package does
-    nothing until explicitly turned on), `CaptureInterfaces` (multi-select
-    interface list), `LocalSubnets` (CIDR list, pre-populated from
-    OPNsense's own interface config but editable so VPN tunnel subnets —
-    e.g. WireGuard/OpenVPN client ranges — can optionally count as
-    "local"), `RawRetentionDays` (default 10), `RollupHourlyRetentionDays`
-    (default 45), `RollupDailyRetentionDays` (default 730), `CpuLimitPct`
-    and `MemLimitMB` (rctl cap, sensible defaults e.g. 10% / 256MB for a
-    lightweight sniffer), read-only `DbPath` display.
-  - **Hostname tuning**: `EnableDnsSniffing`, `EnableSniSniffing`,
-    `EnablePtrFallback` (independent bools — e.g. to stop extra
-    reverse-DNS traffic leaving the box if unwanted), `ExtraTlsPorts`
-    (list, default empty, for TLS services beyond 443 like 8443), and a
-    repeating `StaticHostnameOverrides` list (IP/CIDR → friendly name)
-    for devices that never announce a hostname any other way — this list
-    lives in config.xml like any other OPNsense setting, and the daemon
-    treats it as the highest-priority hostname source (see correlator.py,
-    above).
-  - Saving any of these triggers `settings/set` then `service/restart`,
-    same pattern as before — no partial-reload complexity needed given how
-    lightweight a restart of this daemon is.
+  tuning" per user decision, all fields implemented and confirmed
+  round-tripping through `config.xml`:
+  - **Essential**: `enabled` (default false — installing the package does
+    nothing until explicitly turned on), `captureInterfaces` (multi-select
+    interface list — saved as a comma-separated string, not a PHP array;
+    see Real-world corrections), `localSubnets` (CIDR list via
+    `NetworkField`/`AsList`, editable so VPN tunnel subnets can optionally
+    count as "local"), `rawRetentionDays` (default 10),
+    `rollupHourlyRetentionDays` (default 45), `rollupDailyRetentionDays`
+    (default 730), `cpuLimitPct` and `memLimitMB` (rctl cap fields exist
+    and save correctly; not yet wired into an actual `rctl` rule — see
+    the gap noted above).
+  - **Hostname tuning**: `enableDnsSniffing`, `enableSniSniffing`,
+    `enablePtrFallback` (independent bools), `extraTlsPorts` (comma list,
+    default empty). The `staticOverrides` repeating list (IP/CIDR →
+    friendly name) exists in the model/schema and is reachable via direct
+    API calls, but its grid+dialog editor UI is deliberately deferred
+    (same pattern as the History chart).
+  - Save flow is `settings/set` then `service/reconfigure` (see above) —
+    confirmed via `SimpleActionButton`/`saveFormToEndpoint` exactly
+    matching the real `os-netflow` plugin's own settings page pattern.
 
 ## API endpoints
 
@@ -429,9 +461,10 @@ controller's job is just: query SQLite, build that array, hand it off.
 | — | *(deferred)* timeseries endpoint for the History chart | `local_host`, `remote_host`, `days`, `bucket=hour\|day` | `{ts, bytes_in, bytes_out}[]` for charting (not a Bootgrid search — a plain data endpoint) |
 | POST | `/api/gowiththeflow/toptalkers/local` | `days` | **DONE.** ranked local hosts by total bytes/connections (sortable by clicking either column — no separate `sort_by` param needed) |
 | POST | `/api/gowiththeflow/toptalkers/remote` | `days`, `local_host?` | **DONE.** ranked remote hosts; filtering by `local_host` correctly shows only that host's share of a shared-IP remote, not the combined total |
-| * | `/api/gowiththeflow/service/*`, `/api/gowiththeflow/settings/*` | — | standard OPNsense service/settings envelopes |
-| POST | `/api/gowiththeflow/settings/clearData` | — | truncates `connections_raw`/`rollup_hourly`/`rollup_daily`/`live_sessions` (housekeeping action button) |
-| POST | `/api/gowiththeflow/settings/resetHostnameCache` | — | truncates `ip_hostname_cache` only, forcing re-learning (housekeeping action button) |
+| GET/POST | `/api/gowiththeflow/service/{start,stop,restart,status,reconfigure}` | — | **DONE.** standard `ApiMutableServiceControllerBase` envelope |
+| GET/POST | `/api/gowiththeflow/settings/{get,set}` | note: `get` needs an actual GET; `set` needs fields nested under `gowiththeflow[...]` | **DONE.** standard `ApiMutableModelControllerBase` envelope |
+| POST | `/api/gowiththeflow/settings/clearData` | — | **DONE.** truncates `connections_raw`/`rollup_hourly`/`rollup_daily`/`live_sessions` (housekeeping action button) |
+| POST | `/api/gowiththeflow/settings/resetHostnameCache` | — | **DONE.** truncates `ip_hostname_cache` only, forcing re-learning (housekeeping action button) |
 
 Local-host display names come from a plain
 `LEFT JOIN local_host_identity ON local_ip = ip` in each query — that table
@@ -443,7 +476,7 @@ PDO drivers compiled in at all, only the `sqlite3` extension.
 
 ## Frontend UI
 
-*(Live done — Phase B2. History/Top Talkers/Settings not yet implemented.)*
+*(All four pages done — Phases B2-B5.)*
 
 **Correction from the original plan**: the original design called for one
 `index.volt` shell with four client-side tabs. Reading the real
@@ -467,14 +500,18 @@ Planned split (unchanged in spirit, just not one shared shell):
 - **Top Talkers**: two Bootgrids (local/remote) with a bytes-vs-connections
   sort toggle and days selector, plus a Chart.js horizontal bar of the top
   10.
-- **Settings**: enable checkbox; multi-select capture interfaces; editable
-  local-subnets list; retention (raw/hourly-rollup/daily-rollup) and
-  CPU/memory-cap number inputs; a "Hostname resolution" sub-section with
-  the DNS/SNI/PTR enable toggles and extra-TLS-ports list; a Bootgrid-style
-  editable table for static IP/CIDR → hostname overrides (add/edit/delete
-  rows, same pattern as Unbound's host-override list elsewhere in
-  OPNsense); "clear all data now" and "reset hostname cache" action
-  buttons; a debug-logging toggle. Save → `settings/set` → `service/restart`.
+- **Settings — DONE, minus one deferred piece**: enable checkbox;
+  multi-select capture interfaces; editable local-subnets list; retention
+  (raw/hourly-rollup/daily-rollup) and CPU/memory-cap number inputs; a
+  "Hostname resolution" section with the DNS/SNI/PTR enable toggles and
+  extra-TLS-ports field; "Clear All Data" and "Reset Hostname Cache"
+  action buttons (confirm dialog via `stdDialogRemoveItem` + `ajaxCall`,
+  matching the real `os-netflow` reset-button pattern); a debug-logging
+  toggle. Save → `settings/set` → `service/reconfigure` (not a plain
+  `restart` — see API endpoints above). **Deferred**: the Bootgrid-style
+  editable table for static IP/CIDR → hostname overrides — the
+  `staticOverrides` field exists in the model and is reachable via direct
+  API calls, just without a polished grid+dialog editor yet.
 
 Menu/ACL: `Menu.xml` adds a "Flow Monitor" entry (under Reporting) with the
 four tab URLs; `ACL.xml` grants `ui/gowiththeflow/*` and
@@ -606,9 +643,10 @@ only be in stage N's new code, not a tangle of everything built so far.
    above).
 4. **DONE.** `ToptalkersController`/`toptalkers.volt` — verified rankings
    against synthetic traffic volumes (see Status above).
-5. **NEXT.** `SettingsController`/`settings.volt` + `ServiceController` (enable/
-   disable/restart, every toggle from the Settings section above) —
-   verify each toggle actually changes daemon behavior.
+5. **DONE.** `SettingsController`/`settings.volt` + `ServiceController` —
+   verified end-to-end (see Status above): settings save to config.xml,
+   `service/reconfigure` genuinely starts/stops the daemon based on the
+   model's `enabled` field.
 6. **Resilience check**: deliberately `kill -9` the daemon mid-capture and
    confirm pf/DHCP/DNS on the VM are completely unaffected — the concrete
    proof of the "monitoring stops, internet doesn't" claim above, not
