@@ -155,6 +155,28 @@ def test_real_capture_admin_plane_traffic_to_opnsense_itself_is_skipped():
     assert snapshots == []
 
 
+def test_skips_states_with_a_bare_portless_ipv6_address():
+    # Real bug caught on the OPNsense 26.7 test VM: a transient link-local
+    # IPv6 state (neighbor discovery) with no port on either side. A naive
+    # "split on the last colon" would corrupt 'fe80::1' into ip='fe80:',
+    # port='1' since IPv6 addresses already contain colons -- this must
+    # instead be recognized as portless and the whole record dropped, not
+    # crash and not silently produce a wrong IP.
+    text = (
+        "all ipv6-icmp fe80::1 <- fe80::2       NO_TRAFFIC:NO_TRAFFIC\n"
+        "   age 00:00:01, expires in 00:00:09, 1:0 pkts, 64:0 bytes, rule 5\n"
+    )
+    assert parse_pfctl_state_text(text) == []
+
+
+def test_skips_bare_ipv6_address_with_scope_id():
+    text = (
+        "all ipv6-icmp fe80::1%le0 <- fe80::2%le0       NO_TRAFFIC:NO_TRAFFIC\n"
+        "   age 00:00:01, expires in 00:00:09, 1:0 pkts, 64:0 bytes, rule 5\n"
+    )
+    assert parse_pfctl_state_text(text) == []
+
+
 def test_state_key_is_hashable_and_stable_across_equal_snapshots():
     key_a = StateKey("tcp", "192.168.1.50", 52341, "93.184.216.34", 443)
     key_b = StateKey("tcp", "192.168.1.50", 52341, "93.184.216.34", 443)

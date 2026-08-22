@@ -47,23 +47,46 @@ _STATE_STATS_RE = re.compile(
 
 
 def _split_addr_port(token: str) -> tuple[str, str] | tuple[None, None]:
-    """Splits 'ip:port' (IPv4) or 'ip[port]' (IPv6) into (ip, port)."""
+    """Splits 'ip:port' (IPv4) or 'ip[port]' (IPv6) into (ip, port). Also
+    handles a *bare* address with no port at all -- observed transiently
+    for IPv6 link-local states (e.g. neighbor discovery) with no
+    src/dst port, which a naive "split on the last colon" would silently
+    corrupt (an IPv6 address already contains colons, so e.g. bare
+    'fe80::1' would wrongly become ip='fe80:', port='1'). A bare address
+    with no port isn't something this module can key a connection on, so
+    it's reported as (ip, None) and the caller drops the whole record."""
     if "[" in token and token.endswith("]"):
         ip, _, port_str = token.rpartition("[")
         port_str = port_str[:-1]
-    elif ":" in token:
+        if not ip or not port_str.isdigit():
+            return None, None
+        return ip, port_str
+
+    try:
+        ipaddress.ip_address(token.split("%", 1)[0])
+        return token, None  # a bare address (optionally with an IPv6 %scope), no port
+    except ValueError:
+        pass
+
+    if ":" in token:
         ip, _, port_str = token.rpartition(":")
-    else:
-        return None, None
-    if not ip or not port_str.isdigit():
-        return None, None
-    return ip, port_str
+        try:
+            ipaddress.ip_address(ip)
+        except ValueError:
+            return None, None
+        if not port_str.isdigit():
+            return None, None
+        return ip, port_str
+
+    return None, None
 
 
 def _parse_header_line(line: str) -> dict | None:
     """Locates proto/src/dst by anchoring on the '<-'/'->' arrow token,
     rather than assuming a fixed number of leading fields -- robust to
-    whatever variable prefix token(s) pf puts before the protocol."""
+    whatever variable prefix token(s) pf puts before the protocol. Returns
+    None for states with no port on either side (e.g. ICMP/ICMPv6,
+    protocol-only states) -- this module's connection model requires both."""
     tokens = line.split()
     arrow_idx = None
     for i, tok in enumerate(tokens):
@@ -76,7 +99,7 @@ def _parse_header_line(line: str) -> dict | None:
     proto = tokens[arrow_idx - 2]
     src_ip, src_port = _split_addr_port(tokens[arrow_idx - 1])
     dst_ip, dst_port = _split_addr_port(tokens[arrow_idx + 1])
-    if src_ip is None or dst_ip is None:
+    if src_ip is None or dst_ip is None or src_port is None or dst_port is None:
         return None
     return {
         "proto": proto,
