@@ -310,6 +310,34 @@
   requirement from the start of Phase C -- the plugin is now running on
   real production hardware, resolving real hostnames for real traffic,
   under enforced resource caps.
+- **1.0.2 / 1.0.3: two more real user-reported fixes, both shipped.**
+  1. **Live grid "Local Port" column added** (1.0.2). The user spotted
+     what looked like duplicate rows (same local/remote host, similar
+     durations) and asked whether it was a bug. It wasn't -- the
+     model's `UNIQUE` constraint already includes `local_port`, and
+     wildly differing byte counts/durations between the "duplicate"
+     rows confirmed they were genuinely separate concurrent connections
+     (a phone or headset maintaining several parallel connections to
+     the same CDN/API endpoint is completely normal) -- but the grid
+     never displayed `local_port`, so there was no way to see that at a
+     glance. Added the column so this is verifiable rather than taken
+     on faith.
+  2. **Auto-restart after upgrade if already enabled** (1.0.3). Real
+     complaint: after a `pkg upgrade`, an already-running service was
+     left stopped until the user manually hit Settings > Apply, even
+     though `pre-deinstall` had just stopped a *genuinely running*
+     daemon moments before. `post-install` now unconditionally
+     re-renders the config template (safe on a real fresh install too,
+     since the model defaults to `enabled=0`, so the render correctly
+     says so and nothing auto-starts) and only calls `onestart` if that
+     render says `enabled=1` -- verified both properties directly on
+     the VM before publishing: an enabled+running install upgraded and
+     came back up with no manual step, and a config reset to
+     `enabled=0` beforehand correctly stayed stopped after a fresh
+     install.
+  1.0.2 confirmed installed on the real box via the actual GUI
+  Firmware > Plugins > Update path; 1.0.3 published and VM-verified,
+  not yet installed there.
 - **Not yet started**: the deferred History chart and staticOverrides
   grid editor, proper repo signing before this pkg-repo is relied on for
   anything that matters, adding QUIC/HTTP-3 SNI-equivalent parsing (a
