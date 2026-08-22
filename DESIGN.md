@@ -20,8 +20,18 @@
   SNI, exact match extracted). **Five real bugs found and fixed** — see
   "Real-world corrections" below; none of these were guessable from docs
   alone, which is exactly why Phase B exists.
-- **Not yet started**: Phase B2+ (LiveController/live.volt and the rest of
-  the MVC/UI layer), Phase C (packaging), Phase D (production rollout).
+- **Phase B2 — complete.** `LiveController`/`Api/LiveController.php`/
+  `live.volt` built, deployed to the real VM's MVC tree, and verified
+  end-to-end via an authenticated curl session: page renders correctly
+  (menu entry, grid, columns), and the search API returns correctly
+  joined/formatted hostnames and a live-computed duration. Base templates
+  came from reading the real installed `os-dnsmasq` plugin's own files on
+  the VM (`LeasesController.php`/`leases.volt`/`ApiControllerBase.php`)
+  rather than guessed conventions. One gotcha found: OPNsense caches the
+  built menu at `/var/lib/php/tmp/opnsense_menu_cache.xml` — new
+  `Menu.xml` entries don't appear until that's cleared.
+- **Not yet started**: Phase B3+ (History/TopTalkers/Settings
+  controllers+views), Phase C (packaging), Phase D (production rollout).
 - **Distribution repos**: local git repo initialized and committed at
   `D:\code\opnsense-gowiththeflow`; the two GitHub repos described below
   (`opnsense-gowiththeflow` private, `gowiththeflow-pkg-repo` public) have
@@ -149,26 +159,28 @@ net/gowiththeflow/
     │   │   ├── ptr_resolver.py             # rate-limited reverse-DNS fallback, negative caching
     │   │   ├── db.py                       # SQLite connection mgmt (WAL, batched writes)
     │   │   └── rollup.py                   # hourly/daily rollup + raw-retention pruning job
-    │   ├── mvc/app/                        # [not yet written -- Phase B2+]
+    │   ├── mvc/app/                        # Phase B2+ -- Live done, rest pending
     │   │   ├── controllers/OPNsense/GowiththeFlow/
-    │   │   │   ├── IndexController.php         # page shell (Live / History / Top Talkers / Settings tabs)
+    │   │   │   ├── LiveController.php          # DONE -- UI page controller (extends IndexController, picks live.volt)
+    │   │   │   ├── HistoryController.php       # [not yet written]
+    │   │   │   ├── TopTalkersController.php    # [not yet written]
+    │   │   │   ├── SettingsController.php      # [not yet written]
     │   │   │   └── Api/
-    │   │   │       ├── ServiceController.php   # extends ApiMutableServiceControllerBase (start/stop/status)
-    │   │   │       ├── SettingsController.php
-    │   │   │       ├── LiveController.php
-    │   │   │       ├── HistoryController.php
-    │   │   │       └── TopTalkersController.php
+    │   │   │       ├── LiveController.php      # DONE -- reads live_sessions via native SQLite3, searchRecordsetBase()
+    │   │   │       ├── ServiceController.php   # [not yet written] extends ApiMutableServiceControllerBase
+    │   │   │       ├── SettingsController.php  # [not yet written]
+    │   │   │       ├── HistoryController.php   # [not yet written]
+    │   │   │       └── TopTalkersController.php # [not yet written]
     │   │   ├── models/OPNsense/GowiththeFlow/
-    │   │   │   ├── GowiththeFlow.xml           # config.xml-backed model: enable, iface, retention, rollup interval
-    │   │   │   ├── GowiththeFlow.php
-    │   │   │   ├── ACL/ACL.xml
-    │   │   │   └── Menu/Menu.xml
+    │   │   │   ├── GowiththeFlow.xml           # [not yet written] config.xml-backed model: enable, iface, retention
+    │   │   │   ├── GowiththeFlow.php           # [not yet written]
+    │   │   │   ├── ACL/ACL.xml                 # DONE -- ui/gowiththeflow/*, api/gowiththeflow/*
+    │   │   │   └── Menu/Menu.xml               # DONE -- Reporting > Flow Monitor > Live (History/TopTalkers/Settings to add per-stage)
     │   │   └── views/OPNsense/GowiththeFlow/
-    │   │       ├── index.volt
-    │   │       ├── live.volt
-    │   │       ├── history.volt
-    │   │       ├── toptalkers.volt
-    │   │       └── settings.volt
+    │   │       ├── live.volt                   # DONE -- Bootgrid with byte/duration formatters
+    │   │       ├── history.volt                # [not yet written]
+    │   │       ├── toptalkers.volt              # [not yet written]
+    │   │       └── settings.volt                # [not yet written]
     │   └── service/conf/actions.d/          # [not yet written -- Phase C]
     │       └── actions_gowiththeflow.conf       # configd actions wrapping rc.d script
     └── etc/rc.d/gowiththeflow                   # [not yet written -- Phase C] rc(8) script starting/stopping gowiththeflowd.py
@@ -367,34 +379,55 @@ plan.)*
 
 ## API endpoints
 
-*(Not yet implemented — Phase B2+. Design below unchanged from original
-plan.)*
+*(`live/search` done — Phase B2. Others not yet implemented.)*
+
+**Correction from the original plan**: grid endpoints follow OPNsense's
+real convention, confirmed by reading `ApiControllerBase::searchRecordsetBase()`
+on the test VM — a `POST .../search/` action (not a bare GET) taking
+Bootgrid's own params (`current`, `rowCount`, `sort`, `searchPhrase`) and
+returning `{"total": N, "rowCount": N, "current": N, "rows": [...]}` — not
+the `{"rows":[...], "total":N, "generated":"<iso ts>"}` shape originally
+sketched. `searchRecordsetBase()` handles sorting/filtering/pagination
+generically given a plain PHP array of associative-array records, so each
+controller's job is just: query SQLite, build that array, hand it off.
 
 | Method | Path | Params | Returns |
 |---|---|---|---|
-| GET | `/api/gowiththeflow/live/sessions` | `local_host?`, `limit` | local/remote (hostname+ip), port/proto, bytes in/out, duration |
-| GET | `/api/gowiththeflow/history/pairs` | `days`, `local_host?`, `remote_host?`, `sort_by`, `limit`, `offset` | rollup rows, granularity auto-picked by `days` |
-| GET | `/api/gowiththeflow/history/timeseries` | `local_host`, `remote_host`, `days`, `bucket=hour\|day` | `{ts, bytes_in, bytes_out}[]` for charting |
-| GET | `/api/gowiththeflow/toptalkers/local` | `days`, `sort_by=bytes\|connections`, `limit` | ranked local hosts |
-| GET | `/api/gowiththeflow/toptalkers/remote` | `days`, `local_host?`, `sort_by`, `limit` | ranked remote hosts |
+| POST | `/api/gowiththeflow/live/search/` | Bootgrid standard (`current`, `rowCount`, `sort`, `searchPhrase`) | **DONE.** local/remote (`hostname (ip)`), proto, port, bytes in/out, live-computed duration |
+| POST | `/api/gowiththeflow/history/pairs/search/` | + `days`, `local_host?`, `remote_host?` | rollup rows, granularity auto-picked by `days` |
+| POST | `/api/gowiththeflow/history/timeseries` | `local_host`, `remote_host`, `days`, `bucket=hour\|day` | `{ts, bytes_in, bytes_out}[]` for charting (not a Bootgrid search — a plain data endpoint) |
+| POST | `/api/gowiththeflow/toptalkers/local/search/` | + `days`, `sort_by=bytes\|connections` | ranked local hosts |
+| POST | `/api/gowiththeflow/toptalkers/remote/search/` | + `days`, `local_host?`, `sort_by` | ranked remote hosts |
 | * | `/api/gowiththeflow/service/*`, `/api/gowiththeflow/settings/*` | — | standard OPNsense service/settings envelopes |
 | POST | `/api/gowiththeflow/settings/clearData` | — | truncates `connections_raw`/`rollup_hourly`/`rollup_daily`/`live_sessions` (housekeeping action button) |
 | POST | `/api/gowiththeflow/settings/resetHostnameCache` | — | truncates `ip_hostname_cache` only, forcing re-learning (housekeeping action button) |
 
-Grid endpoints return `{"rows": [...], "total": N, "generated": "<iso ts>"}`
-(Bootgrid convention). Local-host display names come from a plain
+Local-host display names come from a plain
 `LEFT JOIN local_host_identity ON local_ip = ip` in each query — that table
 is kept fresh by the daemon's `localhost_identity.py` (see above), so PHP
 never talks to Dnsmasq itself; there is exactly one place in the codebase
-that knows how to look up a DHCP lease.
+that knows how to look up a DHCP lease. PHP reads the SQLite file via the
+native `SQLite3` class (`SQLITE3_OPEN_READONLY`) — this PHP build has no
+PDO drivers compiled in at all, only the `sqlite3` extension.
 
 ## Frontend UI
 
-*(Not yet implemented — Phase B2+. Design below unchanged from original
-plan.)*
+*(Live done — Phase B2. History/Top Talkers/Settings not yet implemented.)*
 
-One `index.volt` shell with four tabs, matching the existing
-Live/History/TopTalkers/Settings split:
+**Correction from the original plan**: the original design called for one
+`index.volt` shell with four client-side tabs. Reading the real
+`os-dnsmasq` plugin's own Menu.xml on the test VM showed OPNsense's actual
+idiomatic pattern is closer to **separate top-level pages**, each with its
+own controller/volt/menu entry (its settings page uses hash-anchored tabs
+*within* one page for closely related sub-sections, but its Leases grid —
+structurally the same kind of page as this plugin's Live/History/Top
+Talkers views — is its own standalone page). `LiveController`/`live.volt`
+were built following that Leases pattern; History/TopTalkers/Settings
+should follow the same pattern rather than a shared tabbed `index.volt`
+shell. No `IndexController.php` — each page's own controller extends
+`\OPNsense\Base\IndexController` directly (see `LiveController.php`).
+
+Planned split (unchanged in spirit, just not one shared shell):
 - **Live**: Bootgrid polling every 5–10s; Local, Remote (`hostname (ip)`),
   Port/Proto, ↓/↑ bytes, Duration; local-host filter dropdown.
 - **History**: day-range picker (1/7/14/30/90), local-host selector,
@@ -535,9 +568,9 @@ only be in stage N's new code, not a tangle of everything built so far.
    inspected directly via `sqlite3` CLI. Five real bugs found and fixed
    (see "Real-world corrections"). DNS-path and SNI-path hostname
    resolution both confirmed working end-to-end against real traffic.
-2. **NEXT.** `LiveController` + `live.volt` — the simplest read path —
-   verify the Live tab against the DB already proven correct in B1.
-3. `HistoryController`/`history.volt`, verified once a rollup cycle has
+2. **DONE.** `LiveController` + `live.volt` — the simplest read path —
+   verified against the DB already proven correct in B1 (see Status above).
+3. **NEXT.** `HistoryController`/`history.volt`, verified once a rollup cycle has
    actually run (or the bucket boundary is advanced manually for a fast
    check).
 4. `TopTalkersController`/`toptalkers.volt` — verify rankings against
