@@ -5,3 +5,5 @@ __pycache__/
 *.db
 *.db-wal
 *.db-shm
+net/gowiththeflow/dist/
+*.pkg

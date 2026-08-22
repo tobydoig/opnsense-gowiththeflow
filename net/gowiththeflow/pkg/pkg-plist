@@ -1,0 +1,43 @@
+usr/local/etc/rc.d/gowiththeflow
+usr/local/opnsense/mvc/app/controllers/OPNsense/GoWithTheFlow/Api/DbApiControllerBase.php
+usr/local/opnsense/mvc/app/controllers/OPNsense/GoWithTheFlow/Api/HistoryController.php
+usr/local/opnsense/mvc/app/controllers/OPNsense/GoWithTheFlow/Api/LiveController.php
+usr/local/opnsense/mvc/app/controllers/OPNsense/GoWithTheFlow/Api/ServiceController.php
+usr/local/opnsense/mvc/app/controllers/OPNsense/GoWithTheFlow/Api/SettingsController.php
+usr/local/opnsense/mvc/app/controllers/OPNsense/GoWithTheFlow/Api/ToptalkersController.php
+usr/local/opnsense/mvc/app/controllers/OPNsense/GoWithTheFlow/HistoryController.php
+usr/local/opnsense/mvc/app/controllers/OPNsense/GoWithTheFlow/LiveController.php
+usr/local/opnsense/mvc/app/controllers/OPNsense/GoWithTheFlow/SettingsController.php
+usr/local/opnsense/mvc/app/controllers/OPNsense/GoWithTheFlow/ToptalkersController.php
+usr/local/opnsense/mvc/app/controllers/OPNsense/GoWithTheFlow/forms/general.xml
+usr/local/opnsense/mvc/app/models/OPNsense/GoWithTheFlow/ACL/ACL.xml
+usr/local/opnsense/mvc/app/models/OPNsense/GoWithTheFlow/GoWithTheFlow.php
+usr/local/opnsense/mvc/app/models/OPNsense/GoWithTheFlow/GoWithTheFlow.xml
+usr/local/opnsense/mvc/app/models/OPNsense/GoWithTheFlow/Menu/Menu.xml
+usr/local/opnsense/mvc/app/views/OPNsense/GoWithTheFlow/history.volt
+usr/local/opnsense/mvc/app/views/OPNsense/GoWithTheFlow/live.volt
+usr/local/opnsense/mvc/app/views/OPNsense/GoWithTheFlow/settings.volt
+usr/local/opnsense/mvc/app/views/OPNsense/GoWithTheFlow/toptalkers.volt
+usr/local/opnsense/scripts/gowiththeflow/correlator.py
+usr/local/opnsense/scripts/gowiththeflow/db.py
+usr/local/opnsense/scripts/gowiththeflow/dns_sniffer.py
+usr/local/opnsense/scripts/gowiththeflow/gowiththeflowd.py
+usr/local/opnsense/scripts/gowiththeflow/hostcache.py
+usr/local/opnsense/scripts/gowiththeflow/localhost_identity.py
+usr/local/opnsense/scripts/gowiththeflow/pf_state_poller.py
+usr/local/opnsense/scripts/gowiththeflow/ptr_resolver.py
+usr/local/opnsense/scripts/gowiththeflow/rollup.py
+usr/local/opnsense/scripts/gowiththeflow/sni_sniffer.py
+usr/local/opnsense/service/conf/actions.d/actions_gowiththeflow.conf
+usr/local/opnsense/service/templates/OPNsense/GoWithTheFlow/+TARGETS
+usr/local/opnsense/service/templates/OPNsense/GoWithTheFlow/config.json
+usr/local/opnsense/version/gowiththeflow
+@dir usr/local/opnsense/mvc/app/controllers/OPNsense/GoWithTheFlow/Api
+@dir usr/local/opnsense/mvc/app/controllers/OPNsense/GoWithTheFlow/forms
+@dir usr/local/opnsense/mvc/app/controllers/OPNsense/GoWithTheFlow
+@dir usr/local/opnsense/mvc/app/models/OPNsense/GoWithTheFlow/ACL
+@dir usr/local/opnsense/mvc/app/models/OPNsense/GoWithTheFlow/Menu
+@dir usr/local/opnsense/mvc/app/models/OPNsense/GoWithTheFlow
+@dir usr/local/opnsense/mvc/app/views/OPNsense/GoWithTheFlow
+@dir usr/local/opnsense/scripts/gowiththeflow
+@dir usr/local/opnsense/service/templates/OPNsense/GoWithTheFlow

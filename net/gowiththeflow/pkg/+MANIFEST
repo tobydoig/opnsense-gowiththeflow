@@ -1,0 +1,22 @@
+{
+  "name": "os-gowiththeflow",
+  "version": "1.0.0",
+  "origin": "net/os-gowiththeflow",
+  "comment": "Per-host connection and bandwidth tracking with hostname resolution",
+  "desc": "Go With The Flow tracks, per local host, which remote hosts it talks to and how many bytes in/out, both live and historically. Remote hostnames are resolved via passive DNS and TLS SNI observation rather than raw IPs alone.",
+  "maintainer": "toby@multilocal.media",
+  "www": "https://github.com/tobydoig/opnsense-gowiththeflow",
+  "prefix": "/",
+  "categories": ["net"],
+  "licenselogic": "single",
+  "licenses": ["BSD2CLAUSE"],
+  "deps": {
+    "py313-scapy": {
+      "origin": "net/scapy",
+      "version": "2.7.0"
+    }
+  },
+  "scripts": {
+    "pre-deinstall": "#!/bin/sh\n/usr/local/etc/rc.d/gowiththeflow onestop 2>/dev/null || true\n"
+  }
+}

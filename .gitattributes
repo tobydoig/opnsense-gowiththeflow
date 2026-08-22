@@ -1,0 +1,4 @@
+# Everything in this repo targets FreeBSD/OPNsense; there is no legitimate
+# reason for CRLF anywhere, and rc.d/build-pkg.sh shell scripts genuinely
+# break if a Windows checkout rewrites them with CRLF line endings.
+* text=auto eol=lf

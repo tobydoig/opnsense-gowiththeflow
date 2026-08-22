@@ -139,9 +139,50 @@
      written the pidfile (`_run_rc_doit` returns as soon as the *first*
      fork's parent exits) -- fixed with a short poll loop (up to 2s)
      rather than assuming the pidfile already exists.
+- **Phase C (packaging) — package build + VM install cycle complete.**
+  No ports tree exists on an installed OPNsense box (confirmed on the
+  VM), and OPNsense's real plugin build pipeline (poudriere-style,
+  cloning core+plugins+ports repos) is heavy overhead just to produce an
+  installable package -- so `net/gowiththeflow/pkg/build-pkg.sh` instead
+  hand-builds a real package directly with `pkg create -m +MANIFEST -p
+  pkg-plist`, staging files from `../src` into a temp root. Verified
+  end-to-end on the VM exactly as committed (not just informally): built
+  `os-gowiththeflow-1.0.0.pkg`, removed all manually-deployed files,
+  `pkg add`'d the built package, ran the real `register.php install`
+  (confirmed `system.firmware.plugins` in config.xml gets the entry, same
+  as the real Firmware GUI), started the service, confirmed rctl caps
+  still apply against the fresh pid, then `pkg remove`'d it and confirmed
+  a fully clean uninstall -- no leftover files or directories anywhere
+  under `/usr/local/opnsense`.
+  Three real findings along the way:
+  1. `pkg create -m metadatadir -r rootdir` does **not** auto-include
+     files found under rootdir -- without an explicit `-p plist` it
+     silently produces a 0-file, 0-byte package (no error). A plist is
+     required.
+  2. `pkg remove` doesn't stop the service on its own -- OPNsense's own
+     `remove.sh` just does `pkg remove -y` with no service-stop step, so
+     the package needs its own `+MANIFEST` `"scripts": {"pre-deinstall":
+     ...}` calling `onestop` (not `stop`, since `gowiththeflow_enable`
+     is never set to YES by design -- same enable-gate finding as B5),
+     confirmed removed the running daemon cleanly before its files went
+     away.
+  3. Python's own bytecode cache (`__pycache__`) isn't part of any file
+     manifest, so it silently survived the first `pkg remove` test as an
+     orphaned leftover -- fixed with `gowiththeflow_env=
+     "PYTHONDONTWRITEBYTECODE=1"` in the rc.d script (rc.subr's
+     `${name}_env` mechanism) so it never gets created at all, plus
+     explicit `@dir` plist entries so the plugin's own now-empty MVC
+     directories (controllers/models/views, never anything shared like
+     the parent `OPNsense/` namespace dir) get removed too.
+  Package metadata lives in `net/gowiththeflow/pkg/` (`+MANIFEST`,
+  `pkg-plist`, `version.json.tmpl`, `build-pkg.sh`); `build-pkg.sh` must
+  run on a FreeBSD/OPNsense box with `pkg(8)` (pkg create doesn't
+  cross-build).
 - **Not yet started**: the deferred History chart and staticOverrides
-  grid editor, the rest of Phase C (port build, package, repo catalog, VM
-  install test), Phase D (production rollout).
+  grid editor, publishing a built package + repo catalog to
+  `gowiththeflow-pkg-repo` and testing the `fetch` bootstrap + Firmware
+  GUI install path (vs. today's manual `pkg add`/`pkg remove`), Phase D
+  (production rollout on the real home box).
 - **Distribution repos**: both GitHub repos created and pushed —
   `github.com/tobydoig/opnsense-gowiththeflow` (private, source, this repo)
   and `github.com/tobydoig/gowiththeflow-pkg-repo` (public, placeholder

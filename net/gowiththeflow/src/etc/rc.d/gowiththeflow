@@ -12,6 +12,9 @@ rcvar=gowiththeflow_enable
 command=/usr/local/opnsense/scripts/gowiththeflow/gowiththeflowd.py
 command_interpreter=/usr/local/bin/python3
 pidfile="/var/run/${name}.pid"
+# Otherwise CPython leaves a __pycache__ dir behind that isn't part of the
+# package's file list, so it survives `pkg delete` as an orphaned leftover.
+gowiththeflow_env="PYTHONDONTWRITEBYTECODE=1"
 load_rc_config $name
 
 : ${gowiththeflow_enable:=NO}
