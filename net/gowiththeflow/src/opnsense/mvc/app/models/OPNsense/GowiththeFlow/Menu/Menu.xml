@@ -1,0 +1,7 @@
+<menu>
+    <Reporting>
+        <GowiththeFlow VisibleName="Flow Monitor" cssClass="fa fa-exchange fa-fw">
+            <Live order="10" url="/ui/gowiththeflow/live"/>
+        </GowiththeFlow>
+    </Reporting>
+</menu>
