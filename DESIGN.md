@@ -258,27 +258,41 @@
      (`/var/lib/php/tmp/opnsense_menu_cache.xml` -- the same manual step
      every VM test needed, also never actually fixed in the package
      until now).
-  **Still unresolved as of this write-up**: even after the configd
-  restart, `configctl gowiththeflow start` reports `OK` but the daemon
-  never ends up running (no pidfile, no process, and critically no
-  output at all from `Daemonize.start()` -- confirmed by reading
-  `site-python/daemonize.py`'s source that its only pre-fork failure
-  paths are `print()`-and-`exit(1)` on pidfile create/lock failure,
-  neither of which should be silent). Running `gowiththeflowd.py`
-  directly in the foreground intermittently returned `exit_code=1` with
-  a completely empty output file, then `exit_code=0` (matching a
-  successful parent-side fork) on a later attempt with no code change --
-  actively being diagnosed on the real box; not yet understood. The test
-  VM has also been unreachable (network timeout) throughout this
-  diagnosis, blocking cross-checking against known-good VM behavior.
-  The `+MANIFEST` scripts fix above is written and committed but **not
-  yet rebuilt into a republished package** -- holding off until the
-  daemon-start issue is understood, so as not to publish an unverified
-  artifact.
+  3. **Root cause of the "OK but nothing ever runs" mystery, found and
+     fixed.** `db.connect()`'s very first line, `sqlite3.connect(db_path)`,
+     fails immediately if `/var/db/gowiththeflow` doesn't exist -- and
+     nothing in the install path ever created it. This was invisible on
+     the dev VM for the entire project because that directory has existed
+     there since early manual testing, before packaging even existed --
+     every test this project ever ran was against a box that already had
+     it. The exception happens inside `Daemonize`'s forked child, *after*
+     its fds are already redirected to `/dev/null`, so it's completely
+     silent: no pidfile, no process, no syslog entry (`Daemonize` only
+     logs its own "Starting daemon."/pidfile-failure messages via
+     syslog, and even the parent's own `sys.exit(0)` on a successful fork
+     tells you nothing about what the child does afterward -- confirmed
+     by reading `site-python/daemonize.py`'s source directly). Confirmed
+     by reproducing on the VM: `rm -rf`'d its long-standing
+     `/var/db/gowiththeflow`, got the exact same silent-failure symptom
+     the user hit, then confirmed the fix resolves it. Fixed with
+     `os.makedirs()` in `db.connect()` itself (guarded for the
+     `":memory:"` case the test suite uses, which has no dirname), plus a
+     regression test using a genuinely nonexistent nested path rather
+     than pytest's `tmp_path` (which is always already a real directory,
+     exactly the blind spot that let this ship in the first place).
+  Rebuilt and republished `os-gowiththeflow` 1.0.0 (same version number
+  -- the earlier 1.0.0 never actually worked on a fresh install, so no
+  reason to bump for a fix to something that never worked in the wild)
+  with all three fixes, verified against a fully clean install cycle on
+  the VM: no pre-existing data directory, no manual configd restart, no
+  manual menu-cache clear -- `pkg add` alone now gets a genuinely
+  working, running service.
 - **Not yet started**: the deferred History chart and staticOverrides
   grid editor, proper repo signing before this pkg-repo is relied on for
-  anything that matters, the rest of Phase D (staged rollout once the
-  daemon actually starts reliably on real hardware).
+  anything that matters, actually finishing Phase D on the real home box
+  now that the daemon starts reliably (core-up-to-date check, the
+  rctl/reboot conversation, `mkdir -p /var/db/gowiththeflow` or a
+  reinstall from the fixed package).
 - **Distribution repos**: both GitHub repos created and pushed —
   `github.com/tobydoig/opnsense-gowiththeflow` (private, source, this repo)
   and `github.com/tobydoig/gowiththeflow-pkg-repo` (public, placeholder
