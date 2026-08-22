@@ -11,6 +11,7 @@ only exercised end-to-end in Phase B, per the project plan.
 
 from __future__ import annotations
 
+import json
 import queue
 import subprocess
 import threading
@@ -48,6 +49,33 @@ class Config:
     raw_retention_days: int = 10
     rollup_hourly_retention_days: int = 45
     rollup_daily_retention_days: int = 730
+
+    @classmethod
+    def load(cls, path: str) -> "Config":
+        """Load settings rendered by the Settings model's Jinja config
+        template (service/templates/OPNsense/GoWithTheFlow/config.json),
+        written to disk on every ServiceController::reconfigureAction()
+        call. Falls back to all-defaults (equivalent to a disabled plugin)
+        if reconfigure has never run yet, e.g. right after a fresh install.
+        """
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            return cls()
+
+        return cls(
+            capture_interfaces=data.get("capture_interfaces", []),
+            local_subnets=data.get("local_subnets", []),
+            extra_tls_ports=data.get("extra_tls_ports", []),
+            static_overrides=[tuple(row) for row in data.get("static_overrides", [])],
+            enable_dns_sniffing=bool(data.get("enable_dns_sniffing", True)),
+            enable_sni_sniffing=bool(data.get("enable_sni_sniffing", True)),
+            enable_ptr_fallback=bool(data.get("enable_ptr_fallback", True)),
+            raw_retention_days=int(data.get("raw_retention_days", 10)),
+            rollup_hourly_retention_days=int(data.get("rollup_hourly_retention_days", 45)),
+            rollup_daily_retention_days=int(data.get("rollup_daily_retention_days", 730)),
+        )
 
 
 def run(config: Config) -> None:
@@ -165,6 +193,6 @@ if __name__ == "__main__":
     sys.path.insert(0, "/usr/local/opnsense/site-python")
     from daemonize import Daemonize
 
-    _config = Config()
+    _config = Config.load("/var/etc/gowiththeflow.json")
     _daemon = Daemonize(app="gowiththeflow", pid="/var/run/gowiththeflow.pid", action=lambda: run(_config))
     _daemon.start()

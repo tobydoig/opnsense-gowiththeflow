@@ -81,6 +81,41 @@
   still worked) were all completely unaffected — concrete proof of the
   "monitoring stops, internet doesn't" design claim, not just an
   assumption.
+- **Phase B7 — complete.** End-to-end functional test on the real VM,
+  prompted by the discovery that enabling the service via the Settings
+  GUI had no effect at all. Found and fixed three real, previously
+  unnoticed wiring bugs, all now fixed and verified with real captured
+  traffic (github.com session: SNI-resolved hostname, 91s duration,
+  9,060 bytes out / 612,404 bytes in, correctly closed out of
+  `live_sessions` into `connections_raw`):
+  1. `gowiththeflowd.py`'s `__main__` built `Config()` from bare
+     dataclass defaults and never read the Settings model at all --
+     enabling the service in the GUI changed nothing about how the
+     daemon actually ran. Fixed by adding a real config-generation path:
+     a Jinja template (`service/templates/OPNsense/GoWithTheFlow/config.json`,
+     wired via `ServiceController::$internalServiceTemplate`, the same
+     mechanism `os-dnsmasq`/`os-netflow` use) renders the model to
+     `/var/etc/gowiththeflow.json` on every reconfigure, and
+     `Config.load()` reads it at daemon startup. This also fixed a
+     latent second bug the same template exposed: `captureInterfaces`
+     stores logical names (`lan`, `wan`), but scapy's `sniff()` needs
+     physical device names (`le0`, `le1`) -- solved with the same
+     `helpers.physical_interfaces()` Jinja helper `os-dnsmasq` uses.
+  2. `PfStatePoller`/`classify_local_remote()` discards every pf state
+     where local_subnets is empty (neither side matches any configured
+     subnet) -- so an unset `localSubnets` (optional field, easy to
+     leave blank while testing other settings) silently drops 100% of
+     traffic with no error anywhere. Not code-fixed (this is arguably
+     correct behavior for an unset required-in-practice field); worth
+     a follow-up UX improvement (validation warning or a sane subnet
+     auto-detect default) before Phase D.
+  3. `DbApiControllerBase::DB_PATH` and `SettingsController::DB_PATH`
+     (two independent copies) were still hardcoded to
+     `/tmp/test_flows.db` from early Phase B testing, while the real
+     daemon has always written to `/var/db/gowiththeflow/flows.db` --
+     so the Live/History/TopTalkers grids and the housekeeping buttons
+     were reading/clearing a file the daemon never touches. Both fixed
+     to the real path.
 - **Not yet started**: the deferred History chart and staticOverrides
   grid editor, the rest of Phase C (port build, package, repo catalog, VM
   install test), Phase D (production rollout).

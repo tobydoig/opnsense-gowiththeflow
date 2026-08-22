@@ -6,9 +6,9 @@ use OPNsense\Base\ApiControllerBase;
 
 abstract class DbApiControllerBase extends ApiControllerBase
 {
-    // TODO(Phase B5): move to the Settings model once it exists.
-    // Production path will be /var/db/gowiththeflow/flows.db.
-    protected const DB_PATH = '/tmp/test_flows.db';
+    // Matches gowiththeflowd.py's Config.db_path default -- not a
+    // user-configurable setting, just the fixed on-disk convention.
+    protected const DB_PATH = '/var/db/gowiththeflow/flows.db';
 
     // Matches rollup.py's default RollupHourlyRetentionDays -- hourly
     // buckets aren't kept past this, so anything asking for a longer

@@ -9,9 +9,9 @@ class SettingsController extends ApiMutableModelControllerBase
     protected static $internalModelName = 'gowiththeflow';
     protected static $internalModelClass = '\OPNsense\GoWithTheFlow\GoWithTheFlow';
 
-    // TODO(Phase C): move to the Settings model once it exists as a
-    // configurable path. Production path will be /var/db/gowiththeflow/flows.db.
-    private const DB_PATH = '/tmp/test_flows.db';
+    // Matches gowiththeflowd.py's Config.db_path default -- not a
+    // user-configurable setting, just the fixed on-disk convention.
+    private const DB_PATH = '/var/db/gowiththeflow/flows.db';
 
     public function clearDataAction()
     {
