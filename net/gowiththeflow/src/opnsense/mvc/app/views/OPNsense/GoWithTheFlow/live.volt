@@ -13,6 +13,9 @@
                     },
                     "durationformatter": function (column, row) {
                         return formatDurationGWTF(row[column.id]);
+                    },
+                    "timestampformatter": function (column, row) {
+                        return formatTimestampGWTF(row[column.id]);
                     }
                 }
             }
@@ -81,6 +84,13 @@
         return value.toFixed(i === 0 ? 0 : 1) + " " + units[i];
     }
 
+    function formatTimestampGWTF(unixSeconds) {
+        if (unixSeconds === undefined || unixSeconds === null) {
+            return "";
+        }
+        return new Date(unixSeconds * 1000).toLocaleString();
+    }
+
     function formatDurationGWTF(seconds) {
         if (seconds === undefined || seconds === null) {
             return "";
@@ -120,6 +130,7 @@
                 <th data-column-id="bytes_in" data-type="numeric" data-formatter="bytesformatter">{{ lang._('Bytes In') }}</th>
                 <th data-column-id="bytes_out" data-type="numeric" data-formatter="bytesformatter">{{ lang._('Bytes Out') }}</th>
                 <th data-column-id="duration" data-type="numeric" data-formatter="durationformatter">{{ lang._('Duration') }}</th>
+                <th data-column-id="last_seen" data-type="numeric" data-formatter="timestampformatter" data-sort="desc">{{ lang._('Last Seen') }}</th>
             </tr>
         </thead>
         <tbody>
