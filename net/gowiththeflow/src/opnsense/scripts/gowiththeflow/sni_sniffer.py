@@ -168,14 +168,42 @@ class ClientHelloReassembler:
         return None
 
 
+def _tcp_payload_bytes(ip, tcp) -> bytes:
+    """Extracts exactly the real TCP payload bytes, using IP's own total
+    length field to bound it -- rather than trusting scapy's automatic
+    layer-boundary guess for "whatever comes after TCP".
+
+    Real bug caught on the OPNsense 26.7 test VM: a bare ACK segment (no
+    real payload) was Ethernet-padded to the minimum frame size, and
+    scapy dissected that padding into its own `Padding` layer -- which
+    naive code (`bytes(tcp.payload)`) picks up anyway, since `.payload`
+    just means "whatever the next layer is". That silently fed a handful
+    of zero bytes into the ClientHello reassembler ahead of the real
+    ClientHello, corrupting every subsequent byte offset for that flow."""
+    ip_total_len = ip.len - ip.ihl * 4
+    tcp_header_len = tcp.dataofs * 4
+    tcp_data_len = max(ip_total_len - tcp_header_len, 0)
+    raw_tcp = bytes(tcp)
+    return raw_tcp[tcp_header_len:tcp_header_len + tcp_data_len]
+
+
 def sniff_loop(interfaces: list[str], on_hint, extra_ports: list[int] | None = None) -> None:
     """Live capture entrypoint, wired up by gowiththeflowd.py: reassembles
     per-flow TLS ClientHello bytes and calls on_hint(local_ip, local_port,
     remote_ip, remote_port, hostname) whenever SNI is found. Not exercised
-    by Stage A5's unit tests -- proven against real traffic in Phase B."""
+    by Stage A5's unit tests -- proven against real traffic in Phase B.
+
+    Confirmed on the OPNsense 26.7 test VM: scapy's sniff() can fail to
+    auto-guess the capture datalink type depending on which scapy
+    submodules happened to be imported first elsewhere in the process
+    (observed: silently falls back to an undissected Raw packet, with a
+    console warning, no exception) -- so this always explicitly re-parses
+    the raw bytes as Ethernet itself rather than trusting sniff()'s own
+    dissection to have succeeded."""
     import time
 
     from scapy.layers.inet import IP, TCP
+    from scapy.layers.l2 import Ether
     from scapy.sendrecv import sniff
 
     ports = [443] + list(extra_ports or [])
@@ -183,11 +211,15 @@ def sniff_loop(interfaces: list[str], on_hint, extra_ports: list[int] | None = N
     reassembler = ClientHelloReassembler()
 
     def _handle(pkt) -> None:
-        if IP not in pkt or TCP not in pkt or not bytes(pkt[TCP].payload):
+        eth = Ether(bytes(pkt))
+        if IP not in eth or TCP not in eth:
             return
-        key = (pkt[IP].src, pkt[TCP].sport, pkt[IP].dst, pkt[TCP].dport)
-        hostname = reassembler.feed(key, bytes(pkt[TCP].payload))
+        payload = _tcp_payload_bytes(eth[IP], eth[TCP])
+        if not payload:
+            return
+        key = (eth[IP].src, eth[TCP].sport, eth[IP].dst, eth[TCP].dport)
+        hostname = reassembler.feed(key, payload)
         if hostname is not None:
-            on_hint(pkt[IP].src, pkt[TCP].sport, pkt[IP].dst, pkt[TCP].dport, hostname, int(time.time()))
+            on_hint(eth[IP].src, eth[TCP].sport, eth[IP].dst, eth[TCP].dport, hostname, int(time.time()))
 
     sniff(iface=interfaces, filter=bpf_filter, prn=_handle, store=False)

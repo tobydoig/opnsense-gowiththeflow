@@ -73,13 +73,23 @@ def extract_observations(packet: Packet, seen_at: int) -> list[HostnameObservati
 def sniff_loop(interfaces: list[str], on_observation, bpf_filter: str = "udp port 53 or tcp port 53") -> None:
     """Live capture entrypoint, wired up by gowiththeflowd.py. Not
     exercised by Stage A4's unit tests -- proven against real traffic in
-    Phase B, once an actual OPNsense VM is involved."""
+    Phase B, once an actual OPNsense VM is involved.
+
+    Confirmed on the OPNsense 26.7 test VM: scapy's sniff() can fail to
+    auto-guess the capture datalink type depending on which scapy
+    submodules happened to be imported first elsewhere in the process
+    (observed: silently falls back to an undissected Raw packet, with a
+    console warning, no exception) -- so this always explicitly re-parses
+    the raw bytes as Ethernet itself rather than trusting sniff()'s own
+    dissection to have succeeded."""
     import time
 
+    from scapy.layers.l2 import Ether
     from scapy.sendrecv import sniff
 
     def _handle(pkt: Packet) -> None:
-        for obs in extract_observations(pkt, int(time.time())):
+        eth = Ether(bytes(pkt))
+        for obs in extract_observations(eth, int(time.time())):
             on_observation(obs)
 
     sniff(iface=interfaces, filter=bpf_filter, prn=_handle, store=False)
