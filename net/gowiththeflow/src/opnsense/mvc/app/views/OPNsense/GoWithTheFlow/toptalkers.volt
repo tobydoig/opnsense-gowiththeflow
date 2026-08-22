@@ -69,6 +69,21 @@
         addCsvExportButtonGWTF('grid-toptalkers-local', 'gowiththeflow-toptalkers-local.csv');
         addCsvExportButtonGWTF('grid-toptalkers-remote', 'gowiththeflow-toptalkers-remote.csv');
 
+        // The `data-sort="desc"` header attributes below aren't actually
+        // read anywhere in opnsense_bootgrid.js -- only `data-sorter` is
+        // (which picks a sort *function*, not a direction), so despite
+        // looking configured, Total has never actually defaulted to
+        // descending. The real mechanism is Tabulator's own setSort(),
+        // called once each table is actually built.
+        let localTable = $("#grid-toptalkers-local").data('UIBootgrid').getTable();
+        localTable.on("tableBuilt", function () {
+            localTable.setSort("bytes_total", "desc");
+        });
+        let remoteTable = $("#grid-toptalkers-remote").data('UIBootgrid').getTable();
+        remoteTable.on("tableBuilt", function () {
+            remoteTable.setSort("bytes_total", "desc");
+        });
+
         $("#days-selection-wrapper").detach().insertAfter('#grid-toptalkers-local-header .search');
         $("#local-host-selection-wrapper").detach().insertAfter('#grid-toptalkers-remote-header .search');
     });
@@ -126,7 +141,7 @@
                     <th data-column-id="conn_count" data-type="numeric" data-width="8em">{{ lang._('Connections') }}</th>
                     <th data-column-id="bytes_in" data-type="numeric" data-formatter="bytesformatter">{{ lang._('Bytes In') }}</th>
                     <th data-column-id="bytes_out" data-type="numeric" data-formatter="bytesformatter">{{ lang._('Bytes Out') }}</th>
-                    <th data-column-id="bytes_total" data-type="numeric" data-formatter="bytesformatter" data-sort="desc">{{ lang._('Total') }}</th>
+                    <th data-column-id="bytes_total" data-type="numeric" data-formatter="bytesformatter">{{ lang._('Total') }}</th>
                 </tr>
             </thead>
             <tbody>
@@ -146,7 +161,7 @@
                     <th data-column-id="conn_count" data-type="numeric" data-width="8em">{{ lang._('Connections') }}</th>
                     <th data-column-id="bytes_in" data-type="numeric" data-formatter="bytesformatter">{{ lang._('Bytes In') }}</th>
                     <th data-column-id="bytes_out" data-type="numeric" data-formatter="bytesformatter">{{ lang._('Bytes Out') }}</th>
-                    <th data-column-id="bytes_total" data-type="numeric" data-formatter="bytesformatter" data-sort="desc">{{ lang._('Total') }}</th>
+                    <th data-column-id="bytes_total" data-type="numeric" data-formatter="bytesformatter">{{ lang._('Total') }}</th>
                 </tr>
             </thead>
             <tbody>

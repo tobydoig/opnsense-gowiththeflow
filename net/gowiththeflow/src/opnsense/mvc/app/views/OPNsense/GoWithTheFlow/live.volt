@@ -22,6 +22,17 @@
         });
         addCsvExportButtonGWTF('grid-live', 'gowiththeflow-live.csv');
 
+        // The `data-sort="desc"` header attribute (also used, equally
+        // ineffectively, on Top Talkers' bytes_total column) isn't actually
+        // read anywhere in opnsense_bootgrid.js -- only `data-sorter` is
+        // (which picks a sort *function*, not a direction). The real
+        // mechanism is Tabulator's own setSort(), called once the table
+        // is actually built so it doesn't race the wrapper's own init.
+        let liveTable = $("#grid-live").data('UIBootgrid').getTable();
+        liveTable.on("tableBuilt", function () {
+            liveTable.setSort("last_seen", "desc");
+        });
+
         // Same convention as Reporting > Traffic's interval dropdown:
         // same option values/labels, localStorage-persisted, self-rescheduling
         // poller so a mid-flight change takes effect on the next tick without
@@ -41,7 +52,11 @@
         });
 
         (function livePoller() {
-            let interval = parseInt($("#interval").val(), 10) || 2000;
+            // NOT `|| 2000` -- 0 ("Don't refresh") is falsy in JS, so that
+            // would silently fall back to the default and never actually
+            // stop refreshing.
+            let parsed = parseInt($("#interval").val(), 10);
+            let interval = Number.isNaN(parsed) ? 2000 : parsed;
             if (interval <= 0) {
                 // "Don't refresh" -- do nothing, but keep checking in case
                 // the user changes the dropdown again later.
@@ -130,7 +145,7 @@
                 <th data-column-id="bytes_in" data-type="numeric" data-formatter="bytesformatter">{{ lang._('Bytes In') }}</th>
                 <th data-column-id="bytes_out" data-type="numeric" data-formatter="bytesformatter">{{ lang._('Bytes Out') }}</th>
                 <th data-column-id="duration" data-type="numeric" data-formatter="durationformatter">{{ lang._('Duration') }}</th>
-                <th data-column-id="last_seen" data-type="numeric" data-formatter="timestampformatter" data-sort="desc">{{ lang._('Last Seen') }}</th>
+                <th data-column-id="last_seen" data-type="numeric" data-formatter="timestampformatter">{{ lang._('Last Seen') }}</th>
             </tr>
         </thead>
         <tbody>
