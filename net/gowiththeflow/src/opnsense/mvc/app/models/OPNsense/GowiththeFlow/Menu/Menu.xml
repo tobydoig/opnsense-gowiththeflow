@@ -4,7 +4,11 @@
             <Live order="10" url="/ui/gowiththeflow/live"/>
             <History order="20" url="/ui/gowiththeflow/history"/>
             <TopTalkers VisibleName="Top Talkers" order="30" url="/ui/gowiththeflow/toptalkers"/>
-            <Settings order="40" url="/ui/gowiththeflow/settings"/>
         </GowiththeFlow>
     </Reporting>
+    <Services>
+        <GowiththeFlow VisibleName="Flow Monitor" cssClass="fa fa-exchange fa-fw">
+            <Settings order="10" url="/ui/gowiththeflow/settings"/>
+        </GowiththeFlow>
+    </Services>
 </menu>
