@@ -178,11 +178,44 @@
   `pkg-plist`, `version.json.tmpl`, `build-pkg.sh`); `build-pkg.sh` must
   run on a FreeBSD/OPNsense box with `pkg(8)` (pkg create doesn't
   cross-build).
+- **Phase C (repo catalog + fetch-based install) — complete on the VM.**
+  `pkg repo <dir>` generates a real catalog (`packagesite.pkg`,
+  `meta.conf`, `data.pkg`) from the built `.pkg`; served over plain HTTP
+  via `python3 -m http.server` on the VM standing in for what
+  `gowiththeflow-pkg-repo` + GitHub Pages will serve for real, registered
+  as a custom repo (`signature_type: "none"` -- fine for now, revisit
+  before this repo is public) via
+  `/usr/local/etc/pkg/repos/gowiththeflow.conf`. Full real lifecycle
+  verified through `pkg update` / `pkg install` / `pkg upgrade` (a
+  genuine 1.0.0 -> 1.0.1 test bump) / `pkg remove`, all fetching from the
+  repo catalog rather than a local file, plus the actual
+  `firmware/remove.sh` script (confirms `register.php remove` correctly
+  clears `system.firmware.plugins` in config.xml). The upgrade path
+  specifically confirmed pkg's documented script ordering (new
+  pre-install -> **old** pre-deinstall -> replace -> new post-install) --
+  our `pre-deinstall` hook fired and stopped the old daemon correctly
+  before files got replaced.
+  One real, non-gowiththeflow-specific finding: `firmware/install.sh`
+  refuses to install **any** plugin unless the box's own core package is
+  fully up to date against the configured repo ("Installation out of
+  date. The update to opnsense-26.7.2_2 is required.") -- this test VM's
+  core isn't current against the real `pkg.opnsense.org` repo, so
+  `install.sh` itself was not exercised end-to-end (its underlying `pkg
+  install` + `register.php install` calls were, directly, and are the
+  actual mechanism being tested). **This means the real home box will
+  need to be fully up to date on core before this plugin can be
+  installed there** -- standard OPNsense practice for any plugin, not an
+  extra requirement this project introduces, but worth checking before
+  Phase D.
+  Test-only infrastructure (the local http.server, the `gowiththeflow`
+  repo conf, the 1.0.1 test bump) was torn down afterward; the VM was
+  left with `os-gowiththeflow` actually installed (v1.0.1) and running,
+  registered the same way a real Firmware-GUI install would leave it.
 - **Not yet started**: the deferred History chart and staticOverrides
-  grid editor, publishing a built package + repo catalog to
-  `gowiththeflow-pkg-repo` and testing the `fetch` bootstrap + Firmware
-  GUI install path (vs. today's manual `pkg add`/`pkg remove`), Phase D
-  (production rollout on the real home box).
+  grid editor, actually publishing to `gowiththeflow-pkg-repo` +
+  GitHub Pages (today's repo test used a throwaway local HTTP server),
+  proper repo signing before it's public, Phase D (production rollout on
+  the real home box).
 - **Distribution repos**: both GitHub repos created and pushed —
   `github.com/tobydoig/opnsense-gowiththeflow` (private, source, this repo)
   and `github.com/tobydoig/gowiththeflow-pkg-repo` (public, placeholder
