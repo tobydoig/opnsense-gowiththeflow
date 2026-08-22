@@ -139,6 +139,7 @@
                     <th data-column-id="row_id" data-identifier="true" data-visible="false">id</th>
                     <th data-column-id="local" data-type="string">{{ lang._('Local Host') }}</th>
                     <th data-column-id="conn_count" data-type="numeric" data-width="8em">{{ lang._('Connections') }}</th>
+                    <th data-column-id="unique_remote_hosts" data-type="numeric" data-width="8em">{{ lang._('Unique Remote Hosts') }}</th>
                     <th data-column-id="bytes_in" data-type="numeric" data-formatter="bytesformatter">{{ lang._('Bytes In') }}</th>
                     <th data-column-id="bytes_out" data-type="numeric" data-formatter="bytesformatter">{{ lang._('Bytes Out') }}</th>
                     <th data-column-id="bytes_total" data-type="numeric" data-formatter="bytesformatter">{{ lang._('Total') }}</th>
@@ -159,6 +160,7 @@
                     <th data-column-id="row_id" data-identifier="true" data-visible="false">id</th>
                     <th data-column-id="remote" data-type="string">{{ lang._('Remote Host') }}</th>
                     <th data-column-id="conn_count" data-type="numeric" data-width="8em">{{ lang._('Connections') }}</th>
+                    <th data-column-id="unique_local_hosts" data-type="numeric" data-width="8em">{{ lang._('Unique Local Hosts') }}</th>
                     <th data-column-id="bytes_in" data-type="numeric" data-formatter="bytesformatter">{{ lang._('Bytes In') }}</th>
                     <th data-column-id="bytes_out" data-type="numeric" data-formatter="bytesformatter">{{ lang._('Bytes Out') }}</th>
                     <th data-column-id="bytes_total" data-type="numeric" data-formatter="bytesformatter">{{ lang._('Total') }}</th>

@@ -18,7 +18,8 @@ class ToptalkersController extends DbApiControllerBase
                   r.local_ip,
                   lhi.hostname AS local_hostname,
                   SUM(r.bytes_in) AS bytes_in, SUM(r.bytes_out) AS bytes_out,
-                  SUM(r.conn_count) AS conn_count
+                  SUM(r.conn_count) AS conn_count,
+                  COUNT(DISTINCT r.remote_ip) AS unique_remote_hosts
                 FROM $table r
                 LEFT JOIN local_host_identity lhi ON lhi.ip = r.local_ip
                 WHERE r.bucket_start >= :cutoff
@@ -57,7 +58,8 @@ class ToptalkersController extends DbApiControllerBase
                      AND r2.bucket_start >= :cutoff AND r2.remote_hostname IS NOT NULL
                    ORDER BY r2.bucket_start DESC LIMIT 1) AS remote_hostname,
                   SUM(r.bytes_in) AS bytes_in, SUM(r.bytes_out) AS bytes_out,
-                  SUM(r.conn_count) AS conn_count
+                  SUM(r.conn_count) AS conn_count,
+                  COUNT(DISTINCT r.local_ip) AS unique_local_hosts
                 FROM $table r
                 WHERE r.bucket_start >= :cutoff
             ";
