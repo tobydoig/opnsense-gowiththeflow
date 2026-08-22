@@ -4,7 +4,7 @@
   "origin": "net/os-gowiththeflow",
   "comment": "Per-host connection and bandwidth tracking with hostname resolution",
   "desc": "Go With The Flow tracks, per local host, which remote hosts it talks to and how many bytes in/out, both live and historically. Remote hostnames are resolved via passive DNS and TLS SNI observation rather than raw IPs alone.",
-  "maintainer": "toby@multilocal.media",
+  "maintainer": "https://github.com/tobydoig",
   "www": "https://github.com/tobydoig/opnsense-gowiththeflow",
   "prefix": "/",
   "categories": ["net"],
@@ -17,6 +17,7 @@
     }
   },
   "scripts": {
+    "post-install": "#!/bin/sh\nservice configd restart 2>/dev/null || true\nrm -f /var/lib/php/tmp/opnsense_menu_cache.xml\n",
     "pre-deinstall": "#!/bin/sh\n/usr/local/etc/rc.d/gowiththeflow onestop 2>/dev/null || true\n"
   }
 }

@@ -211,11 +211,74 @@
   repo conf, the 1.0.1 test bump) was torn down afterward; the VM was
   left with `os-gowiththeflow` actually installed (v1.0.1) and running,
   registered the same way a real Firmware-GUI install would leave it.
+- **`gowiththeflow-pkg-repo` is now actually live on GitHub Pages**
+  (served via a pre-existing custom domain on the account's user-pages
+  site, `tobyandzuzka.com` -- `tobydoig.github.io` URLs 301-redirect
+  there; documented in that repo's README). A real `os-gowiththeflow
+  1.0.0` build (rebuilt clean from exactly what's committed, not the
+  1.0.1 test-upgrade artifact) plus its catalog were pushed and verified
+  reachable. Added a downloadable `gowiththeflow.conf` so setup on a
+  real box is one `curl` into `/usr/local/etc/pkg/repos/`, then the rest
+  through Firmware > Plugins -- verified this exact one-liner against
+  the live URL on the test VM before handing it to the user.
+- **Phase D has effectively started** (ahead of the original plan --
+  the user ran the one-liner + installed on their real home box, nostromo,
+  before the planned core-up-to-date check or the rctl/reboot
+  conversation happened). Two more real, install-only bugs found from
+  that real box that never surfaced on the VM (the VM's own repeated
+  reboots across earlier phases incidentally masked both):
+  1. **`localSubnets`'s form field was fundamentally the wrong type.**
+     `type="NetworkField"` + `<AsList>Y</AsList>` makes
+     `BaseSetField::getNodeData()` return list-shaped data (`{value:
+     {value, selected}}`, the shape a `select_multiple` checkbox-style
+     widget expects) but the form field was declared as plain
+     `<type>text</type>` -- so after a save, reloading Settings showed
+     the field blank (list-shaped data fed into a plain text input).
+     Fixed by changing the form field to
+     `type="select_multiple"` + `style="tokenize"` +
+     `allownew="true"` (confirmed via `os-dnsmasq`'s working
+     `captureInterfaces` field using the same pairing, and via OPNsense
+     core's `form_input_tr.volt` template source). Checked directly on
+     the real box's rendered `/var/etc/gowiththeflow.json` that the
+     *daemon's own config* was actually correct throughout
+     (`local_subnets` correctly split out) -- so this was a real bug,
+     but display-only, not what was keeping Reporting empty.
+  2. **`configd` doesn't pick up a newly-installed plugin's
+     `actions.d/*.conf` until it's restarted** -- it only scans that
+     directory at its own startup. `firmware/install.sh` doesn't restart
+     it, and neither did our package (no post-install step existed).
+     On the VM this never surfaced because a reboot (for B6's kill test,
+     then B8's `kern.racct.enable` change) always happened between
+     install and first status-check, coincidentally restarting configd
+     too. On the real box, `configctl gowiththeflow status` returned
+     "Action not allowed or missing" until `service configd restart`
+     was run manually. Fixed with a `post-install` script (added
+     alongside the existing `pre-deinstall` one) that runs
+     `service configd restart` and clears the menu cache
+     (`/var/lib/php/tmp/opnsense_menu_cache.xml` -- the same manual step
+     every VM test needed, also never actually fixed in the package
+     until now).
+  **Still unresolved as of this write-up**: even after the configd
+  restart, `configctl gowiththeflow start` reports `OK` but the daemon
+  never ends up running (no pidfile, no process, and critically no
+  output at all from `Daemonize.start()` -- confirmed by reading
+  `site-python/daemonize.py`'s source that its only pre-fork failure
+  paths are `print()`-and-`exit(1)` on pidfile create/lock failure,
+  neither of which should be silent). Running `gowiththeflowd.py`
+  directly in the foreground intermittently returned `exit_code=1` with
+  a completely empty output file, then `exit_code=0` (matching a
+  successful parent-side fork) on a later attempt with no code change --
+  actively being diagnosed on the real box; not yet understood. The test
+  VM has also been unreachable (network timeout) throughout this
+  diagnosis, blocking cross-checking against known-good VM behavior.
+  The `+MANIFEST` scripts fix above is written and committed but **not
+  yet rebuilt into a republished package** -- holding off until the
+  daemon-start issue is understood, so as not to publish an unverified
+  artifact.
 - **Not yet started**: the deferred History chart and staticOverrides
-  grid editor, actually publishing to `gowiththeflow-pkg-repo` +
-  GitHub Pages (today's repo test used a throwaway local HTTP server),
-  proper repo signing before it's public, Phase D (production rollout on
-  the real home box).
+  grid editor, proper repo signing before this pkg-repo is relied on for
+  anything that matters, the rest of Phase D (staged rollout once the
+  daemon actually starts reliably on real hardware).
 - **Distribution repos**: both GitHub repos created and pushed —
   `github.com/tobydoig/opnsense-gowiththeflow` (private, source, this repo)
   and `github.com/tobydoig/gowiththeflow-pkg-repo` (public, placeholder

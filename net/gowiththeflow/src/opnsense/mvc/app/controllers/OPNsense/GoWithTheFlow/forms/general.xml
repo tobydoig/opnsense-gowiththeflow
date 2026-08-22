@@ -18,8 +18,10 @@
     <field>
         <id>gowiththeflow.general.localSubnets</id>
         <label>Local subnets</label>
-        <type>text</type>
-        <help>CIDR ranges (comma-separated) that count as "local" for connection tracking. Pre-populate this from your LAN interface subnets; add VPN tunnel subnets here too if you want VPN clients tracked as local hosts.</help>
+        <type>select_multiple</type>
+        <style>tokenize</style>
+        <allownew>true</allownew>
+        <help>CIDR ranges that count as "local" for connection tracking. Auto-derived from your selected capture interfaces' own subnets if left empty; add VPN tunnel subnets here too if you want VPN clients tracked as local hosts.</help>
     </field>
     <field>
         <id>gowiththeflow.general.rawRetentionDays</id>
