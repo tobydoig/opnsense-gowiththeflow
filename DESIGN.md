@@ -298,12 +298,24 @@
   trigger), and confirmed: hitting Apply after the upgrade brought the
   daemon up and the Live grid started showing real traffic on the user's
   actual home network.
+- **Phase D core-check and rctl caps — done on the real box.** Core
+  confirmed current (26.7.2_2, matching what the VM needed to update to)
+  via System > Firmware > Status before any of this started. Added
+  `kern.racct.enable="1"` via System > Settings > Tunables (the GUI path
+  this time, not the model-script trick used on the VM) and rebooted;
+  confirmed afterward with `sysctl kern.racct.enable` (1) and
+  `rctl -h process:<pid>` showing both `pcpu:deny=10` and
+  `memoryuse:deny=256M` actually applied against the real daemon's pid
+  on nostromo. This closes out the "wire up rctl before going live"
+  requirement from the start of Phase C -- the plugin is now running on
+  real production hardware, resolving real hostnames for real traffic,
+  under enforced resource caps.
 - **Not yet started**: the deferred History chart and staticOverrides
   grid editor, proper repo signing before this pkg-repo is relied on for
-  anything that matters, the rest of Phase D on the real home box (the
-  core-up-to-date check was never actually done before installing, and
-  the rctl/reboot conversation is still outstanding -- caps aren't
-  active yet on nostromo).
+  anything that matters, adding QUIC/HTTP-3 SNI-equivalent parsing (a
+  real, known gap -- flagged when the user noticed a lot of unresolved
+  port-443 remote hosts; likely also ECH and DoH, which are inherent
+  limits of passive DNS+SNI sniffing rather than something fixable here).
 - **Distribution repos**: both GitHub repos created and pushed —
   `github.com/tobydoig/opnsense-gowiththeflow` (private, source, this repo)
   and `github.com/tobydoig/gowiththeflow-pkg-repo` (public, placeholder
