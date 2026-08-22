@@ -92,6 +92,7 @@
                 <th data-column-id="local" data-type="string">{{ lang._('Local Host') }}</th>
                 <th data-column-id="remote" data-type="string">{{ lang._('Remote Host') }}</th>
                 <th data-column-id="proto" data-type="string" data-width="6em">{{ lang._('Proto') }}</th>
+                <th data-column-id="local_port" data-type="numeric" data-width="7em">{{ lang._('Local Port') }}</th>
                 <th data-column-id="remote_port" data-type="numeric" data-width="6em">{{ lang._('Port') }}</th>
                 <th data-column-id="bytes_in" data-type="numeric" data-formatter="bytesformatter">{{ lang._('Bytes In') }}</th>
                 <th data-column-id="bytes_out" data-type="numeric" data-formatter="bytesformatter">{{ lang._('Bytes Out') }}</th>
