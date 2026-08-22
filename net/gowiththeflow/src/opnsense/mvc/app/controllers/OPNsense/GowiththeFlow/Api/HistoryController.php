@@ -4,17 +4,12 @@ namespace OPNsense\GowiththeFlow\Api;
 
 class HistoryController extends DbApiControllerBase
 {
-    // Matches rollup.py's default RollupHourlyRetentionDays -- hourly
-    // buckets aren't kept past this, so anything asking for a longer
-    // window must read the (coarser, longer-retained) daily rollup.
-    private const HOURLY_RETENTION_DAYS = 45;
-
     public function searchAction()
     {
         $days = max(1, (int)($this->request->getPost('days') ?: 7));
         $localHost = $this->request->getPost('local_host');
         $cutoff = time() - $days * 86400;
-        $table = $days <= self::HOURLY_RETENTION_DAYS ? 'rollup_hourly' : 'rollup_daily';
+        $table = $this->rollupTableForDays($days);
 
         $records = [];
         $localHosts = [];
