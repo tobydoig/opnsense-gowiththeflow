@@ -121,13 +121,22 @@ def write_identities(
 def refresh(conn: sqlite3.Connection, now: int) -> int:
     """Live entrypoint, wired up by gowiththeflowd.py on a 5-minute timer:
     runs `configctl dnsmasq list leases` and `arp -an`, merges, and writes.
-    Not exercised by Stage A6's unit tests -- proven in Phase B."""
+    Not exercised by Stage A6's unit tests -- proven in Phase B.
+
+    Uses absolute paths for both commands -- real bug caught running this
+    under rc.d on the OPNsense 26.7 test VM: the service's PATH doesn't
+    include /usr/local/sbin, so plain "configctl" raised FileNotFoundError
+    and killed the daemon's main thread (this call isn't inside a
+    try/except, unlike the sniffer threads)."""
     import subprocess
 
     leases_raw = subprocess.run(
-        ["configctl", "dnsmasq", "list", "leases"], capture_output=True, text=True, check=True
+        ["/usr/local/sbin/configctl", "dnsmasq", "list", "leases"],
+        capture_output=True, text=True, check=True,
     ).stdout
-    arp_raw = subprocess.run(["arp", "-an"], capture_output=True, text=True, check=True).stdout
+    arp_raw = subprocess.run(
+        ["/usr/sbin/arp", "-an"], capture_output=True, text=True, check=True
+    ).stdout
 
     merged = merge_identities(parse_leases_json(leases_raw), parse_arp_output(arp_raw))
     write_identities(conn, merged, now)

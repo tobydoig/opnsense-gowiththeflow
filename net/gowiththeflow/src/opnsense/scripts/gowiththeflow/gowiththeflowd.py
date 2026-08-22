@@ -1,3 +1,4 @@
+#!/usr/local/bin/python3
 """Daemon entrypoint: wires up all of Phase A's modules into a running
 process -- pf state polling, DNS/SNI sniffing, hostname resolution,
 rollup/retention, and local-host identity refresh.
@@ -61,13 +62,18 @@ def run(config: Config) -> None:
     dns_observations: queue.Queue = queue.Queue()
     sni_hints: queue.Queue = queue.Queue()
 
-    if config.enable_dns_sniffing:
+    # scapy's sniff() raises StopIteration given an empty interface list
+    # (real crash caught running this under rc.d with no interfaces
+    # configured yet -- a legitimate state right after a fresh install,
+    # before Settings has ever been saved) -- so both sniffers additionally
+    # require at least one configured interface, not just their own toggle.
+    if config.enable_dns_sniffing and config.capture_interfaces:
         threading.Thread(
             target=dns_sniffer.sniff_loop,
             args=(config.capture_interfaces, dns_observations.put),
             daemon=True,
         ).start()
-    if config.enable_sni_sniffing:
+    if config.enable_sni_sniffing and config.capture_interfaces:
         threading.Thread(
             target=sni_sniffer.sniff_loop,
             args=(
@@ -96,8 +102,11 @@ def run(config: Config) -> None:
 
         flow_hints.purge_expired(now)
 
+        # Absolute path, not just "pfctl" -- rc.d's PATH is minimal (this
+        # is what caught localhost_identity.refresh()'s equivalent bug
+        # with "configctl"; fixed proactively here for the same reason).
         pfctl_output = subprocess.run(
-            ["pfctl", "-vvs", "state"], capture_output=True, text=True, check=True
+            ["/sbin/pfctl", "-vvs", "state"], capture_output=True, text=True, check=True
         ).stdout
         diff = poller.poll(pfctl_output)
         resolver = correlator.make_resolver(conn, static_overrides, flow_hints, now_i)
@@ -137,4 +146,25 @@ def run(config: Config) -> None:
 
 
 if __name__ == "__main__":
-    run(Config())
+    # Real bug caught running this under rc.d on the OPNsense 26.7 test
+    # VM: rc.subr's default "start" handling just does `eval "$command
+    # $args"` synchronously (see _run_rc_doit in /etc/rc.subr) -- it does
+    # NOT fork/detach the command itself, unlike what "command_interpreter"
+    # in the rc.d script might suggest (that variable is only used for
+    # status-checking via check_pidfile/check_process, not for launching).
+    # A script that never exits (this one loops forever) hangs the rc.d
+    # "start" action forever, and no pidfile ever gets written. The real
+    # os-netflow plugin's flowd_aggregate.py -- the closest cousin to this
+    # daemon -- solves this with OPNsense core's own bundled Daemonize
+    # helper (fork + setsid + fd redirection + pidfile writing), imported
+    # from /usr/local/opnsense/site-python -- which, confirmed on the real
+    # VM, is *not* on Python's default sys.path; every script that uses it
+    # inserts that directory itself first.
+    import sys
+
+    sys.path.insert(0, "/usr/local/opnsense/site-python")
+    from daemonize import Daemonize
+
+    _config = Config()
+    _daemon = Daemonize(app="gowiththeflow", pid="/var/run/gowiththeflow.pid", action=lambda: run(_config))
+    _daemon.start()
