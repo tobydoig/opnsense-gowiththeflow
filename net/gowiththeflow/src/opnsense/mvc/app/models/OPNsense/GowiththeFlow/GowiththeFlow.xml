@@ -1,0 +1,76 @@
+<model>
+    <mount>/GowiththeFlow</mount>
+    <description>GoWithTheFlow settings</description>
+    <version>1.0.0</version>
+    <items>
+        <general>
+            <enabled type="BooleanField">
+                <Default>0</Default>
+            </enabled>
+            <captureInterfaces type="InterfaceField">
+                <Multiple>Y</Multiple>
+            </captureInterfaces>
+            <localSubnets type="NetworkField">
+                <AsList>Y</AsList>
+                <Required>N</Required>
+            </localSubnets>
+            <rawRetentionDays type="IntegerField">
+                <MinimumValue>1</MinimumValue>
+                <MaximumValue>365</MaximumValue>
+                <Default>10</Default>
+                <Required>Y</Required>
+            </rawRetentionDays>
+            <rollupHourlyRetentionDays type="IntegerField">
+                <MinimumValue>1</MinimumValue>
+                <MaximumValue>3650</MaximumValue>
+                <Default>45</Default>
+                <Required>Y</Required>
+            </rollupHourlyRetentionDays>
+            <rollupDailyRetentionDays type="IntegerField">
+                <MinimumValue>1</MinimumValue>
+                <MaximumValue>36500</MaximumValue>
+                <Default>730</Default>
+                <Required>Y</Required>
+            </rollupDailyRetentionDays>
+            <cpuLimitPct type="IntegerField">
+                <MinimumValue>1</MinimumValue>
+                <MaximumValue>100</MaximumValue>
+                <Default>10</Default>
+                <Required>Y</Required>
+            </cpuLimitPct>
+            <memLimitMB type="IntegerField">
+                <MinimumValue>16</MinimumValue>
+                <MaximumValue>16384</MaximumValue>
+                <Default>256</Default>
+                <Required>Y</Required>
+            </memLimitMB>
+            <debugLogging type="BooleanField">
+                <Default>0</Default>
+            </debugLogging>
+        </general>
+        <hostname>
+            <enableDnsSniffing type="BooleanField">
+                <Default>1</Default>
+            </enableDnsSniffing>
+            <enableSniSniffing type="BooleanField">
+                <Default>1</Default>
+            </enableSniSniffing>
+            <enablePtrFallback type="BooleanField">
+                <Default>1</Default>
+            </enablePtrFallback>
+            <extraTlsPorts type="TextField">
+                <Required>N</Required>
+                <Mask>/^[0-9,\s]*$/</Mask>
+                <ValidationMessage>Please enter a comma-separated list of port numbers.</ValidationMessage>
+            </extraTlsPorts>
+        </hostname>
+        <staticOverrides type="ArrayField">
+            <cidr type="NetworkField">
+                <Required>Y</Required>
+            </cidr>
+            <hostname type="HostnameField">
+                <Required>Y</Required>
+            </hostname>
+        </staticOverrides>
+    </items>
+</model>
