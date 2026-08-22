@@ -115,6 +115,46 @@ def test_poller_reports_open_update_close_across_polls():
     assert opened.bytes_in == 800
 
 
+def test_parses_ipv6_bracket_port_notation():
+    # Real pfctl output uses "ip[port]" for IPv6 (the address itself
+    # contains colons), unlike IPv4's "ip:port" -- captured verbatim from
+    # the OPNsense 26.7 test VM.
+    text = (
+        "all udp fd17:625c:f037:3:a00:27ff:fe7e:ddbc[54731] -> "
+        "2001:503:231d::2:30[53]       SINGLE:NO_TRAFFIC\n"
+        "   age 00:00:53, expires in 00:00:07, 1:1 pkts, 91:139 bytes, "
+        "rule 89, allow-opts\n"
+    )
+    records = parse_pfctl_state_text(text)
+    assert len(records) == 1
+    rec = records[0]
+    assert rec["proto"] == "udp"
+    assert rec["src_ip"] == "fd17:625c:f037:3:a00:27ff:fe7e:ddbc"
+    assert rec["src_port"] == "54731"
+    assert rec["dst_ip"] == "2001:503:231d::2:30"
+    assert rec["dst_port"] == "53"
+    assert rec["bytes_a"] == "91"
+    assert rec["bytes_b"] == "139"
+
+
+def test_real_capture_admin_plane_traffic_to_opnsense_itself_is_skipped():
+    # Real capture: a LAN client (10.0.0.9) reaching OPNsense's own LAN IP
+    # (10.0.0.1) for SSH/HTTPS admin access or DNS -- both endpoints match
+    # the local subnet, so this must be excluded (it isn't a
+    # local-client-to-remote-destination flow to track at all).
+    text = (
+        "all tcp 10.0.0.1:443 <- 10.0.0.9:50843       ESTABLISHED:ESTABLISHED\n"
+        "   [2723053261 + 2102272] wscale 7  [3974263217 + 65792] wscale 8\n"
+        "   age 00:01:24, expires in 23:59:59, 809:1380 pkts, "
+        "45698:1647388 bytes, rule 87\n"
+        "   id: 7193896a00000000 creatorid: ea8fae34\n"
+        "   origif: le0\n"
+    )
+    records = parse_pfctl_state_text(text)
+    snapshots = classify_local_remote(records, ["10.0.0.0/24"])
+    assert snapshots == []
+
+
 def test_state_key_is_hashable_and_stable_across_equal_snapshots():
     key_a = StateKey("tcp", "192.168.1.50", 52341, "93.184.216.34", 443)
     key_b = StateKey("tcp", "192.168.1.50", 52341, "93.184.216.34", 443)

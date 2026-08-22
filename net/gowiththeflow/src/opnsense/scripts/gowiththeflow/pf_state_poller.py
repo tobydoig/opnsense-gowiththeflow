@@ -4,9 +4,28 @@ open/update/close events for connection tracking.
 pf reports two packet/byte counters per state, corresponding to traffic in
 the state's original (matching) direction and its reverse. For a
 LAN-initiated outbound state this is assumed to map directly to
-(local->remote, remote->local) -- this assumption gets confirmed against
-real pfctl output during Phase B VM testing (see the project plan); until
-then it is a documented assumption, not a silent guess.
+(local->remote, remote->local) -- confirmed against real pfctl output on
+an OPNsense 26.7 test VM during Phase B.
+
+The real output format (confirmed against that VM, and meaningfully
+different from this module's original Phase A assumptions) is:
+    <prefix-token> <proto> <src> <-|-> <dst>       <STATE>:<STATE>
+       [optional TCP-only window-scale detail line]
+       age HH:MM:SS, expires in HH:MM:SS, N:N pkts, N:N bytes, rule N[, ...]
+       id: ... creatorid: ...
+       origif: ...
+- <prefix-token> is a variable leading field (observed as literally "all"
+  on this VM; treated generically here since its exact value isn't
+  semantically used) that this module's original header regex didn't
+  expect at all.
+- <src>/<dst> are IPv4 as "ip:port" but IPv6 as "ip[port]" (brackets,
+  since the address itself contains colons).
+- The stats line is not always immediately after the header line (TCP
+  states have an extra window-scale line first), so this module scans all
+  lines belonging to a block rather than assuming a fixed offset.
+- "expires in" is HH:MM:SS, not a bare seconds count as originally
+  assumed; unused by this module either way, so the stats regex accepts
+  any non-space token there instead of a specific format.
 
 This class does not run `pfctl` itself -- callers feed in already-fetched
 text, which keeps it trivially testable without shelling out and lets the
@@ -20,19 +39,50 @@ import re
 from dataclasses import dataclass, field
 from typing import Iterable
 
-_STATE_HEADER_RE = re.compile(
-    r"^(?P<proto>\w+)\s+"
-    r"(?P<src_ip>[0-9a-fA-F:.]+):(?P<src_port>\d+)\s+"
-    r"(?P<arrow>->|<-)\s+"
-    r"(?P<dst_ip>[0-9a-fA-F:.]+):(?P<dst_port>\d+)\s+"
-    r"\S+$"
-)
-
 _STATE_STATS_RE = re.compile(
-    r"age\s+(?P<age>[\d:]+),\s+expires in\s+(?P<expires>\d+)s,\s+"
+    r"age\s+(?P<age>[\d:]+),\s+expires in\s+(?P<expires>\S+?),\s+"
     r"(?P<pkts_a>\d+):(?P<pkts_b>\d+)\s+pkts,\s+"
     r"(?P<bytes_a>\d+):(?P<bytes_b>\d+)\s+bytes,\s+rule\s+(?P<rule>\d+)"
 )
+
+
+def _split_addr_port(token: str) -> tuple[str, str] | tuple[None, None]:
+    """Splits 'ip:port' (IPv4) or 'ip[port]' (IPv6) into (ip, port)."""
+    if "[" in token and token.endswith("]"):
+        ip, _, port_str = token.rpartition("[")
+        port_str = port_str[:-1]
+    elif ":" in token:
+        ip, _, port_str = token.rpartition(":")
+    else:
+        return None, None
+    if not ip or not port_str.isdigit():
+        return None, None
+    return ip, port_str
+
+
+def _parse_header_line(line: str) -> dict | None:
+    """Locates proto/src/dst by anchoring on the '<-'/'->' arrow token,
+    rather than assuming a fixed number of leading fields -- robust to
+    whatever variable prefix token(s) pf puts before the protocol."""
+    tokens = line.split()
+    arrow_idx = None
+    for i, tok in enumerate(tokens):
+        if tok in ("<-", "->"):
+            arrow_idx = i
+            break
+    if arrow_idx is None or arrow_idx < 2 or arrow_idx + 1 >= len(tokens):
+        return None
+
+    proto = tokens[arrow_idx - 2]
+    src_ip, src_port = _split_addr_port(tokens[arrow_idx - 1])
+    dst_ip, dst_port = _split_addr_port(tokens[arrow_idx + 1])
+    if src_ip is None or dst_ip is None:
+        return None
+    return {
+        "proto": proto,
+        "src_ip": src_ip, "src_port": src_port,
+        "dst_ip": dst_ip, "dst_port": dst_port,
+    }
 
 
 @dataclass(frozen=True)
@@ -60,23 +110,32 @@ def _parse_age(age_str: str) -> int:
 
 
 def parse_pfctl_state_text(text: str) -> list[dict]:
-    """Parses raw `pfctl -vvs state` text into one dict per state block."""
+    """Parses raw `pfctl -vvs state` text into one dict per state block.
+    Groups each header line with every following line up to the next
+    header (or EOF), then searches that whole group for the stats line --
+    robust to extra detail lines (TCP's window-scale line, id/creatorid,
+    origif, route-to, ...) appearing in between, in any order."""
+    blocks: list[tuple[dict, list[str]]] = []
+    current: tuple[dict, list[str]] | None = None
+
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        header = _parse_header_line(line)
+        if header is not None:
+            current = (header, [])
+            blocks.append(current)
+        elif current is not None:
+            current[1].append(line)
+
     records = []
-    lines = text.splitlines()
-    i = 0
-    while i < len(lines):
-        header_match = _STATE_HEADER_RE.match(lines[i].strip())
-        if not header_match:
-            i += 1
-            continue
-        rec = header_match.groupdict()
-        if i + 1 < len(lines):
-            stats_match = _STATE_STATS_RE.search(lines[i + 1].strip())
+    for header, detail_lines in blocks:
+        rec = dict(header)
+        for line in detail_lines:
+            stats_match = _STATE_STATS_RE.search(line)
             if stats_match:
                 rec.update(stats_match.groupdict())
-                i += 1
+                break
         records.append(rec)
-        i += 1
     return records
 
 

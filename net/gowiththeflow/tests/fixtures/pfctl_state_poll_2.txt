@@ -1,7 +1,13 @@
+No ALTQ support in kernel
+ALTQ related functions disabled
 All states:
-tcp 192.168.1.50:52341 -> 93.184.216.34:443       ESTABLISHED:ESTABLISHED
-   age 00:00:17, expires in 86383s, 30:22 pkts, 25000:3100 bytes, rule 8
+all tcp 192.168.1.50:52341 -> 93.184.216.34:443       ESTABLISHED:ESTABLISHED
+   [1234567890 + 2100992] wscale 7  [987654321 + 65792] wscale 8
+   age 00:00:17, expires in 23:59:42, 30:22 pkts, 25000:3100 bytes, rule 8
    id: 00000000653f2a1c00000000 creatorid: 6d5f3a2b
-tcp 192.168.1.71:44502 -> 151.101.1.140:443       ESTABLISHED:ESTABLISHED
-   age 00:00:01, expires in 86399s, 3:2 pkts, 1200:800 bytes, rule 8
+   origif: le0
+all tcp 192.168.1.71:44502 -> 151.101.1.140:443       ESTABLISHED:ESTABLISHED
+   [1111111111 + 2100992] wscale 7  [2222222222 + 65792] wscale 8
+   age 00:00:01, expires in 23:59:58, 3:2 pkts, 1200:800 bytes, rule 8
    id: 00000000653f2a2000000000 creatorid: 6d5f3a2b
+   origif: le0
