@@ -1,0 +1,93 @@
+<form>
+    <field>
+        <type>header</type>
+        <label>Essential</label>
+    </field>
+    <field>
+        <id>gowiththeflow.general.enabled</id>
+        <label>Enable</label>
+        <type>checkbox</type>
+        <help>Enable the GoWithTheFlow daemon. Installing the plugin does nothing until this is turned on.</help>
+    </field>
+    <field>
+        <id>gowiththeflow.general.captureInterfaces</id>
+        <label>Capture interfaces</label>
+        <type>select_multiple</type>
+        <help>LAN-side interface(s) to passively capture DNS/TLS traffic on.</help>
+    </field>
+    <field>
+        <id>gowiththeflow.general.localSubnets</id>
+        <label>Local subnets</label>
+        <type>text</type>
+        <help>CIDR ranges (comma-separated) that count as "local" for connection tracking. Pre-populate this from your LAN interface subnets; add VPN tunnel subnets here too if you want VPN clients tracked as local hosts.</help>
+    </field>
+    <field>
+        <id>gowiththeflow.general.rawRetentionDays</id>
+        <label>Raw retention (days)</label>
+        <type>text</type>
+        <hint>10</hint>
+        <help>How long individual closed-connection records are kept before being pruned (once reflected in the hourly rollup).</help>
+    </field>
+    <field>
+        <id>gowiththeflow.general.rollupHourlyRetentionDays</id>
+        <label>Hourly rollup retention (days)</label>
+        <type>text</type>
+        <hint>45</hint>
+        <advanced>true</advanced>
+    </field>
+    <field>
+        <id>gowiththeflow.general.rollupDailyRetentionDays</id>
+        <label>Daily rollup retention (days)</label>
+        <type>text</type>
+        <hint>730</hint>
+        <advanced>true</advanced>
+    </field>
+    <field>
+        <id>gowiththeflow.general.cpuLimitPct</id>
+        <label>CPU limit (%)</label>
+        <type>text</type>
+        <hint>10</hint>
+        <advanced>true</advanced>
+        <help>rctl CPU cap applied to the daemon process, so a runaway process gets throttled rather than degrading the box.</help>
+    </field>
+    <field>
+        <id>gowiththeflow.general.memLimitMB</id>
+        <label>Memory limit (MB)</label>
+        <type>text</type>
+        <hint>256</hint>
+        <advanced>true</advanced>
+    </field>
+    <field>
+        <id>gowiththeflow.general.debugLogging</id>
+        <label>Debug logging</label>
+        <type>checkbox</type>
+        <advanced>true</advanced>
+    </field>
+    <field>
+        <type>header</type>
+        <label>Hostname resolution</label>
+    </field>
+    <field>
+        <id>gowiththeflow.hostname.enableDnsSniffing</id>
+        <label>Enable DNS sniffing</label>
+        <type>checkbox</type>
+    </field>
+    <field>
+        <id>gowiththeflow.hostname.enableSniSniffing</id>
+        <label>Enable TLS SNI sniffing</label>
+        <type>checkbox</type>
+    </field>
+    <field>
+        <id>gowiththeflow.hostname.enablePtrFallback</id>
+        <label>Enable PTR (reverse DNS) fallback</label>
+        <type>checkbox</type>
+        <help>Only consulted when DNS/SNI have nothing. Disable if you don't want extra reverse-DNS traffic leaving the box.</help>
+    </field>
+    <field>
+        <id>gowiththeflow.hostname.extraTlsPorts</id>
+        <label>Extra TLS ports</label>
+        <type>text</type>
+        <help>Comma-separated list of additional TCP ports to watch for TLS ClientHello beyond 443 (e.g. 8443).</help>
+        <advanced>true</advanced>
+    </field>
+</form>
