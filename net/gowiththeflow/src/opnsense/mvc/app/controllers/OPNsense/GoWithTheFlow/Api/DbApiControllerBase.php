@@ -1,6 +1,6 @@
 <?php
 
-namespace OPNsense\GowiththeFlow\Api;
+namespace OPNsense\GoWithTheFlow\Api;
 
 use OPNsense\Base\ApiControllerBase;
 

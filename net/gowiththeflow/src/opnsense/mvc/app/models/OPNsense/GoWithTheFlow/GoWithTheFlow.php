@@ -1,9 +1,9 @@
 <?php
 
-namespace OPNsense\GowiththeFlow;
+namespace OPNsense\GoWithTheFlow;
 
 use OPNsense\Base\BaseModel;
 
-class GowiththeFlow extends BaseModel
+class GoWithTheFlow extends BaseModel
 {
 }

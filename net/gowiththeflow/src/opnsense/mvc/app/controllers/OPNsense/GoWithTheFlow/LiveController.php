@@ -1,11 +1,11 @@
 <?php
 
-namespace OPNsense\GowiththeFlow;
+namespace OPNsense\GoWithTheFlow;
 
 class LiveController extends \OPNsense\Base\IndexController
 {
     public function indexAction()
     {
-        $this->view->pick('OPNsense/GowiththeFlow/live');
+        $this->view->pick('OPNsense/GoWithTheFlow/live');
     }
 }

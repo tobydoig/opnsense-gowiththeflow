@@ -1,12 +1,12 @@
 <?php
 
-namespace OPNsense\GowiththeFlow\Api;
+namespace OPNsense\GoWithTheFlow\Api;
 
 use OPNsense\Base\ApiMutableServiceControllerBase;
 
 class ServiceController extends ApiMutableServiceControllerBase
 {
-    protected static $internalServiceClass = '\OPNsense\GowiththeFlow\GowiththeFlow';
+    protected static $internalServiceClass = '\OPNsense\GoWithTheFlow\GoWithTheFlow';
     protected static $internalServiceEnabled = 'general.enabled';
     protected static $internalServiceName = 'gowiththeflow';
 }

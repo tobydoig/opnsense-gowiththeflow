@@ -1,9 +1,9 @@
 <acl>
-    <page-reporting-gowiththeflow>
-        <name>Reporting: Flow Monitor</name>
+    <page-gowiththeflow>
+        <name>Go With The Flow</name>
         <patterns>
             <pattern>ui/gowiththeflow/*</pattern>
             <pattern>api/gowiththeflow/*</pattern>
         </patterns>
-    </page-reporting-gowiththeflow>
+    </page-gowiththeflow>
 </acl>

@@ -1,13 +1,13 @@
 <?php
 
-namespace OPNsense\GowiththeFlow\Api;
+namespace OPNsense\GoWithTheFlow\Api;
 
 use OPNsense\Base\ApiMutableModelControllerBase;
 
 class SettingsController extends ApiMutableModelControllerBase
 {
     protected static $internalModelName = 'gowiththeflow';
-    protected static $internalModelClass = '\OPNsense\GowiththeFlow\GowiththeFlow';
+    protected static $internalModelClass = '\OPNsense\GoWithTheFlow\GoWithTheFlow';
 
     // TODO(Phase C): move to the Settings model once it exists as a
     // configurable path. Production path will be /var/db/gowiththeflow/flows.db.

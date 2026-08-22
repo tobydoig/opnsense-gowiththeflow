@@ -1,14 +1,14 @@
 <menu>
     <Reporting>
-        <GowiththeFlow VisibleName="Flow Monitor" cssClass="fa fa-exchange fa-fw">
+        <GoWithTheFlow VisibleName="Go With The Flow" cssClass="fa fa-exchange fa-fw">
             <Live order="10" url="/ui/gowiththeflow/live"/>
             <History order="20" url="/ui/gowiththeflow/history"/>
             <TopTalkers VisibleName="Top Talkers" order="30" url="/ui/gowiththeflow/toptalkers"/>
-        </GowiththeFlow>
+        </GoWithTheFlow>
     </Reporting>
     <Services>
-        <GowiththeFlow VisibleName="Flow Monitor" cssClass="fa fa-exchange fa-fw">
+        <GoWithTheFlow VisibleName="Go With The Flow" cssClass="fa fa-exchange fa-fw">
             <Settings order="10" url="/ui/gowiththeflow/settings"/>
-        </GowiththeFlow>
+        </GoWithTheFlow>
     </Services>
 </menu>
