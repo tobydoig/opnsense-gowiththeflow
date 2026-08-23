@@ -495,6 +495,63 @@
   run directly against the real database and returns exactly the
   pre-category historical hostnames (`github.com`, `opnsense.org`,
   etc.) the user's own guess predicted.
+- **Roadmap item #2 ("Internal Traffic" -- local<->local session
+  tracking) — built, not yet VM-verified or published.** Followed the
+  same discipline as category classification: exploration first (3
+  parallel research agents covering the pf_state_poller/db/rollup data
+  model, the existing local-hostname-resolution machinery, and the
+  PHP/Volt conventions), then a dedicated Plan agent to stress-test the
+  design before writing any code. That review caught one genuinely
+  critical bug before it shipped: a naive `GROUP BY (proto, ip_a, ip_b)`
+  in the hourly rollup would have fragmented the *same* device pair into
+  two separate rollup rows whenever traffic was initiated from both
+  directions across different flows (e.g. host A mounts a share on host
+  B during the day, host B backs up to host A overnight) -- directly
+  undermining the point of a "which pairs talk the most" ranking. Fixed
+  by canonicalizing `ip_a`/`ip_b` (numeric IP comparison, swapping the
+  directional byte/packet counters together) in `rollup_internal_hourly`
+  only -- the live-session and raw tables stay uncanonicalized
+  deliberately, since the Live tab should show genuine per-flow
+  direction. Also caught: joining `local_host_identity` twice in one
+  query (once per endpoint, since neither side of an internal pair is
+  "more local") risks a 2×2 row fan-out if either IP ever has a
+  duplicate-MAC row -- avoided by using two correlated scalar subqueries
+  instead of two `LEFT JOIN`s in the new `InternalController`.
+  A genuine scope reduction was found during research, not assumed: no
+  new hostname-resolution code was needed at all -- `local_host_identity`
+  is already joined by IP at query time for the existing "local" side of
+  every grid, so the same join, done twice, already names both endpoints
+  of an internal pair.
+  Built bottom-up, test-as-you-go: `pf_state_poller.py` gained a fully
+  parallel, independent pipeline (`InternalPairKey`/`Snapshot`/
+  `DiffResult`, `classify_internal_pairs()`, `poll_internal_pairs()` --
+  deliberately re-parsing the same already-fetched pfctl text a second
+  time rather than changing `poll()`'s existing, widely-depended-on
+  `DiffResult` contract); `db.py` gained 4 new tables (`internal_*`, no
+  hostname/category columns -- device-to-device flows don't have an
+  "internet service" to categorize) and `record_internal_diff()`;
+  `rollup.py` gained the internal checkpoint/hourly/daily mirrors plus
+  the canonicalization fix, and `prune_raw`/`prune_hourly`/`prune_daily`
+  were generalized to take a `table`/`rollup_watermark_kind` parameter
+  (pure SQL-shape duplicates across pipelines, unlike checkpoint/rollup
+  which genuinely differ in column set -- a deliberate case-by-case call
+  on duplication vs. generalization, not a blanket rule either way);
+  `gowiththeflowd.py` wired it into the existing poll/hourly/daily loop
+  structure, reusing the same already-fetched `pfctl_output` text and the
+  existing retention settings (no new Settings fields). 18 new tests (121
+  total passing), including a dedicated regression test for the
+  canonicalization fix using the exact bidirectional-traffic shape that
+  motivated it.
+  New top-level page "Internal Traffic" (Reporting > Go With The Flow,
+  after Top Talkers) with Live and History tabs -- the History tab
+  doubles as a "which pairs talk the most" ranking, so no separate
+  Top-Talkers-style page was needed. `InternalController` (single-word
+  slug, avoiding the already-known Phalcon capitalization gotcha), 3 new
+  `pkg-plist` lines, one new `Menu.xml` line, no `ACL.xml` change needed
+  (already wildcard-granted). Version bumped to **1.1.0** (minor, not
+  patch -- this project's first genuinely new feature since app/category
+  classification, not a bugfix). Not yet built, VM-verified, or
+  published.
 - **Not yet started**: the deferred History chart and staticOverrides
   grid editor, proper repo signing before this pkg-repo is relied on for
   anything that matters. See "Roadmap" below for the larger post-launch
@@ -529,7 +586,8 @@ below is deliberately narrower than "everything ZenArmor has":
    IPs rotate but the resolved hostname doesn't). Store the category
    alongside the existing hostname cache, surface it as a column/filter
    in Live/History/TopTalkers, add a bytes-by-category rollup.
-2. **Local<->local traffic tracking** (agreed, general case only).
+2. **Local<->local traffic tracking** (agreed, general case only) --
+   **built as "Internal Traffic," see the Status entry above.**
    `classify_local_remote()` currently discards any pf state where both
    ends are local -- extending this to emit a third "local<->local"
    category needs its own schema (asymmetric local/remote columns don't

@@ -12,7 +12,14 @@ import os
 import sqlite3
 import time
 
-from pf_state_poller import DiffResult, StateKey, StateSnapshot
+from pf_state_poller import (
+    DiffResult,
+    InternalPairDiffResult,
+    InternalPairKey,
+    InternalPairSnapshot,
+    StateKey,
+    StateSnapshot,
+)
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS live_sessions (
@@ -69,6 +76,73 @@ CREATE TABLE IF NOT EXISTS rollup_daily (
 );
 CREATE INDEX IF NOT EXISTS idx_ru_d_local ON rollup_daily(bucket_start, local_ip);
 CREATE INDEX IF NOT EXISTS idx_ru_d_remote ON rollup_daily(bucket_start, remote_ip);
+
+-- "Internal" traffic: both endpoints local (different VLANs/subnets that
+-- still route through the firewall -- same-L2-subnet traffic never
+-- reaches pf at all, a documented, unfixable limitation). Neither side is
+-- "more local" than the other, so there's no local_ip/remote_ip split
+-- here -- ip_a/ip_b, uncanonicalized (whichever side pf called src/dst),
+-- matching pf_state_poller.InternalPairKey. No hostname/category columns:
+-- both endpoints are named via the existing local_host_identity IP join
+-- at query time (no new resolver needed), and "category" (what internet
+-- service is this?) doesn't apply to a device-to-device flow.
+CREATE TABLE IF NOT EXISTS internal_live_sessions (
+  id INTEGER PRIMARY KEY,
+  proto TEXT NOT NULL,
+  ip_a TEXT NOT NULL, port_a INTEGER NOT NULL,
+  ip_b TEXT NOT NULL, port_b INTEGER NOT NULL,
+  first_seen INTEGER NOT NULL, last_seen INTEGER NOT NULL,
+  bytes_a_to_b INTEGER NOT NULL DEFAULT 0, bytes_b_to_a INTEGER NOT NULL DEFAULT 0,
+  pkts_a_to_b INTEGER NOT NULL DEFAULT 0, pkts_b_to_a INTEGER NOT NULL DEFAULT 0,
+  last_checkpoint_at INTEGER NOT NULL DEFAULT 0,
+  baseline_bytes_a_to_b INTEGER NOT NULL DEFAULT 0, baseline_bytes_b_to_a INTEGER NOT NULL DEFAULT 0,
+  baseline_pkts_a_to_b INTEGER NOT NULL DEFAULT 0, baseline_pkts_b_to_a INTEGER NOT NULL DEFAULT 0,
+  UNIQUE(proto, ip_a, port_a, ip_b, port_b)
+);
+CREATE INDEX IF NOT EXISTS idx_internal_live_ip_a ON internal_live_sessions(ip_a);
+CREATE INDEX IF NOT EXISTS idx_internal_live_ip_b ON internal_live_sessions(ip_b);
+
+-- port_a (the ephemeral/initiating side's port) is dropped here, mirroring
+-- connections_raw's own precedent of keeping only the "service side" port
+-- -- this only holds because ip_a/port_a stay src-anchored/uncanonicalized
+-- at this layer (see pf_state_poller.InternalPairKey and rollup.py's
+-- rollup_internal_hourly). Don't "fix" pair ordering here -- that's done
+-- deliberately one layer up, in the hourly rollup, not this raw table.
+CREATE TABLE IF NOT EXISTS internal_connections_raw (
+  id INTEGER PRIMARY KEY,
+  proto TEXT NOT NULL,
+  ip_a TEXT NOT NULL, ip_b TEXT NOT NULL, port_b INTEGER NOT NULL,
+  started_at INTEGER NOT NULL, ended_at INTEGER NOT NULL, duration_s INTEGER NOT NULL,
+  bytes_a_to_b INTEGER NOT NULL, bytes_b_to_a INTEGER NOT NULL,
+  pkts_a_to_b INTEGER NOT NULL, pkts_b_to_a INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_internal_raw_ip_a_end ON internal_connections_raw(ip_a, ended_at);
+CREATE INDEX IF NOT EXISTS idx_internal_raw_ip_b_end ON internal_connections_raw(ip_b, ended_at);
+CREATE INDEX IF NOT EXISTS idx_internal_raw_end ON internal_connections_raw(ended_at);
+
+-- Unlike internal_connections_raw, rows here ARE canonicalized (ip_a <
+-- ip_b, numerically) by rollup.rollup_internal_hourly() -- otherwise the
+-- same device pair fragments into two rollup rows whenever traffic is
+-- initiated from both directions across different flows.
+CREATE TABLE IF NOT EXISTS internal_rollup_hourly (
+  bucket_start INTEGER NOT NULL, proto TEXT NOT NULL,
+  ip_a TEXT NOT NULL, ip_b TEXT NOT NULL,
+  bytes_a_to_b INTEGER NOT NULL, bytes_b_to_a INTEGER NOT NULL,
+  pkts_a_to_b INTEGER NOT NULL, pkts_b_to_a INTEGER NOT NULL, conn_count INTEGER NOT NULL,
+  PRIMARY KEY (bucket_start, proto, ip_a, ip_b)
+);
+CREATE INDEX IF NOT EXISTS idx_iru_h_ip_a ON internal_rollup_hourly(bucket_start, ip_a);
+CREATE INDEX IF NOT EXISTS idx_iru_h_ip_b ON internal_rollup_hourly(bucket_start, ip_b);
+
+CREATE TABLE IF NOT EXISTS internal_rollup_daily (
+  bucket_start INTEGER NOT NULL, proto TEXT NOT NULL,
+  ip_a TEXT NOT NULL, ip_b TEXT NOT NULL,
+  bytes_a_to_b INTEGER NOT NULL, bytes_b_to_a INTEGER NOT NULL,
+  pkts_a_to_b INTEGER NOT NULL, pkts_b_to_a INTEGER NOT NULL, conn_count INTEGER NOT NULL,
+  PRIMARY KEY (bucket_start, proto, ip_a, ip_b)
+);
+CREATE INDEX IF NOT EXISTS idx_iru_d_ip_a ON internal_rollup_daily(bucket_start, ip_a);
+CREATE INDEX IF NOT EXISTS idx_iru_d_ip_b ON internal_rollup_daily(bucket_start, ip_b);
 
 CREATE TABLE IF NOT EXISTS ip_hostname_cache (
   ip TEXT PRIMARY KEY, hostname TEXT NOT NULL, source TEXT NOT NULL,
@@ -276,6 +350,128 @@ def record_diff(
             (
                 snap.key.proto, snap.key.local_ip, snap.key.local_port,
                 snap.key.remote_ip, snap.key.remote_port,
+            ),
+        )
+
+    conn.commit()
+
+
+def load_internal_live_sessions_as_snapshots(conn: sqlite3.Connection) -> list[InternalPairSnapshot]:
+    """For seeding PfStatePoller.seed_internal_pairs() at daemon startup --
+    same restart-safety reasoning as load_live_sessions_as_snapshots()."""
+    rows = conn.execute(
+        """
+        SELECT proto, ip_a, port_a, ip_b, port_b,
+               bytes_a_to_b, bytes_b_to_a, pkts_a_to_b, pkts_b_to_a
+        FROM internal_live_sessions
+        """
+    ).fetchall()
+    return [
+        InternalPairSnapshot(
+            key=InternalPairKey(
+                r["proto"], r["ip_a"], r["port_a"], r["ip_b"], r["port_b"]
+            ),
+            bytes_a_to_b=r["bytes_a_to_b"],
+            bytes_b_to_a=r["bytes_b_to_a"],
+            pkts_a_to_b=r["pkts_a_to_b"],
+            pkts_b_to_a=r["pkts_b_to_a"],
+            age_s=0,
+        )
+        for r in rows
+    ]
+
+
+def record_internal_diff(
+    conn: sqlite3.Connection,
+    diff: InternalPairDiffResult,
+    now: float | None = None,
+) -> None:
+    """Mirror of record_diff() for the internal (local<->local) pipeline --
+    simpler, since there's no hostname to resolve (both endpoints are named
+    via local_host_identity at query time in PHP) and so no COALESCE
+    dance needed."""
+    now_i = int(now if now is not None else time.time())
+
+    for snap in diff.opened:
+        first_seen = now_i - snap.age_s
+        conn.execute(
+            """
+            INSERT INTO internal_live_sessions
+                (proto, ip_a, port_a, ip_b, port_b,
+                 first_seen, last_seen, bytes_a_to_b, bytes_b_to_a, pkts_a_to_b, pkts_b_to_a,
+                 last_checkpoint_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(proto, ip_a, port_a, ip_b, port_b)
+            DO UPDATE SET
+                last_seen=excluded.last_seen,
+                bytes_a_to_b=excluded.bytes_a_to_b,
+                bytes_b_to_a=excluded.bytes_b_to_a,
+                pkts_a_to_b=excluded.pkts_a_to_b,
+                pkts_b_to_a=excluded.pkts_b_to_a
+            """,
+            (
+                snap.key.proto, snap.key.ip_a, snap.key.port_a,
+                snap.key.ip_b, snap.key.port_b,
+                first_seen, now_i, snap.bytes_a_to_b, snap.bytes_b_to_a,
+                snap.pkts_a_to_b, snap.pkts_b_to_a, first_seen,
+            ),
+        )
+
+    for snap in diff.updated:
+        conn.execute(
+            """
+            UPDATE internal_live_sessions
+            SET last_seen=?, bytes_a_to_b=?, bytes_b_to_a=?, pkts_a_to_b=?, pkts_b_to_a=?
+            WHERE proto=? AND ip_a=? AND port_a=? AND ip_b=? AND port_b=?
+            """,
+            (
+                now_i, snap.bytes_a_to_b, snap.bytes_b_to_a, snap.pkts_a_to_b, snap.pkts_b_to_a,
+                snap.key.proto, snap.key.ip_a, snap.key.port_a,
+                snap.key.ip_b, snap.key.port_b,
+            ),
+        )
+
+    for snap in diff.closed:
+        row = conn.execute(
+            """
+            SELECT first_seen, last_seen
+            FROM internal_live_sessions
+            WHERE proto=? AND ip_a=? AND port_a=? AND ip_b=? AND port_b=?
+            """,
+            (
+                snap.key.proto, snap.key.ip_a, snap.key.port_a,
+                snap.key.ip_b, snap.key.port_b,
+            ),
+        ).fetchone()
+        if row is None:
+            # Never actually recorded as opened (e.g. daemon restarted
+            # mid-session) -- fall back to the closed snapshot's own age.
+            first_seen = now_i - snap.age_s
+            ended_at = now_i
+        else:
+            first_seen, ended_at = row["first_seen"], row["last_seen"]
+
+        conn.execute(
+            """
+            INSERT INTO internal_connections_raw
+                (proto, ip_a, ip_b, port_b,
+                 started_at, ended_at, duration_s, bytes_a_to_b, bytes_b_to_a, pkts_a_to_b, pkts_b_to_a)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                snap.key.proto, snap.key.ip_a, snap.key.ip_b, snap.key.port_b,
+                first_seen, ended_at, max(ended_at - first_seen, 0),
+                snap.bytes_a_to_b, snap.bytes_b_to_a, snap.pkts_a_to_b, snap.pkts_b_to_a,
+            ),
+        )
+        conn.execute(
+            """
+            DELETE FROM internal_live_sessions
+            WHERE proto=? AND ip_a=? AND port_a=? AND ip_b=? AND port_b=?
+            """,
+            (
+                snap.key.proto, snap.key.ip_a, snap.key.port_a,
+                snap.key.ip_b, snap.key.port_b,
             ),
         )
 

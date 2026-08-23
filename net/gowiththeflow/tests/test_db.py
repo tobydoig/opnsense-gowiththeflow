@@ -1,7 +1,7 @@
 import os
 
 import db
-from pf_state_poller import PfStatePoller
+from pf_state_poller import InternalPairKey, PfStatePoller
 
 FIXTURES_DIR = os.path.join(os.path.dirname(__file__), "fixtures")
 LOCAL_SUBNETS = ["192.168.1.0/24"]
@@ -175,4 +175,89 @@ def test_schema_init_is_idempotent(tmp_path):
         "ip_hostname_cache",
         "local_host_identity",
         "rollup_state",
+        "internal_live_sessions",
+        "internal_connections_raw",
+        "internal_rollup_hourly",
+        "internal_rollup_daily",
     } <= tables
+
+
+def test_load_internal_live_sessions_as_snapshots_round_trips_for_seeding(tmp_path):
+    conn = _fresh_conn(tmp_path)
+    poller = PfStatePoller(LOCAL_SUBNETS)
+    diff = poller.poll_internal_pairs(
+        "tcp 192.168.1.10:1234 -> 192.168.1.20:445       ESTABLISHED:ESTABLISHED\n"
+        "   age 00:00:01, expires in 100s, 3:4 pkts, 300:400 bytes, rule 1\n"
+    )
+    db.record_internal_diff(conn, diff, now=NOW1)
+
+    snapshots = db.load_internal_live_sessions_as_snapshots(conn)
+
+    assert len(snapshots) == 1
+    loaded = snapshots[0]
+    assert loaded.key == InternalPairKey("tcp", "192.168.1.10", 1234, "192.168.1.20", 445)
+    assert loaded.bytes_a_to_b == 300
+    assert loaded.bytes_b_to_a == 400
+    assert loaded.pkts_a_to_b == 3
+    assert loaded.pkts_b_to_a == 4
+
+
+def test_internal_pair_opened_lands_in_internal_live_sessions_with_backdated_first_seen(tmp_path):
+    conn = _fresh_conn(tmp_path)
+    poller = PfStatePoller(LOCAL_SUBNETS)
+
+    diff = poller.poll_internal_pairs(
+        "tcp 192.168.1.10:1234 -> 192.168.1.20:445       ESTABLISHED:ESTABLISHED\n"
+        "   age 00:00:12, expires in 100s, 3:4 pkts, 300:400 bytes, rule 1\n"
+    )
+    db.record_internal_diff(conn, diff, now=NOW1)
+
+    row = conn.execute("SELECT * FROM internal_live_sessions").fetchone()
+    assert row["ip_a"] == "192.168.1.10"
+    assert row["ip_b"] == "192.168.1.20"
+    assert row["first_seen"] == NOW1 - 12
+    assert row["last_seen"] == NOW1
+    assert row["bytes_a_to_b"] == 300
+    assert row["bytes_b_to_a"] == 400
+
+    assert conn.execute("SELECT COUNT(*) FROM internal_connections_raw").fetchone()[0] == 0
+
+
+def test_internal_pair_second_poll_updates_persisted_pair_and_closes_vanished_one(tmp_path):
+    conn = _fresh_conn(tmp_path)
+    poller = PfStatePoller(LOCAL_SUBNETS)
+
+    poll_1 = (
+        "tcp 192.168.1.10:1234 -> 192.168.1.20:445       ESTABLISHED:ESTABLISHED\n"
+        "   age 00:00:02, expires in 100s, 1:1 pkts, 128:256 bytes, rule 1\n"
+        "tcp 192.168.1.30:5000 -> 192.168.1.40:22       ESTABLISHED:ESTABLISHED\n"
+        "   age 00:00:01, expires in 100s, 1:1 pkts, 100:100 bytes, rule 1\n"
+    )
+    db.record_internal_diff(conn, poller.poll_internal_pairs(poll_1), now=NOW1)
+
+    poll_2 = (
+        "tcp 192.168.1.10:1234 -> 192.168.1.20:445       ESTABLISHED:ESTABLISHED\n"
+        "   age 00:00:07, expires in 100s, 30:22 pkts, 25000:3100 bytes, rule 1\n"
+    )
+    db.record_internal_diff(conn, poller.poll_internal_pairs(poll_2), now=NOW2)
+
+    live_rows = {
+        r["ip_b"]: r for r in conn.execute("SELECT * FROM internal_live_sessions").fetchall()
+    }
+    assert set(live_rows) == {"192.168.1.20"}  # .40 closed and must be gone
+
+    updated = live_rows["192.168.1.20"]
+    assert updated["first_seen"] == NOW1 - 2  # preserved across the update
+    assert updated["last_seen"] == NOW2
+    assert updated["bytes_a_to_b"] == 25000
+    assert updated["bytes_b_to_a"] == 3100
+
+    raw_rows = conn.execute("SELECT * FROM internal_connections_raw").fetchall()
+    assert len(raw_rows) == 1
+    closed = raw_rows[0]
+    assert closed["ip_a"] == "192.168.1.30"
+    assert closed["ip_b"] == "192.168.1.40"
+    assert closed["started_at"] == NOW1 - 1
+    assert closed["ended_at"] == NOW1
+    assert closed["bytes_a_to_b"] == 100
+    assert closed["bytes_b_to_a"] == 100

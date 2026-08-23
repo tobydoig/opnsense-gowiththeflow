@@ -211,6 +211,75 @@ class DiffResult:
     closed: list[StateSnapshot] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class InternalPairKey:
+    """Unlike StateKey, neither side of an internal (local<->local) pair is
+    'more local' than the other -- ip_a/port_a is simply whichever side pf
+    reported as src, ip_b/port_b whichever it reported as dst. This is
+    stable for one connection's lifetime (pf doesn't flip src/dst mid
+    state), which is all diffing needs -- it is NOT canonicalized (e.g.
+    lowest-IP-first), so the same physical device pair can appear as both
+    (A,B) and (B,A) across different flows. rollup.py's hourly rollup is
+    where that gets canonicalized for pair-ranking purposes; this layer
+    intentionally reports the raw, per-flow truth."""
+
+    proto: str
+    ip_a: str
+    port_a: int
+    ip_b: str
+    port_b: int
+
+
+@dataclass
+class InternalPairSnapshot:
+    key: InternalPairKey
+    bytes_a_to_b: int
+    bytes_b_to_a: int
+    pkts_a_to_b: int
+    pkts_b_to_a: int
+    age_s: int
+
+
+def classify_internal_pairs(
+    records: Iterable[dict], local_subnets: list[str]
+) -> list[InternalPairSnapshot]:
+    """Sibling of classify_local_remote(), keeping the mirror-image subset:
+    only states where BOTH endpoints are local. No reorientation needed
+    (unlike the local/remote case) -- src stays 'a', dst stays 'b'."""
+    networks = [ipaddress.ip_network(s) for s in local_subnets]
+    snapshots = []
+    for rec in records:
+        if "pkts_a" not in rec:
+            continue  # no stats line parsed; incomplete record, skip
+        src_ip = ipaddress.ip_address(rec["src_ip"])
+        dst_ip = ipaddress.ip_address(rec["dst_ip"])
+        src_local = any(src_ip in n for n in networks)
+        dst_local = any(dst_ip in n for n in networks)
+        if not (src_local and dst_local):
+            continue
+        key = InternalPairKey(
+            rec["proto"], rec["src_ip"], int(rec["src_port"]), rec["dst_ip"], int(rec["dst_port"])
+        )
+        snapshots.append(
+            InternalPairSnapshot(
+                key=key,
+                bytes_a_to_b=int(rec["bytes_a"]),
+                bytes_b_to_a=int(rec["bytes_b"]),
+                pkts_a_to_b=int(rec["pkts_a"]),
+                pkts_b_to_a=int(rec["pkts_b"]),
+                age_s=_parse_age(rec["age"]),
+            )
+        )
+    return snapshots
+
+
+@dataclass
+class InternalPairDiffResult:
+    opened: list[InternalPairSnapshot] = field(default_factory=list)
+    updated: list[InternalPairSnapshot] = field(default_factory=list)
+    closed: list[InternalPairSnapshot] = field(default_factory=list)
+
+
 class PfStatePoller:
     """Maintains the previous snapshot set and diffs each new poll against
     it, keyed by 4-tuple + proto so a session survives across polls even as
@@ -219,6 +288,7 @@ class PfStatePoller:
     def __init__(self, local_subnets: list[str]):
         self._local_subnets = local_subnets
         self._prev: dict[StateKey, StateSnapshot] = {}
+        self._prev_pairs: dict[InternalPairKey, InternalPairSnapshot] = {}
 
     def seed(self, snapshots: Iterable[StateSnapshot]) -> None:
         """Pre-populates the previous-poll snapshot set, e.g. from
@@ -253,4 +323,35 @@ class PfStatePoller:
                 result.closed.append(snap)
 
         self._prev = current
+        return result
+
+    def seed_internal_pairs(self, snapshots: Iterable[InternalPairSnapshot]) -> None:
+        """Same restart-safety as seed(), for the internal (local<->local)
+        pipeline -- added proactively rather than waiting to rediscover
+        the equivalent bug already found and fixed for the remote path."""
+        for snap in snapshots:
+            self._prev_pairs[snap.key] = snap
+
+    def poll_internal_pairs(self, pfctl_output_text: str) -> InternalPairDiffResult:
+        """Independent of poll()/DiffResult on purpose -- re-parses the
+        same already-fetched text a second time (cheap: dozens to a few
+        hundred pf state blocks on a home network) rather than changing
+        poll()'s existing contract, which db.record_diff/gowiththeflowd.py/
+        several tests construct and consume directly."""
+        records = parse_pfctl_state_text(pfctl_output_text)
+        current = {
+            s.key: s for s in classify_internal_pairs(records, self._local_subnets)
+        }
+
+        result = InternalPairDiffResult()
+        for key, snap in current.items():
+            if key not in self._prev_pairs:
+                result.opened.append(snap)
+            else:
+                result.updated.append(snap)
+        for key, snap in self._prev_pairs.items():
+            if key not in current:
+                result.closed.append(snap)
+
+        self._prev_pairs = current
         return result

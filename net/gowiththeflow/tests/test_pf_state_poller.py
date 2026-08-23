@@ -3,9 +3,12 @@ import os
 import pytest
 
 from pf_state_poller import (
+    InternalPairKey,
+    InternalPairSnapshot,
     PfStatePoller,
     StateKey,
     StateSnapshot,
+    classify_internal_pairs,
     classify_local_remote,
     parse_pfctl_state_text,
 )
@@ -83,6 +86,122 @@ def test_classify_local_remote_skips_states_with_both_sides_local():
     records = parse_pfctl_state_text(text)
     snapshots = classify_local_remote(records, LOCAL_SUBNETS)
     assert snapshots == []
+
+
+def test_classify_internal_pairs_keeps_only_states_with_both_sides_local():
+    text = (
+        "tcp 192.168.1.10:1234 -> 192.168.1.20:445       ESTABLISHED:ESTABLISHED\n"
+        "   age 00:00:01, expires in 100s, 3:4 pkts, 300:400 bytes, rule 1\n"
+    )
+    records = parse_pfctl_state_text(text)
+    snapshots = classify_internal_pairs(records, LOCAL_SUBNETS)
+    assert len(snapshots) == 1
+    snap = snapshots[0]
+    assert snap.key == InternalPairKey("tcp", "192.168.1.10", 1234, "192.168.1.20", 445)
+    assert snap.bytes_a_to_b == 300
+    assert snap.bytes_b_to_a == 400
+    assert snap.pkts_a_to_b == 3
+    assert snap.pkts_b_to_a == 4
+
+
+def test_classify_internal_pairs_discards_local_remote_and_both_remote_and_incomplete():
+    text = (
+        "tcp 192.168.1.10:1234 -> 93.184.216.34:443       ESTABLISHED:ESTABLISHED\n"
+        "   age 00:00:01, expires in 100s, 1:1 pkts, 100:100 bytes, rule 1\n"
+        "tcp 10.0.0.5:1234 -> 10.0.0.9:443       ESTABLISHED:ESTABLISHED\n"
+        "   age 00:00:01, expires in 100s, 1:1 pkts, 100:100 bytes, rule 1\n"
+        "ipv6-icmp fe80::1 <- fe80::2       NO_TRAFFIC:NO_TRAFFIC\n"
+        "   age 00:00:01, expires in 00:00:09, 1:0 pkts, 64:0 bytes, rule 5\n"
+    )
+    records = parse_pfctl_state_text(text)
+    # the bare-portless ipv6-icmp line never becomes a record at all (see
+    # test_skips_states_with_a_bare_portless_ipv6_address) -- only the two
+    # tcp records reach classify_internal_pairs, and neither has both
+    # sides local.
+    assert classify_internal_pairs(records, LOCAL_SUBNETS) == []
+
+
+def test_classify_internal_pairs_treats_hairpin_self_traffic_as_a_degenerate_pair():
+    # Pins down current behavior for src_ip == dst_ip (e.g. a hairpin
+    # NAT state) rather than leaving it undefined -- both sides are
+    # "local" by the subnet check, so it's reported as a pair with
+    # ip_a == ip_b instead of being silently dropped.
+    text = (
+        "tcp 192.168.1.10:1234 -> 192.168.1.10:445       ESTABLISHED:ESTABLISHED\n"
+        "   age 00:00:01, expires in 100s, 1:1 pkts, 100:100 bytes, rule 1\n"
+    )
+    records = parse_pfctl_state_text(text)
+    snapshots = classify_internal_pairs(records, LOCAL_SUBNETS)
+    assert len(snapshots) == 1
+    assert snapshots[0].key.ip_a == snapshots[0].key.ip_b == "192.168.1.10"
+
+
+def test_poller_reports_internal_pair_open_update_close_across_polls():
+    poller = PfStatePoller(LOCAL_SUBNETS)
+
+    poll_1 = (
+        "tcp 192.168.1.10:1234 -> 192.168.1.20:445       ESTABLISHED:ESTABLISHED\n"
+        "   age 00:00:01, expires in 100s, 1:1 pkts, 100:100 bytes, rule 1\n"
+        "tcp 192.168.1.30:5000 -> 192.168.1.40:22       ESTABLISHED:ESTABLISHED\n"
+        "   age 00:00:01, expires in 100s, 2:2 pkts, 200:200 bytes, rule 1\n"
+    )
+    result_1 = poller.poll_internal_pairs(poll_1)
+    assert len(result_1.opened) == 2
+    assert result_1.updated == []
+    assert result_1.closed == []
+
+    # 192.168.1.30<->192.168.1.40 vanished (closed); 192.168.1.10<->.20
+    # persisted with higher counters; a brand new pair appeared.
+    poll_2 = (
+        "tcp 192.168.1.10:1234 -> 192.168.1.20:445       ESTABLISHED:ESTABLISHED\n"
+        "   age 00:00:06, expires in 100s, 10:10 pkts, 1000:1000 bytes, rule 1\n"
+        "tcp 192.168.1.50:6000 -> 192.168.1.60:80       ESTABLISHED:ESTABLISHED\n"
+        "   age 00:00:01, expires in 100s, 1:1 pkts, 50:60 bytes, rule 1\n"
+    )
+    result_2 = poller.poll_internal_pairs(poll_2)
+
+    assert len(result_2.closed) == 1
+    closed = result_2.closed[0]
+    assert closed.key == InternalPairKey("tcp", "192.168.1.30", 5000, "192.168.1.40", 22)
+    assert closed.bytes_a_to_b == 200
+
+    assert len(result_2.updated) == 1
+    updated = result_2.updated[0]
+    assert updated.key.ip_a == "192.168.1.10"
+    assert updated.bytes_a_to_b == 1000
+    assert updated.bytes_b_to_a == 1000
+
+    assert len(result_2.opened) == 1
+    opened = result_2.opened[0]
+    assert opened.key == InternalPairKey("tcp", "192.168.1.50", 6000, "192.168.1.60", 80)
+
+
+def test_seed_internal_pairs_lets_first_poll_after_restart_close_out_gone_pairs():
+    # Proactive regression test mirroring test_seed_lets_first_poll_after_
+    # restart_close_out_gone_sessions -- added from the start rather than
+    # waiting to rediscover the same restart-gap bug for this pipeline.
+    stale_key = InternalPairKey("tcp", "192.168.1.77", 4321, "192.168.1.88", 8080)
+    stale_snapshot = InternalPairSnapshot(
+        key=stale_key, bytes_a_to_b=500, bytes_b_to_a=700, pkts_a_to_b=5, pkts_b_to_a=7, age_s=0
+    )
+
+    poller = PfStatePoller(LOCAL_SUBNETS)
+    poller.seed_internal_pairs([stale_snapshot])
+
+    # No pf state at all for that pair -- simulating it genuinely closed
+    # while the daemon was down.
+    result = poller.poll_internal_pairs(
+        "tcp 192.168.1.10:1234 -> 192.168.1.20:445       ESTABLISHED:ESTABLISHED\n"
+        "   age 00:00:01, expires in 100s, 1:1 pkts, 100:100 bytes, rule 1\n"
+    )
+
+    assert len(result.closed) == 1
+    assert result.closed[0].key == stale_key
+    assert result.closed[0].bytes_a_to_b == 500
+    assert result.closed[0].bytes_b_to_a == 700
+
+    assert len(result.opened) == 1
+    assert result.updated == []
 
 
 def test_poller_reports_open_update_close_across_polls():
