@@ -18,6 +18,8 @@ import threading
 import time
 from dataclasses import dataclass, field
 
+import categories
+import category_updater
 import correlator
 import db
 import dns_sniffer
@@ -34,6 +36,28 @@ LOCALHOST_REFRESH_INTERVAL_S = 5 * 60
 HOURLY_JOB_INTERVAL_S = 60 * 60
 DAILY_JOB_INTERVAL_S = 24 * 60 * 60
 PTR_TTL_S = 24 * 3600
+CATEGORY_CACHE_DIR = "/var/db/gowiththeflow/categories"
+
+
+class _CategoryMatcherHolder:
+    """Reassigned wholesale by a background refresh thread (see
+    _refresh_categories_in_background) rather than mutated in place, so
+    the main loop always reads either the old or the fully-rebuilt new
+    matcher, never one half-built from a partially merged files dict."""
+
+    def __init__(self, matcher: categories.CategoryMatcher):
+        self.matcher = matcher
+
+    def categorize(self, hostname: str | None) -> str | None:
+        return self.matcher.categorize(hostname)
+
+
+def _refresh_categories_in_background(holder: "_CategoryMatcherHolder") -> None:
+    def _do_refresh():
+        files = category_updater.refresh(CATEGORY_CACHE_DIR)
+        holder.matcher = categories.CategoryMatcher(files)
+
+    threading.Thread(target=_do_refresh, daemon=True).start()
 
 
 @dataclass
@@ -88,6 +112,14 @@ def run(config: Config) -> None:
     static_overrides = correlator.parse_static_overrides(config.static_overrides)
     ptr = ptr_resolver.PtrResolver(ptr_resolver.live_resolve_fn) if config.enable_ptr_fallback else None
 
+    # Whatever's on disk from a previous run, if anything -- categorize()
+    # just returns None for everything until the background refresh below
+    # completes, rather than blocking startup on a network fetch.
+    category_holder = _CategoryMatcherHolder(
+        categories.CategoryMatcher(category_updater.load_cached_files(CATEGORY_CACHE_DIR))
+    )
+    _refresh_categories_in_background(category_holder)
+
     dns_observations: queue.Queue = queue.Queue()
     sni_hints: queue.Queue = queue.Queue()
 
@@ -138,7 +170,9 @@ def run(config: Config) -> None:
             ["/sbin/pfctl", "-vvs", "state"], capture_output=True, text=True, check=True
         ).stdout
         diff = poller.poll(pfctl_output)
-        resolver = correlator.make_resolver(conn, static_overrides, flow_hints, now_i)
+        resolver = correlator.make_resolver(
+            conn, static_overrides, flow_hints, now_i, categorize_fn=category_holder.categorize
+        )
         db.record_diff(conn, diff, now=now_i, resolve_hostname=resolver)
 
         if ptr is not None:
@@ -146,7 +180,7 @@ def run(config: Config) -> None:
             # rate-limited, best-effort PTR attempt; a hit is cached so the
             # *next* poll picks it up via the normal hostcache path.
             for snap in diff.opened:
-                hostname, _source = resolver(snap)
+                hostname, _source, _category = resolver(snap)
                 if hostname is None:
                     ptr_hostname = ptr.resolve(snap.key.remote_ip, now)
                     if ptr_hostname is not None:
@@ -169,6 +203,7 @@ def run(config: Config) -> None:
             rollup.prune_hourly(conn, now_i, config.rollup_hourly_retention_days)
             rollup.prune_daily(conn, now_i, config.rollup_daily_retention_days)
             rollup.incremental_vacuum(conn)
+            _refresh_categories_in_background(category_holder)
             last_daily_job = now
 
         time.sleep(POLL_INTERVAL_S)
