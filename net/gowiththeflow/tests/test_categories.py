@@ -81,6 +81,25 @@ def test_categorize_tag_scoped_include_takes_only_matching_entries():
     assert matcher.categorize("mail.google.com") is None
 
 
+def test_categorize_tag_filter_propagates_through_untagged_nested_includes():
+    # Real-world shape found against actual upstream data: category-ads
+    # does `include:meta @ads`, and meta's own file is just a bare
+    # (untagged) `include:facebook` plus a few of its own domains. The
+    # @ads filter has to propagate down into facebook's entries too --
+    # otherwise this resolves to "all of facebook.com", not "just
+    # facebook's ad-tagged subset", which is what actually happened
+    # before this was fixed.
+    files = {
+        "category-ads": "include:meta @ads",
+        "meta": "include:facebook\nmeta.ai",
+        "facebook": "facebook.com\npixel.facebook.com @ads",
+    }
+    matcher = CategoryMatcher(files, {"Ads/Tracking": ["category-ads"]})
+    assert matcher.categorize("pixel.facebook.com") == "Ads/Tracking"
+    assert matcher.categorize("facebook.com") is None
+    assert matcher.categorize("meta.ai") is None
+
+
 def test_categorize_bare_include_takes_tagged_and_untagged_entries():
     files = {
         "category-ads": "include:google",  # no @tag filter this time

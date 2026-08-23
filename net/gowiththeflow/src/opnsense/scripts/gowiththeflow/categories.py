@@ -17,7 +17,17 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
+# Order matters: categorize() returns the first match, and company-wide
+# files (google, microsoft, amazon, apple, ...) include their own
+# ad-serving subdomains as one bare (untagged) blob when we pull them in
+# for Cloud/Productivity or Shopping -- confirmed against real data that
+# e.g. doubleclick.net is only @ads-tagged inside google's own file, with
+# no untagged entry, so a plain include:google (no tag filter, since
+# it's just a bare name in *our* mapping) still catches it. Ads/Tracking
+# has to come first so those domains land there instead of being
+# shadowed by the broader company category they happen to also live in.
 CATEGORY_SOURCES: dict[str, list[str]] = {
+    "Ads/Tracking": ["category-ads"],
     "Social Media": ["category-social-media-!cn", "tiktok", "snapchat", "pinterest", "reddit"],
     "Streaming/Video": ["netflix", "youtube", "disney", "hulu", "primevideo", "twitch"],
     "Music": ["spotify", "soundcloud", "pandora"],
@@ -25,7 +35,6 @@ CATEGORY_SOURCES: dict[str, list[str]] = {
     "Communication": ["whatsapp", "telegram", "signal", "discord", "zoom", "slack"],
     "Cloud/Productivity": ["google", "microsoft", "apple", "dropbox"],
     "Shopping": ["amazon", "ebay", "etsy"],
-    "Ads/Tracking": ["category-ads"],
     "Cloud Infrastructure": ["category-cdn-!cn", "cloudflare", "akamai", "fastly"],
 }
 
@@ -119,9 +128,19 @@ class CategoryMatcher:
         files: dict[str, str],
         merged: ParsedFile,
         seen: set[tuple[str, str | None]],
+        inherited_tag: str | None = None,
     ) -> None:
         for inc in includes:
-            seen_key = (inc.name, inc.tag)
+            # A nested include with no tag of its own (e.g. meta's bare
+            # `include:facebook`) inherits whatever tag got us here in
+            # the first place, rather than defaulting to "take
+            # everything" -- otherwise resolving category-ads's
+            # `include:meta @ads` down through meta's own untagged
+            # `include:facebook` would (and, before this fix, did) pull
+            # in every facebook.com domain instead of just its
+            # @ads-tagged ones.
+            effective_tag = inc.tag if inc.tag is not None else inherited_tag
+            seen_key = (inc.name, effective_tag)
             if seen_key in seen:
                 continue
             seen.add(seen_key)
@@ -129,12 +148,12 @@ class CategoryMatcher:
             if text is None:
                 continue
             parsed = parse_file(text)
-            keep = (lambda tags: True) if inc.tag is None else (lambda tags, t=inc.tag: t in tags)
+            keep = (lambda tags: True) if effective_tag is None else (lambda tags, t=effective_tag: t in tags)
             merged.suffixes.extend(e for e in parsed.suffixes if keep(e.tags))
             merged.fulls.extend(e for e in parsed.fulls if keep(e.tags))
             merged.regexes.extend((r, t) for r, t in parsed.regexes if keep(t))
             if parsed.includes:
-                self._merge_sources(parsed.includes, files, merged, seen)
+                self._merge_sources(parsed.includes, files, merged, seen, inherited_tag=effective_tag)
 
     def categorize(self, hostname: str | None) -> str | None:
         """Returns the first category (in CATEGORY_SOURCES's own order)
