@@ -388,10 +388,20 @@ below is deliberately narrower than "everything ZenArmor has":
    firewall at all, so this feature (or any firewall-based tool,
    ZenArmor included) categorically cannot see same-subnet traffic like
    that -- not a limitation of this project specifically.
-3. **Sankey-style flow visualization**. Client-side rendering on data we
-   already have (more interesting once category data from #1 exists --
-   local host -> category -> remote host is a much better diagram than
-   local -> remote alone).
+3. **Live page redesign + Sankey-style flow visualization.** The Live
+   grid is currently one row per individual connection -- on a real
+   network with several always-reconnecting devices (see the
+   `cam-cabin`/TIME_WAIT investigation above) that's 5 pages of mostly
+   noise, not useful at a glance. Agreed redesign: one row per *local
+   host* by default, showing aggregate totals (bytes in/out summed
+   across that host's current connections) instead of a flat per-
+   connection list; clicking a host row drills into a Sankey-style
+   diagram of just that host's own connections (local host -> each
+   remote host/category, sized by bytes). Client-side rendering on data
+   we already have; more interesting once category data from #1 exists
+   (local host -> category -> remote host is a much better diagram than
+   local -> remote alone, and gives the Sankey a middle tier to branch
+   through).
 4. **DPI (nDPI or similar)** -- added to the backlog, explicitly scoped
    after discussing the tradeoff: gives protocol/app identification
    independent of hostname/port (works for non-standard ports, obscure
