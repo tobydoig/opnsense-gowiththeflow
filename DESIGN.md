@@ -470,6 +470,31 @@
   CSV, so future gaps get found from what the box actually sees and
   brought back for a manual entry rather than guessed at ahead of time.
   103 tests passing. Version bumped to **1.0.9**.
+  **VM-verified**, including a real testing-methodology bug caught
+  along the way: `pkg add -f localfile.pkg` on an already-installed
+  same-named package does *not* run the old package's `pre-deinstall`
+  hook the way a genuine `pkg upgrade` transaction does -- so the
+  1.0.8->1.0.9 upgrade tested that way left the *old* process running
+  in memory despite the new files being on disk (same pid throughout,
+  confirmed via `ps`), giving a false-looking "no crash" signal that
+  was actually just "never loaded." Re-tested properly with a
+  temporary local file-based pkg repo (`pkg repo .` against a copy of
+  just the new `.pkg`, added as a second `enabled` repo alongside the
+  real one) and a genuine `pkg upgrade -y os-gowiththeflow` -- this
+  correctly ran `pre-deinstall` (daemon stopped) then `post-install`
+  (fresh process, new pid, confirmed via `ps`), i.e. the exact
+  mechanism nostromo's `pkg update -f && pkg upgrade` will use. With
+  that real upgrade path exercised: the freshly-loaded 1.0.9 process's
+  own background refresh completed in well under a minute (281 files,
+  matching the ~2s measured on a clean dev connection, both far faster
+  than 1.0.8's serial fetch); feeding that real on-disk cache into
+  `CategoryMatcher` directly re-confirmed every case from the bug
+  report resolves correctly now (`amazonaws.com`/`cloudfront.net` ->
+  Cloud Infrastructure, not Shopping; `oculus.com` -> Social Media;
+  `anthropic.com` -> AI); and the new `uncategorizedAction` SQL was
+  run directly against the real database and returns exactly the
+  pre-category historical hostnames (`github.com`, `opnsense.org`,
+  etc.) the user's own guess predicted.
 - **Not yet started**: the deferred History chart and staticOverrides
   grid editor, proper repo signing before this pkg-repo is relied on for
   anything that matters. See "Roadmap" below for the larger post-launch
