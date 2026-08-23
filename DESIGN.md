@@ -392,9 +392,33 @@
      Unresolved traffic shows as "Uncategorized" rather than being
      dropped, so the category totals still reconcile against what Top
      Talkers reports for the same window.
-  Version bumped to **1.0.8**. Not yet built, VM-verified, or
-  published — that's next, following the same real-hardware-first
-  discipline as every prior release.
+  Version bumped to **1.0.8**, built and installed on the test VM
+  (upgrading in place from 1.0.7 via `pkg add -f`, post-install
+  correctly auto-restarted the already-enabled service). Confirmed on
+  the real box: the built `.pkg` actually contains `categories.py`/
+  `category_updater.py` this time (`pkg info -l -F` against the built
+  package, not just the plist source); the daemon ran continuously for
+  7+ minutes with no crash, including exercising the exact PTR-fallback
+  code path that had the 2-tuple/3-tuple bug; the background category
+  refresh completed inside the live daemon process (280 files fetched
+  into `/var/db/gowiththeflow/categories`); and feeding that same
+  real on-disk cache into `CategoryMatcher` directly reproduced every
+  previously-fixed real-world case correctly (`doubleclick.net` ->
+  Ads/Tracking, `facebook.com` -> Social Media, plus new checks against
+  the live corpus like `steampowered.com` -> Gaming). **One gap**: no
+  live *new* connection was observed actually landing in the DB with a
+  category populated end-to-end -- the test VM's isolated host-only LAN
+  doesn't route this dev machine's or the box's own traffic through pf
+  in a way that generates fresh categorizable connections on demand, so
+  that specific link (poll -> resolver -> categorize_fn -> DB write,
+  for a brand new session) is verified at the unit-test level
+  (`test_categorize_fn_result_lands_in_the_db_via_make_resolver`) and
+  via each of its pieces independently on the real box, not via a
+  single live end-to-end observation. Published to the pkg-repo
+  afterward (old 1.0.7 `.pkg` removed, catalog regenerated with
+  `pkg repo .` on the VM, following the repo's own "replace, don't
+  accumulate" convention) -- available to nostromo on its next
+  `pkg update -f && pkg upgrade`.
 - **Not yet started**: the deferred History chart and staticOverrides
   grid editor, proper repo signing before this pkg-repo is relied on for
   anything that matters. See "Roadmap" below for the larger post-launch
