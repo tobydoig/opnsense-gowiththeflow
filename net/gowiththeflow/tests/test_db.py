@@ -115,6 +115,50 @@ def test_second_poll_updates_persisted_session_and_closes_vanished_one(tmp_path)
     assert closed["bytes_in"] == 256
 
 
+def test_init_schema_migrates_category_column_onto_a_pre_existing_install(tmp_path):
+    # Simulates an install from before "category" existed: create the
+    # tables by hand without it, then confirm init_schema's ALTER TABLE
+    # migration adds it rather than relying on CREATE TABLE IF NOT
+    # EXISTS, which is a no-op against tables that already exist.
+    conn = db.connect(str(tmp_path / "flows.db"))
+    conn.execute(
+        """
+        CREATE TABLE live_sessions (
+          id INTEGER PRIMARY KEY,
+          proto TEXT NOT NULL,
+          local_ip TEXT NOT NULL, local_port INTEGER NOT NULL,
+          remote_ip TEXT NOT NULL, remote_port INTEGER NOT NULL,
+          remote_hostname TEXT, hostname_source TEXT,
+          first_seen INTEGER NOT NULL, last_seen INTEGER NOT NULL,
+          bytes_in INTEGER NOT NULL DEFAULT 0, bytes_out INTEGER NOT NULL DEFAULT 0,
+          pkts_in INTEGER NOT NULL DEFAULT 0, pkts_out INTEGER NOT NULL DEFAULT 0,
+          last_checkpoint_at INTEGER NOT NULL DEFAULT 0,
+          baseline_bytes_in INTEGER NOT NULL DEFAULT 0, baseline_bytes_out INTEGER NOT NULL DEFAULT 0,
+          baseline_pkts_in INTEGER NOT NULL DEFAULT 0, baseline_pkts_out INTEGER NOT NULL DEFAULT 0,
+          UNIQUE(proto, local_ip, local_port, remote_ip, remote_port)
+        )
+        """
+    )
+    conn.commit()
+
+    db.init_schema(conn)  # must not raise, and must add the missing column
+
+    columns = {r["name"] for r in conn.execute("PRAGMA table_info(live_sessions)")}
+    assert "category" in columns
+
+    # And the column is actually usable, not just present.
+    conn.execute(
+        """
+        INSERT INTO live_sessions
+            (proto, local_ip, local_port, remote_ip, remote_port, category, first_seen, last_seen)
+        VALUES ('tcp', '192.168.1.10', 1, '1.2.3.4', 443, 'Shopping', 0, 0)
+        """
+    )
+    conn.commit()
+    row = conn.execute("SELECT category FROM live_sessions").fetchone()
+    assert row["category"] == "Shopping"
+
+
 def test_schema_init_is_idempotent(tmp_path):
     conn = db.connect(str(tmp_path / "flows.db"))
     db.init_schema(conn)

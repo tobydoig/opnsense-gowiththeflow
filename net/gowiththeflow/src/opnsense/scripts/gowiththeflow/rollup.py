@@ -59,13 +59,13 @@ def checkpoint_long_lived_sessions(conn: sqlite3.Connection, now: int) -> int:
         conn.execute(
             """
             INSERT INTO connections_raw
-                (proto, local_ip, remote_ip, remote_port, remote_hostname, hostname_source,
+                (proto, local_ip, remote_ip, remote_port, remote_hostname, hostname_source, category,
                  started_at, ended_at, duration_s, bytes_in, bytes_out, pkts_in, pkts_out)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 r["proto"], r["local_ip"], r["remote_ip"], r["remote_port"],
-                r["remote_hostname"], r["hostname_source"],
+                r["remote_hostname"], r["hostname_source"], r["category"],
                 r["last_checkpoint_at"], now, max(now - r["last_checkpoint_at"], 0),
                 delta_bytes_in, delta_bytes_out, delta_pkts_in, delta_pkts_out,
             ),
@@ -103,7 +103,7 @@ def rollup_hourly(conn: sqlite3.Connection, now: int) -> list[int]:
         bucket_end = bucket + HOUR
         rows = conn.execute(
             """
-            SELECT proto, local_ip, remote_ip, remote_hostname, hostname_source,
+            SELECT proto, local_ip, remote_ip, remote_hostname, hostname_source, category,
                    bytes_in, bytes_out, pkts_in, pkts_out, ended_at
             FROM connections_raw
             WHERE ended_at >= ? AND ended_at < ?
@@ -118,7 +118,7 @@ def rollup_hourly(conn: sqlite3.Connection, now: int) -> list[int]:
                 key,
                 {
                     "bytes_in": 0, "bytes_out": 0, "pkts_in": 0, "pkts_out": 0,
-                    "conn_count": 0, "hostname": None, "hostname_source": None,
+                    "conn_count": 0, "hostname": None, "hostname_source": None, "category": None,
                     "hostname_rank": -1,
                 },
             )
@@ -130,15 +130,16 @@ def rollup_hourly(conn: sqlite3.Connection, now: int) -> list[int]:
             if r["remote_hostname"] is not None and r["ended_at"] >= g["hostname_rank"]:
                 g["hostname"] = r["remote_hostname"]
                 g["hostname_source"] = r["hostname_source"]
+                g["category"] = r["category"]
                 g["hostname_rank"] = r["ended_at"]
 
         for (proto, local_ip, remote_ip), g in groups.items():
             conn.execute(
                 """
                 INSERT INTO rollup_hourly
-                    (bucket_start, proto, local_ip, remote_ip, remote_hostname, hostname_source,
+                    (bucket_start, proto, local_ip, remote_ip, remote_hostname, hostname_source, category,
                      bytes_in, bytes_out, pkts_in, pkts_out, conn_count)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(bucket_start, proto, local_ip, remote_ip) DO UPDATE SET
                     bytes_in = bytes_in + excluded.bytes_in,
                     bytes_out = bytes_out + excluded.bytes_out,
@@ -146,10 +147,11 @@ def rollup_hourly(conn: sqlite3.Connection, now: int) -> list[int]:
                     pkts_out = pkts_out + excluded.pkts_out,
                     conn_count = conn_count + excluded.conn_count,
                     remote_hostname = COALESCE(excluded.remote_hostname, remote_hostname),
-                    hostname_source = COALESCE(excluded.hostname_source, hostname_source)
+                    hostname_source = COALESCE(excluded.hostname_source, hostname_source),
+                    category = COALESCE(excluded.category, category)
                 """,
                 (
-                    bucket, proto, local_ip, remote_ip, g["hostname"], g["hostname_source"],
+                    bucket, proto, local_ip, remote_ip, g["hostname"], g["hostname_source"], g["category"],
                     g["bytes_in"], g["bytes_out"], g["pkts_in"], g["pkts_out"], g["conn_count"],
                 ),
             )
@@ -179,7 +181,7 @@ def rollup_daily(conn: sqlite3.Connection, now: int) -> list[int]:
         bucket_end = bucket + DAY
         rows = conn.execute(
             """
-            SELECT proto, local_ip, remote_ip, remote_hostname, hostname_source,
+            SELECT proto, local_ip, remote_ip, remote_hostname, hostname_source, category,
                    bytes_in, bytes_out, pkts_in, pkts_out, conn_count, bucket_start
             FROM rollup_hourly
             WHERE bucket_start >= ? AND bucket_start < ?
@@ -194,7 +196,7 @@ def rollup_daily(conn: sqlite3.Connection, now: int) -> list[int]:
                 key,
                 {
                     "bytes_in": 0, "bytes_out": 0, "pkts_in": 0, "pkts_out": 0,
-                    "conn_count": 0, "hostname": None, "hostname_source": None,
+                    "conn_count": 0, "hostname": None, "hostname_source": None, "category": None,
                     "hostname_rank": -1,
                 },
             )
@@ -206,15 +208,16 @@ def rollup_daily(conn: sqlite3.Connection, now: int) -> list[int]:
             if r["remote_hostname"] is not None and r["bucket_start"] >= g["hostname_rank"]:
                 g["hostname"] = r["remote_hostname"]
                 g["hostname_source"] = r["hostname_source"]
+                g["category"] = r["category"]
                 g["hostname_rank"] = r["bucket_start"]
 
         for (proto, local_ip, remote_ip), g in groups.items():
             conn.execute(
                 """
                 INSERT INTO rollup_daily
-                    (bucket_start, proto, local_ip, remote_ip, remote_hostname, hostname_source,
+                    (bucket_start, proto, local_ip, remote_ip, remote_hostname, hostname_source, category,
                      bytes_in, bytes_out, pkts_in, pkts_out, conn_count)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(bucket_start, proto, local_ip, remote_ip) DO UPDATE SET
                     bytes_in = bytes_in + excluded.bytes_in,
                     bytes_out = bytes_out + excluded.bytes_out,
@@ -222,10 +225,11 @@ def rollup_daily(conn: sqlite3.Connection, now: int) -> list[int]:
                     pkts_out = pkts_out + excluded.pkts_out,
                     conn_count = conn_count + excluded.conn_count,
                     remote_hostname = COALESCE(excluded.remote_hostname, remote_hostname),
-                    hostname_source = COALESCE(excluded.hostname_source, hostname_source)
+                    hostname_source = COALESCE(excluded.hostname_source, hostname_source),
+                    category = COALESCE(excluded.category, category)
                 """,
                 (
-                    bucket, proto, local_ip, remote_ip, g["hostname"], g["hostname_source"],
+                    bucket, proto, local_ip, remote_ip, g["hostname"], g["hostname_source"], g["category"],
                     g["bytes_in"], g["bytes_out"], g["pkts_in"], g["pkts_out"], g["conn_count"],
                 ),
             )

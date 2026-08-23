@@ -38,23 +38,32 @@ def resolve_remote_hostname(
     static_overrides: StaticOverrides,
     flow_hints: FlowHintCache,
     now: int,
-) -> tuple[str | None, str | None]:
-    """Returns (hostname, source) for a remote endpoint, or (None, None)
-    if nothing resolved it -- the caller should display the raw IP."""
+    categorize_fn=None,
+) -> tuple[str | None, str | None, str | None]:
+    """Returns (hostname, source, category) for a remote endpoint, or
+    (None, None, None) if nothing resolved it -- the caller should
+    display the raw IP. `categorize_fn(hostname) -> str | None` is
+    applied to whichever hostname resolves, from any source (a static
+    override is user intent so may not match a known category, same as
+    any other hostname -- no reason to special-case it out)."""
     remote_addr = ipaddress.ip_address(remote_ip)
+
+    def _categorize(hostname):
+        return categorize_fn(hostname) if categorize_fn is not None else None
+
     for network, hostname in static_overrides:
         if remote_addr in network:
-            return hostname, "static"
+            return hostname, "static", _categorize(hostname)
 
     hint = flow_hints.get(local_ip, local_port, remote_ip, remote_port, now)
     if hint is not None:
-        return hint, "sni"
+        return hint, "sni", _categorize(hint)
 
     hostname, source = hostcache.get_hostname(conn, remote_ip, now)
     if hostname is not None:
-        return hostname, source
+        return hostname, source, _categorize(hostname)
 
-    return None, None
+    return None, None, None
 
 
 def make_resolver(
@@ -62,6 +71,7 @@ def make_resolver(
     static_overrides: StaticOverrides,
     flow_hints: FlowHintCache,
     now: int,
+    categorize_fn=None,
 ):
     """Builds the `resolve_hostname(snap)` callable db.record_diff expects,
     closing over the shared state for one poll cycle."""
@@ -72,6 +82,7 @@ def make_resolver(
             snap.key.local_ip, snap.key.local_port,
             snap.key.remote_ip, snap.key.remote_port,
             static_overrides, flow_hints, now,
+            categorize_fn,
         )
 
     return _resolve

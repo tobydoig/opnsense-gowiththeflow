@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS live_sessions (
   proto TEXT NOT NULL,
   local_ip TEXT NOT NULL, local_port INTEGER NOT NULL,
   remote_ip TEXT NOT NULL, remote_port INTEGER NOT NULL,
-  remote_hostname TEXT, hostname_source TEXT,
+  remote_hostname TEXT, hostname_source TEXT, category TEXT,
   first_seen INTEGER NOT NULL, last_seen INTEGER NOT NULL,
   bytes_in INTEGER NOT NULL DEFAULT 0, bytes_out INTEGER NOT NULL DEFAULT 0,
   pkts_in INTEGER NOT NULL DEFAULT 0, pkts_out INTEGER NOT NULL DEFAULT 0,
@@ -39,7 +39,7 @@ CREATE TABLE IF NOT EXISTS connections_raw (
   proto TEXT NOT NULL,
   local_ip TEXT NOT NULL, local_mac TEXT,
   remote_ip TEXT NOT NULL, remote_port INTEGER NOT NULL,
-  remote_hostname TEXT, hostname_source TEXT,
+  remote_hostname TEXT, hostname_source TEXT, category TEXT,
   started_at INTEGER NOT NULL, ended_at INTEGER NOT NULL, duration_s INTEGER NOT NULL,
   bytes_in INTEGER NOT NULL, bytes_out INTEGER NOT NULL,
   pkts_in INTEGER NOT NULL, pkts_out INTEGER NOT NULL
@@ -51,7 +51,7 @@ CREATE INDEX IF NOT EXISTS idx_raw_end ON connections_raw(ended_at);
 CREATE TABLE IF NOT EXISTS rollup_hourly (
   bucket_start INTEGER NOT NULL, proto TEXT NOT NULL,
   local_ip TEXT NOT NULL, remote_ip TEXT NOT NULL,
-  remote_hostname TEXT, hostname_source TEXT,
+  remote_hostname TEXT, hostname_source TEXT, category TEXT,
   bytes_in INTEGER NOT NULL, bytes_out INTEGER NOT NULL,
   pkts_in INTEGER NOT NULL, pkts_out INTEGER NOT NULL, conn_count INTEGER NOT NULL,
   PRIMARY KEY (bucket_start, proto, local_ip, remote_ip)
@@ -62,7 +62,7 @@ CREATE INDEX IF NOT EXISTS idx_ru_h_remote ON rollup_hourly(bucket_start, remote
 CREATE TABLE IF NOT EXISTS rollup_daily (
   bucket_start INTEGER NOT NULL, proto TEXT NOT NULL,
   local_ip TEXT NOT NULL, remote_ip TEXT NOT NULL,
-  remote_hostname TEXT, hostname_source TEXT,
+  remote_hostname TEXT, hostname_source TEXT, category TEXT,
   bytes_in INTEGER NOT NULL, bytes_out INTEGER NOT NULL,
   pkts_in INTEGER NOT NULL, pkts_out INTEGER NOT NULL, conn_count INTEGER NOT NULL,
   PRIMARY KEY (bucket_start, proto, local_ip, remote_ip)
@@ -105,9 +105,26 @@ def connect(db_path: str) -> sqlite3.Connection:
     return conn
 
 
+_CATEGORY_TABLES = ("live_sessions", "connections_raw", "rollup_hourly", "rollup_daily")
+
+
 def init_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA_SQL)
     conn.commit()
+    # SCHEMA_SQL's CREATE TABLE IF NOT EXISTS is a no-op against a
+    # database that already has these tables from before "category" was
+    # added -- ALTER TABLE is the only way to add it to an existing
+    # install rather than just new ones. SQLite has no "ADD COLUMN IF NOT
+    # EXISTS", so this catches the one specific error a repeat run raises
+    # instead (a no-op on a fresh install, where the column already
+    # exists via the CREATE TABLE above).
+    for table in _CATEGORY_TABLES:
+        try:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN category TEXT")
+            conn.commit()
+        except sqlite3.OperationalError as e:
+            if "duplicate column" not in str(e).lower():
+                raise
 
 
 def load_live_sessions_as_snapshots(conn: sqlite3.Connection) -> list[StateSnapshot]:
@@ -147,32 +164,33 @@ def record_diff(
     (see pf_state_poller), so this never sums deltas itself.
 
     `resolve_hostname`, if given, is called as resolve_hostname(snap) for
-    every opened/updated snapshot and should return (hostname, source) or
-    (None, None) -- see correlator.py. A None result never blanks out a
-    hostname a session already had (e.g. a live SNI hint expiring between
-    polls shouldn't make a session's display flicker back to a bare IP),
-    via COALESCE against the existing column value. Closed sessions simply
-    carry forward whatever hostname/source their live_sessions row already
-    had -- the "hostname snapshotted at write time" behavior from the
-    project plan."""
+    every opened/updated snapshot and should return (hostname, source,
+    category) or (None, None, None) -- see correlator.py. A None result
+    never blanks out a hostname/category a session already had (e.g. a
+    live SNI hint expiring between polls shouldn't make a session's
+    display flicker back to a bare IP), via COALESCE against the
+    existing column value. Closed sessions simply carry forward whatever
+    hostname/source/category their live_sessions row already had -- the
+    "hostname snapshotted at write time" behavior from the project
+    plan."""
     now_i = int(now if now is not None else time.time())
 
     def _resolve(snap):
         if resolve_hostname is None:
-            return None, None
+            return None, None, None
         return resolve_hostname(snap)
 
     for snap in diff.opened:
         first_seen = now_i - snap.age_s
-        hostname, source = _resolve(snap)
+        hostname, source, category = _resolve(snap)
         conn.execute(
             """
             INSERT INTO live_sessions
                 (proto, local_ip, local_port, remote_ip, remote_port,
-                 remote_hostname, hostname_source,
+                 remote_hostname, hostname_source, category,
                  first_seen, last_seen, bytes_in, bytes_out, pkts_in, pkts_out,
                  last_checkpoint_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(proto, local_ip, local_port, remote_ip, remote_port)
             DO UPDATE SET
                 last_seen=excluded.last_seen,
@@ -181,30 +199,32 @@ def record_diff(
                 pkts_in=excluded.pkts_in,
                 pkts_out=excluded.pkts_out,
                 remote_hostname=COALESCE(excluded.remote_hostname, remote_hostname),
-                hostname_source=COALESCE(excluded.hostname_source, hostname_source)
+                hostname_source=COALESCE(excluded.hostname_source, hostname_source),
+                category=COALESCE(excluded.category, category)
             """,
             (
                 snap.key.proto, snap.key.local_ip, snap.key.local_port,
                 snap.key.remote_ip, snap.key.remote_port,
-                hostname, source,
+                hostname, source, category,
                 first_seen, now_i, snap.bytes_in, snap.bytes_out,
                 snap.pkts_in, snap.pkts_out, first_seen,
             ),
         )
 
     for snap in diff.updated:
-        hostname, source = _resolve(snap)
+        hostname, source, category = _resolve(snap)
         conn.execute(
             """
             UPDATE live_sessions
             SET last_seen=?, bytes_in=?, bytes_out=?, pkts_in=?, pkts_out=?,
                 remote_hostname=COALESCE(?, remote_hostname),
-                hostname_source=COALESCE(?, hostname_source)
+                hostname_source=COALESCE(?, hostname_source),
+                category=COALESCE(?, category)
             WHERE proto=? AND local_ip=? AND local_port=? AND remote_ip=? AND remote_port=?
             """,
             (
                 now_i, snap.bytes_in, snap.bytes_out, snap.pkts_in, snap.pkts_out,
-                hostname, source,
+                hostname, source, category,
                 snap.key.proto, snap.key.local_ip, snap.key.local_port,
                 snap.key.remote_ip, snap.key.remote_port,
             ),
@@ -213,7 +233,8 @@ def record_diff(
     for snap in diff.closed:
         row = conn.execute(
             """
-            SELECT first_seen, last_seen, remote_hostname, hostname_source FROM live_sessions
+            SELECT first_seen, last_seen, remote_hostname, hostname_source, category
+            FROM live_sessions
             WHERE proto=? AND local_ip=? AND local_port=? AND remote_ip=? AND remote_port=?
             """,
             (
@@ -224,24 +245,25 @@ def record_diff(
         if row is None:
             # Never actually recorded as opened (e.g. daemon restarted
             # mid-session) -- fall back to the closed snapshot's own age;
-            # no prior hostname to carry forward either.
+            # no prior hostname/category to carry forward either.
             first_seen = now_i - snap.age_s
             ended_at = now_i
-            hostname, source = None, None
+            hostname, source, category = None, None, None
         else:
             first_seen, ended_at = row["first_seen"], row["last_seen"]
             hostname, source = row["remote_hostname"], row["hostname_source"]
+            category = row["category"]
 
         conn.execute(
             """
             INSERT INTO connections_raw
-                (proto, local_ip, remote_ip, remote_port, remote_hostname, hostname_source,
+                (proto, local_ip, remote_ip, remote_port, remote_hostname, hostname_source, category,
                  started_at, ended_at, duration_s, bytes_in, bytes_out, pkts_in, pkts_out)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 snap.key.proto, snap.key.local_ip, snap.key.remote_ip, snap.key.remote_port,
-                hostname, source,
+                hostname, source, category,
                 first_seen, ended_at, max(ended_at - first_seen, 0),
                 snap.bytes_in, snap.bytes_out, snap.pkts_in, snap.pkts_out,
             ),

@@ -21,18 +21,18 @@ def test_static_override_wins_over_sni_hint_and_hostcache(tmp_path):
     flow_hints.put("192.168.1.50", 52341, "93.184.216.34", 443, "sni-name.example", now)
     overrides = correlator.parse_static_overrides([("93.184.216.34/32", "my-override.local")])
 
-    hostname, source = correlator.resolve_remote_hostname(
+    hostname, source, category = correlator.resolve_remote_hostname(
         conn, "192.168.1.50", 52341, "93.184.216.34", 443, overrides, flow_hints, now
     )
-    assert (hostname, source) == ("my-override.local", "static")
+    assert (hostname, source, category) == ("my-override.local", "static", None)
 
 
 def test_static_override_matches_a_cidr_range():
     overrides = correlator.parse_static_overrides([("10.0.0.0/8", "internal-vpn-peer")])
-    hostname, source = correlator.resolve_remote_hostname(
+    hostname, source, category = correlator.resolve_remote_hostname(
         db.connect(":memory:"), "192.168.1.50", 1, "10.1.2.3", 443, overrides, FlowHintCache(), 1000
     )
-    assert (hostname, source) == ("internal-vpn-peer", "static")
+    assert (hostname, source, category) == ("internal-vpn-peer", "static", None)
 
 
 def test_live_sni_hint_wins_over_a_stale_but_still_valid_dns_cache_entry(tmp_path):
@@ -46,10 +46,10 @@ def test_live_sni_hint_wins_over_a_stale_but_still_valid_dns_cache_entry(tmp_pat
     flow_hints = FlowHintCache()
     flow_hints.put("192.168.1.50", 52341, "203.0.113.9", 443, "fresh-sni-name.example", now)
 
-    hostname, source = correlator.resolve_remote_hostname(
+    hostname, source, category = correlator.resolve_remote_hostname(
         conn, "192.168.1.50", 52341, "203.0.113.9", 443, [], flow_hints, now
     )
-    assert (hostname, source) == ("fresh-sni-name.example", "sni")
+    assert (hostname, source, category) == ("fresh-sni-name.example", "sni", None)
 
 
 def test_falls_back_to_hostcache_when_no_override_or_live_hint(tmp_path):
@@ -57,18 +57,73 @@ def test_falls_back_to_hostcache_when_no_override_or_live_hint(tmp_path):
     now = 1000
     hostcache.upsert_hostname(conn, "93.184.216.34", "example.com", "dns", 300, now)
 
-    hostname, source = correlator.resolve_remote_hostname(
+    hostname, source, category = correlator.resolve_remote_hostname(
         conn, "192.168.1.50", 52341, "93.184.216.34", 443, [], FlowHintCache(), now
     )
-    assert (hostname, source) == ("example.com", "dns")
+    assert (hostname, source, category) == ("example.com", "dns", None)
 
 
 def test_falls_through_to_none_when_nothing_resolved(tmp_path):
     conn = _fresh_conn(tmp_path)
-    hostname, source = correlator.resolve_remote_hostname(
+    hostname, source, category = correlator.resolve_remote_hostname(
         conn, "192.168.1.50", 52341, "198.51.100.1", 443, [], FlowHintCache(), 1000
     )
-    assert (hostname, source) == (None, None)
+    assert (hostname, source, category) == (None, None, None)
+
+
+def test_categorize_fn_is_applied_regardless_of_which_source_resolved_the_hostname(tmp_path):
+    conn = _fresh_conn(tmp_path)
+    now = 1000
+    categorize_fn = lambda hostname: "Streaming/Video" if "netflix" in hostname else None
+
+    # via static override
+    overrides = correlator.parse_static_overrides([("93.184.216.34/32", "netflix.com")])
+    _, _, category = correlator.resolve_remote_hostname(
+        conn, "192.168.1.50", 1, "93.184.216.34", 443, overrides, FlowHintCache(), now, categorize_fn
+    )
+    assert category == "Streaming/Video"
+
+    # via a live SNI hint
+    flow_hints = FlowHintCache()
+    flow_hints.put("192.168.1.50", 2, "203.0.113.1", 443, "www.netflix.com", now)
+    _, _, category = correlator.resolve_remote_hostname(
+        conn, "192.168.1.50", 2, "203.0.113.1", 443, [], flow_hints, now, categorize_fn
+    )
+    assert category == "Streaming/Video"
+
+    # via the durable hostcache
+    hostcache.upsert_hostname(conn, "198.51.100.5", "nflxvideo.example", "dns", 300, now)
+    _, _, category = correlator.resolve_remote_hostname(
+        conn, "192.168.1.50", 3, "198.51.100.5", 443, [], FlowHintCache(), now, categorize_fn
+    )
+    assert category is None  # "nflxvideo.example" doesn't contain "netflix" -- honest negative
+
+    # a hostname the categorize_fn doesn't recognize resolves to no category, not an error
+    hostcache.upsert_hostname(conn, "198.51.100.6", "unrelated.example", "dns", 300, now)
+    _, _, category = correlator.resolve_remote_hostname(
+        conn, "192.168.1.50", 4, "198.51.100.6", 443, [], FlowHintCache(), now, categorize_fn
+    )
+    assert category is None
+
+
+def test_categorize_fn_result_lands_in_the_db_via_make_resolver(tmp_path):
+    conn = _fresh_conn(tmp_path)
+    poller = PfStatePoller(LOCAL_SUBNETS)
+    flow_hints = FlowHintCache()
+    now = 1000
+    flow_hints.put("192.168.1.50", 52341, "93.184.216.34", 443, "netflix.com", now)
+
+    diff = poller.poll(
+        "tcp 192.168.1.50:52341 -> 93.184.216.34:443       ESTABLISHED:ESTABLISHED\n"
+        "   age 00:00:01, expires in 86399s, 2:1 pkts, 500:200 bytes, rule 8\n"
+    )
+    resolver = correlator.make_resolver(
+        conn, [], flow_hints, now, categorize_fn=lambda h: "Streaming/Video" if h == "netflix.com" else None
+    )
+    db.record_diff(conn, diff, now=now, resolve_hostname=resolver)
+
+    row = conn.execute("SELECT * FROM live_sessions").fetchone()
+    assert row["category"] == "Streaming/Video"
 
 
 def test_end_to_end_pf_state_plus_sni_hint_lands_a_resolved_hostname_in_the_db(tmp_path):

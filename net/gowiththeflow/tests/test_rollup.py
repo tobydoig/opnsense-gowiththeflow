@@ -15,17 +15,17 @@ def _fresh_conn(tmp_path):
 
 
 def _insert_raw(conn, *, local_ip, remote_ip, ended_at, bytes_in, bytes_out,
-                 pkts_in=1, pkts_out=1, hostname=None, hostname_source=None,
+                 pkts_in=1, pkts_out=1, hostname=None, hostname_source=None, category=None,
                  proto="tcp", remote_port=443, duration_s=10):
     conn.execute(
         """
         INSERT INTO connections_raw
-            (proto, local_ip, remote_ip, remote_port, remote_hostname, hostname_source,
+            (proto, local_ip, remote_ip, remote_port, remote_hostname, hostname_source, category,
              started_at, ended_at, duration_s, bytes_in, bytes_out, pkts_in, pkts_out)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
-            proto, local_ip, remote_ip, remote_port, hostname, hostname_source,
+            proto, local_ip, remote_ip, remote_port, hostname, hostname_source, category,
             ended_at - duration_s, ended_at, duration_s, bytes_in, bytes_out, pkts_in, pkts_out,
         ),
     )
@@ -36,13 +36,13 @@ def test_rollup_hourly_sums_within_bucket_and_picks_most_recent_hostname(tmp_pat
     conn = _fresh_conn(tmp_path)
     _insert_raw(conn, local_ip="192.168.1.10", remote_ip="1.2.3.4",
                 ended_at=BUCKET0 + 100, bytes_in=100, bytes_out=200,
-                hostname="a.com")
+                hostname="a.com", category="Cloud/Productivity")
     _insert_raw(conn, local_ip="192.168.1.10", remote_ip="1.2.3.4",
                 ended_at=BUCKET0 + 200, bytes_in=50, bytes_out=60,
-                hostname="a2.com")  # later ended_at -> should win as the group's hostname
+                hostname="a2.com", category="Shopping")  # later ended_at -> should win as the group's hostname/category
     _insert_raw(conn, local_ip="192.168.1.10", remote_ip="1.2.3.4",
                 ended_at=BUCKET1 + 50, bytes_in=10, bytes_out=20,
-                hostname=None)  # separate bucket, no hostname resolved this time
+                hostname=None)  # separate bucket, no hostname/category resolved this time
 
     now = BUCKET1 + HOUR + 10  # both buckets fully elapsed
     processed = rollup.rollup_hourly(conn, now)
@@ -53,10 +53,12 @@ def test_rollup_hourly_sums_within_bucket_and_picks_most_recent_hostname(tmp_pat
     assert rows[BUCKET0]["bytes_in"] == 150
     assert rows[BUCKET0]["bytes_out"] == 260
     assert rows[BUCKET0]["remote_hostname"] == "a2.com"
+    assert rows[BUCKET0]["category"] == "Shopping"
 
     assert rows[BUCKET1]["conn_count"] == 1
     assert rows[BUCKET1]["bytes_in"] == 10
     assert rows[BUCKET1]["remote_hostname"] is None
+    assert rows[BUCKET1]["category"] is None
 
 
 def test_rollup_hourly_is_idempotent_when_nothing_new_is_ready(tmp_path):
@@ -85,18 +87,18 @@ def test_rollup_daily_sums_hourly_buckets_within_a_day(tmp_path):
     conn.execute(
         """
         INSERT INTO rollup_hourly
-            (bucket_start, proto, local_ip, remote_ip, remote_hostname, hostname_source,
+            (bucket_start, proto, local_ip, remote_ip, remote_hostname, hostname_source, category,
              bytes_in, bytes_out, pkts_in, pkts_out, conn_count)
-        VALUES (?, 'tcp', '192.168.1.10', '1.2.3.4', 'a.com', 'dns', 100, 200, 1, 2, 3)
+        VALUES (?, 'tcp', '192.168.1.10', '1.2.3.4', 'a.com', 'dns', 'Cloud/Productivity', 100, 200, 1, 2, 3)
         """,
         (day_start,),
     )
     conn.execute(
         """
         INSERT INTO rollup_hourly
-            (bucket_start, proto, local_ip, remote_ip, remote_hostname, hostname_source,
+            (bucket_start, proto, local_ip, remote_ip, remote_hostname, hostname_source, category,
              bytes_in, bytes_out, pkts_in, pkts_out, conn_count)
-        VALUES (?, 'tcp', '192.168.1.10', '1.2.3.4', 'a2.com', 'sni', 50, 60, 1, 1, 1)
+        VALUES (?, 'tcp', '192.168.1.10', '1.2.3.4', 'a2.com', 'sni', 'Shopping', 50, 60, 1, 1, 1)
         """,
         (day_start + HOUR,),
     )
@@ -111,6 +113,7 @@ def test_rollup_daily_sums_hourly_buckets_within_a_day(tmp_path):
     assert row["bytes_out"] == 260
     assert row["conn_count"] == 4
     assert row["remote_hostname"] == "a2.com"  # from the later hourly bucket
+    assert row["category"] == "Shopping"
 
 
 def test_prune_raw_never_deletes_past_the_hourly_watermark(tmp_path):
@@ -153,9 +156,9 @@ def test_checkpoint_long_lived_session_writes_delta_and_advances_baseline(tmp_pa
     conn.execute(
         """
         INSERT INTO live_sessions
-            (proto, local_ip, local_port, remote_ip, remote_port,
+            (proto, local_ip, local_port, remote_ip, remote_port, category,
              first_seen, last_seen, bytes_in, bytes_out, pkts_in, pkts_out, last_checkpoint_at)
-        VALUES ('tcp', '192.168.1.10', 5000, '9.9.9.9', 443, ?, ?, 100000, 200000, 100, 200, ?)
+        VALUES ('tcp', '192.168.1.10', 5000, '9.9.9.9', 443, 'Cloud/Productivity', ?, ?, 100000, 200000, 100, 200, ?)
         """,
         (t0, t0, t0),
     )
@@ -171,6 +174,7 @@ def test_checkpoint_long_lived_session_writes_delta_and_advances_baseline(tmp_pa
     assert raw_rows[0]["ended_at"] == now_1
     assert raw_rows[0]["bytes_in"] == 100000  # full amount: baseline was 0
     assert raw_rows[0]["bytes_out"] == 200000
+    assert raw_rows[0]["category"] == "Cloud/Productivity"  # carried from the live session
 
     live = conn.execute("SELECT * FROM live_sessions").fetchone()
     assert live["baseline_bytes_in"] == 100000
