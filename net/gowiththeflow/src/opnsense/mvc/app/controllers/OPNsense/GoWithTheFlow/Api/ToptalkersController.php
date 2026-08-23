@@ -57,6 +57,10 @@ class ToptalkersController extends DbApiControllerBase
                    WHERE r2.remote_ip = r.remote_ip
                      AND r2.bucket_start >= :cutoff AND r2.remote_hostname IS NOT NULL
                    ORDER BY r2.bucket_start DESC LIMIT 1) AS remote_hostname,
+                  (SELECT r2.category FROM $table r2
+                   WHERE r2.remote_ip = r.remote_ip
+                     AND r2.bucket_start >= :cutoff AND r2.category IS NOT NULL
+                   ORDER BY r2.bucket_start DESC LIMIT 1) AS category,
                   SUM(r.bytes_in) AS bytes_in, SUM(r.bytes_out) AS bytes_out,
                   SUM(r.conn_count) AS conn_count,
                   COUNT(DISTINCT r.local_ip) AS unique_local_hosts
@@ -90,5 +94,42 @@ class ToptalkersController extends DbApiControllerBase
         $response = $this->searchRecordsetBase($records, null, 'bytes_total');
         $response['local_hosts'] = $localHosts;
         return $response;
+    }
+
+    public function categoryAction()
+    {
+        $days = max(1, (int)($this->request->getPost('days') ?: 7));
+        $cutoff = time() - $days * 86400;
+        $table = $this->rollupTableForDays($days);
+
+        $records = [];
+        $db = $this->openDb();
+        if ($db !== null) {
+            // Uncategorized isn't dropped -- it's the honest majority
+            // bucket until more of CATEGORY_SOURCES's upstream lists are
+            // resolved for a given host, and hiding it would make the
+            // total look smaller than what Top Talkers reports.
+            $sql = "
+                SELECT
+                  COALESCE(r.category, :uncategorized) AS category,
+                  SUM(r.bytes_in) AS bytes_in, SUM(r.bytes_out) AS bytes_out,
+                  SUM(r.conn_count) AS conn_count,
+                  COUNT(DISTINCT r.remote_ip) AS unique_remote_hosts
+                FROM $table r
+                WHERE r.bucket_start >= :cutoff
+                GROUP BY category
+            ";
+            $stmt = $db->prepare($sql);
+            $stmt->bindValue(':cutoff', $cutoff, SQLITE3_INTEGER);
+            $stmt->bindValue(':uncategorized', 'Uncategorized', SQLITE3_TEXT);
+            $result = $stmt->execute();
+            while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
+                $row['row_id'] = $row['category'];
+                $row['bytes_total'] = (int)$row['bytes_in'] + (int)$row['bytes_out'];
+                $records[] = $row;
+            }
+        }
+
+        return $this->searchRecordsetBase($records, null, 'bytes_total');
     }
 }

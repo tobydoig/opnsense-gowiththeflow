@@ -7,6 +7,7 @@
             selected_days = $(this).val();
             $("#grid-toptalkers-local").bootgrid('reload');
             $("#grid-toptalkers-remote").bootgrid('reload');
+            $("#grid-toptalkers-category").bootgrid('reload');
         });
 
         $("#local-host-selection").on("changed.bs.select", function () {
@@ -66,8 +67,26 @@
             }
         });
 
+        $("#grid-toptalkers-category").UIBootgrid({
+            search:'/api/gowiththeflow/toptalkers/category',
+            options: {
+                selection: false,
+                multiSelect: false,
+                requestHandler: function(request) {
+                    request['days'] = selected_days;
+                    return request;
+                },
+                formatters: {
+                    "bytesformatter": function (column, row) {
+                        return formatBytesGWTF(row[column.id]);
+                    }
+                }
+            }
+        });
+
         addCsvExportButtonGWTF('grid-toptalkers-local', 'gowiththeflow-toptalkers-local.csv');
         addCsvExportButtonGWTF('grid-toptalkers-remote', 'gowiththeflow-toptalkers-remote.csv');
+        addCsvExportButtonGWTF('grid-toptalkers-category', 'gowiththeflow-toptalkers-category.csv');
 
         // The `data-sort="desc"` header attributes below aren't actually
         // read anywhere in opnsense_bootgrid.js -- only `data-sorter` is
@@ -82,6 +101,10 @@
         let remoteTable = $("#grid-toptalkers-remote").data('UIBootgrid').getTable();
         remoteTable.on("tableBuilt", function () {
             remoteTable.setSort("bytes_total", "desc");
+        });
+        let categoryTable = $("#grid-toptalkers-category").data('UIBootgrid').getTable();
+        categoryTable.on("tableBuilt", function () {
+            categoryTable.setSort("bytes_total", "desc");
         });
 
         $("#days-selection-wrapper").detach().insertAfter('#grid-toptalkers-local-header .search');
@@ -121,6 +144,7 @@
 <ul class="nav nav-tabs" data-tabs="tabs" id="toptalkerstabs">
     <li class="active"><a data-toggle="tab" href="#toptalkers-local">{{ lang._('Top Local Hosts') }}</a></li>
     <li><a data-toggle="tab" href="#toptalkers-remote">{{ lang._('Top Remote Hosts') }}</a></li>
+    <li><a data-toggle="tab" href="#toptalkers-category">{{ lang._('By Category') }}</a></li>
 </ul>
 <div class="tab-content content-box col-xs-12 __mb">
     <div id="toptalkers-local" class="tab-pane fade in active">
@@ -159,8 +183,26 @@
                 <tr>
                     <th data-column-id="row_id" data-identifier="true" data-visible="false">id</th>
                     <th data-column-id="remote" data-type="string">{{ lang._('Remote Host') }}</th>
+                    <th data-column-id="category" data-type="string" data-width="10em">{{ lang._('Category') }}</th>
                     <th data-column-id="conn_count" data-type="numeric" data-width="8em">{{ lang._('Connections') }}</th>
                     <th data-column-id="unique_local_hosts" data-type="numeric" data-width="8em">{{ lang._('Unique Local Hosts') }}</th>
+                    <th data-column-id="bytes_in" data-type="numeric" data-formatter="bytesformatter">{{ lang._('Bytes In') }}</th>
+                    <th data-column-id="bytes_out" data-type="numeric" data-formatter="bytesformatter">{{ lang._('Bytes Out') }}</th>
+                    <th data-column-id="bytes_total" data-type="numeric" data-formatter="bytesformatter">{{ lang._('Total') }}</th>
+                </tr>
+            </thead>
+            <tbody>
+            </tbody>
+        </table>
+    </div>
+    <div id="toptalkers-category" class="tab-pane fade in">
+        <table id="grid-toptalkers-category" class="table table-condensed table-hover table-striped table-responsive">
+            <thead>
+                <tr>
+                    <th data-column-id="row_id" data-identifier="true" data-visible="false">id</th>
+                    <th data-column-id="category" data-type="string">{{ lang._('Category') }}</th>
+                    <th data-column-id="conn_count" data-type="numeric" data-width="8em">{{ lang._('Connections') }}</th>
+                    <th data-column-id="unique_remote_hosts" data-type="numeric" data-width="8em">{{ lang._('Unique Remote Hosts') }}</th>
                     <th data-column-id="bytes_in" data-type="numeric" data-formatter="bytesformatter">{{ lang._('Bytes In') }}</th>
                     <th data-column-id="bytes_out" data-type="numeric" data-formatter="bytesformatter">{{ lang._('Bytes Out') }}</th>
                     <th data-column-id="bytes_total" data-type="numeric" data-formatter="bytesformatter">{{ lang._('Total') }}</th>

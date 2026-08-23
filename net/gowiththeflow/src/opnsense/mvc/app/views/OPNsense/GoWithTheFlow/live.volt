@@ -139,6 +139,7 @@
                 <th data-column-id="row_id" data-identifier="true" data-visible="false">id</th>
                 <th data-column-id="local" data-type="string">{{ lang._('Local Host') }}</th>
                 <th data-column-id="remote" data-type="string">{{ lang._('Remote Host') }}</th>
+                <th data-column-id="category" data-type="string" data-width="10em">{{ lang._('Category') }}</th>
                 <th data-column-id="proto" data-type="string" data-width="6em">{{ lang._('Proto') }}</th>
                 <th data-column-id="local_port" data-type="numeric" data-width="7em">{{ lang._('Local Port') }}</th>
                 <th data-column-id="remote_port" data-type="numeric" data-width="6em">{{ lang._('Port') }}</th>

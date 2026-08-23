@@ -22,6 +22,10 @@ class HistoryController extends DbApiControllerBase
                    WHERE r2.local_ip = r1.local_ip AND r2.remote_ip = r1.remote_ip
                      AND r2.bucket_start >= :cutoff AND r2.remote_hostname IS NOT NULL
                    ORDER BY r2.bucket_start DESC LIMIT 1) AS remote_hostname,
+                  (SELECT r2.category FROM $table r2
+                   WHERE r2.local_ip = r1.local_ip AND r2.remote_ip = r1.remote_ip
+                     AND r2.bucket_start >= :cutoff AND r2.category IS NOT NULL
+                   ORDER BY r2.bucket_start DESC LIMIT 1) AS category,
                   lhi.hostname AS local_hostname,
                   SUM(r1.bytes_in) AS bytes_in, SUM(r1.bytes_out) AS bytes_out,
                   SUM(r1.conn_count) AS conn_count

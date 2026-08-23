@@ -11,7 +11,7 @@ class LiveController extends DbApiControllerBase
         if ($db !== null) {
             $result = $db->query(
                 'SELECT ls.proto, ls.local_ip, ls.local_port, ls.remote_ip, ls.remote_port,
-                        ls.remote_hostname, ls.hostname_source,
+                        ls.remote_hostname, ls.hostname_source, ls.category,
                         ls.first_seen, ls.last_seen,
                         ls.bytes_in, ls.bytes_out, ls.pkts_in, ls.pkts_out,
                         lhi.hostname AS local_hostname
