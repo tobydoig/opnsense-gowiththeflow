@@ -18,6 +18,8 @@ usr/local/opnsense/mvc/app/views/OPNsense/GoWithTheFlow/history.volt
 usr/local/opnsense/mvc/app/views/OPNsense/GoWithTheFlow/live.volt
 usr/local/opnsense/mvc/app/views/OPNsense/GoWithTheFlow/settings.volt
 usr/local/opnsense/mvc/app/views/OPNsense/GoWithTheFlow/toptalkers.volt
+usr/local/opnsense/scripts/gowiththeflow/categories.py
+usr/local/opnsense/scripts/gowiththeflow/category_updater.py
 usr/local/opnsense/scripts/gowiththeflow/correlator.py
 usr/local/opnsense/scripts/gowiththeflow/db.py
 usr/local/opnsense/scripts/gowiththeflow/dns_sniffer.py

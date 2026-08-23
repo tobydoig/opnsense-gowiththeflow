@@ -338,6 +338,63 @@
   1.0.2 confirmed installed on the real box via the actual GUI
   Firmware > Plugins > Update path; 1.0.3 published and VM-verified,
   not yet installed there.
+- **Roadmap item #1 (app/category classification) — built, not yet
+  VM-verified or published.** Followed the user's "let's get started"
+  on the roadmap below, in stages:
+  1. `categories.py` (parser + `CategoryMatcher`, offline-testable) and
+     `category_updater.py` (fetch/disk-cache the v2fly domain lists,
+     network logic kept separate) — committed as `b56da28`/`98d5c61`,
+     21 tests. Two real bugs found by re-testing against actually
+     fetched upstream data (fixtures alone wouldn't have caught
+     either): a tag-scoped `include:` (e.g. `category-ads`'s
+     `include:google @ads`) was pulling in every domain instead of
+     just the tagged subset, and the tag filter didn't propagate
+     through *nested* includes (`category-ads` -> `meta` -> `facebook`),
+     so `facebook.com` wrongly landed in Ads/Tracking instead of Social
+     Media. Both fixed and covered by regression tests using the exact
+     shapes that triggered them.
+  2. Threaded `category` through the storage/resolution layer: a new
+     column (with an `ALTER TABLE` migration for pre-existing installs)
+     on all four session/rollup tables, `db.record_diff()`'s
+     opened/updated/closed paths, `rollup.py`'s hourly/daily aggregation
+     (same `COALESCE`/"most recent wins" pattern already used for
+     hostname), and `correlator.resolve_remote_hostname()`/
+     `make_resolver()` gaining an optional `categorize_fn` applied
+     uniformly regardless of which source (static override, live SNI
+     hint, hostcache) resolved the name. 97 tests passing (added
+     end-to-end `categorize_fn` coverage in `test_correlator.py`, plus
+     category assertions in `test_rollup.py`/`test_db.py` rather than
+     leaving the new column and 3-tuple contract exercised only
+     incidentally).
+  3. Wired a `CategoryMatcher` into `gowiththeflowd.py`: built at
+     startup from whatever's already disk-cached (so a fresh install
+     doesn't block on a network fetch before the daemon can start),
+     refreshed in a background thread on the existing daily job
+     cadence. Caught a real bug while wiring this in: the PTR-fallback
+     branch still unpacked `resolver(snap)` as a 2-tuple after
+     `make_resolver()` started returning a 3-tuple in the previous
+     stage — would have crashed the daemon's main loop on every poll
+     the moment a PTR lookup was attempted. Also caught that
+     `categories.py`/`category_updater.py` were missing from
+     `pkg-plist` entirely — `pkg create -p` only packages what the
+     plist lists, so despite `build-pkg.sh` copying the whole
+     `scripts/gowiththeflow` directory into the staging root, the built
+     `.pkg` would have shipped without them and the daemon would have
+     died with an `ImportError` on a real install, invisibly to every
+     test run so far (tests import against `src/` directly, never
+     through the packaged plist). Both fixed before this ever reached
+     the VM.
+  4. Exposed it in the UI: a Category column on Live, History, and Top
+     Talkers' remote grid, plus a new "By Category" tab (a new
+     `ToptalkersController::categoryAction()`) aggregating bytes/
+     connections per category over the selected day window — the
+     "bytes-by-category rollup" from the roadmap item below.
+     Unresolved traffic shows as "Uncategorized" rather than being
+     dropped, so the category totals still reconcile against what Top
+     Talkers reports for the same window.
+  Version bumped to **1.0.8**. Not yet built, VM-verified, or
+  published — that's next, following the same real-hardware-first
+  discipline as every prior release.
 - **Not yet started**: the deferred History chart and staticOverrides
   grid editor, proper repo signing before this pkg-repo is relied on for
   anything that matters. See "Roadmap" below for the larger post-launch

@@ -1,6 +1,6 @@
 {
   "name": "os-gowiththeflow",
-  "version": "1.0.7",
+  "version": "1.0.8",
   "origin": "net/os-gowiththeflow",
   "comment": "Per-host connection and bandwidth tracking with hostname resolution",
   "desc": "Go With The Flow tracks, per local host, which remote hosts it talks to and how many bytes in/out, both live and historically. Remote hostnames are resolved via passive DNS and TLS SNI observation rather than raw IPs alone.",
