@@ -550,8 +550,29 @@
   `pkg-plist` lines, one new `Menu.xml` line, no `ACL.xml` change needed
   (already wildcard-granted). Version bumped to **1.1.0** (minor, not
   patch -- this project's first genuinely new feature since app/category
-  classification, not a bugfix). Not yet built, VM-verified, or
-  published.
+  classification, not a bugfix).
+  **VM-verified via the real `pkg upgrade` transaction** (not `pkg add
+  -f`, per the testing-methodology lesson from 1.0.9) -- and this time
+  with genuine real-traffic end-to-end proof, not just offline logic
+  checks: the daemon's own SSH management sessions to the VM (10.0.0.9 ->
+  10.0.0.1, both within `local_subnets`) were correctly classified,
+  checkpointed, and rolled up. Forced a checkpoint + `rollup_internal_hourly`
+  pass against that real accumulated data (51 real connections across
+  tcp+udp) and the aggregation came out byte-for-byte correct
+  (`bytes_a_to_b`/`bytes_b_to_a`/`conn_count` summed exactly across every
+  underlying flow). Both `InternalController` files pass `php -l`.
+  **Real finding from that same test, decided with the user rather than
+  assumed**: any admin-plane traffic to OPNsense's own LAN IP (SSH, the
+  web UI, DNS queries to it) satisfies "both endpoints local" the same as
+  genuine device-to-device pass-through traffic (the camera<->NVR
+  motivating case), so it shows up in Internal Traffic too -- notably
+  different from `classify_local_remote()`, which has always excluded
+  admin-plane traffic from the *remote*-tracking pipeline (see the
+  existing `test_real_capture_admin_plane_traffic_to_opnsense_itself_is_skipped`
+  test). Decision: ship as-is -- it's technically accurate (both ends
+  really are local), not worth the extra complexity of detecting
+  OPNsense's own interface addresses unless it proves annoying in
+  practice. Revisit if it does.
 - **Not yet started**: the deferred History chart and staticOverrides
   grid editor, proper repo signing before this pkg-repo is relied on for
   anything that matters. See "Roadmap" below for the larger post-launch
