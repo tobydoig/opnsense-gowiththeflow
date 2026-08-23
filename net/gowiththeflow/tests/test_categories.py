@@ -1,4 +1,4 @@
-from categories import CategoryMatcher, parse_file
+from categories import CATEGORY_SOURCES, CategoryMatcher, parse_file
 
 
 def test_parse_file_handles_suffix_full_regexp_and_comments():
@@ -129,6 +129,38 @@ def test_categorize_returns_none_for_unresolved_or_empty_hostname():
     matcher = CategoryMatcher({}, {"Streaming/Video": ["netflix"]})
     assert matcher.categorize(None) is None
     assert matcher.categorize("") is None
+
+
+def test_categorize_uses_real_category_sources_and_amazon_bare_include_of_aws_lands_in_cloud_not_shopping():
+    # Real-world bug found on the user's actual box: v2fly's own "amazon"
+    # file does a bare `include:aws`, so without Cloud Infrastructure
+    # coming first in CATEGORY_SOURCES, an EC2 hostname like
+    # "ec2-3-248-160-245.eu-west-1.compute.amazonaws.com" (and
+    # cloudfront.net, also inside the "aws" file) landed in Shopping
+    # instead. Uses the real CATEGORY_SOURCES/ordering, not a synthetic
+    # mapping, so a future reordering regresses this test directly.
+    files = {
+        "amazon": "amazon.com\ninclude:aws",
+        "aws": "amazonaws.com\ncloudfront.net",
+    }
+    matcher = CategoryMatcher(files, CATEGORY_SOURCES)
+    assert matcher.categorize("ec2-3-248-160-245.eu-west-1.compute.amazonaws.com") == "Cloud Infrastructure"
+    assert matcher.categorize("cloudfront.net") == "Cloud Infrastructure"
+    assert matcher.categorize("amazon.com") == "Shopping"
+
+
+def test_categorize_covers_oculus_and_ai_companies_via_real_category_sources():
+    # Also found on the user's real box: oculus.com and anthropic.com
+    # had no category at all -- oculus.com because it's only reachable
+    # upstream via a "meta" file our Social Media sources never included
+    # (fixed by listing "oculus" directly), and anthropic.com/openai.com
+    # because there was no AI category at all despite v2fly carrying
+    # real files for both companies.
+    files = {"oculus": "oculus.com", "anthropic": "anthropic.com", "openai": "openai.com"}
+    matcher = CategoryMatcher(files, CATEGORY_SOURCES)
+    assert matcher.categorize("oculus.com") == "Social Media"
+    assert matcher.categorize("anthropic.com") == "AI"
+    assert matcher.categorize("openai.com") == "AI"
 
 
 def test_categorize_precedence_follows_category_sources_order():

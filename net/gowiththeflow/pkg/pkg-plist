@@ -26,6 +26,7 @@ usr/local/opnsense/scripts/gowiththeflow/dns_sniffer.py
 usr/local/opnsense/scripts/gowiththeflow/gowiththeflowd.py
 usr/local/opnsense/scripts/gowiththeflow/hostcache.py
 usr/local/opnsense/scripts/gowiththeflow/localhost_identity.py
+usr/local/opnsense/scripts/gowiththeflow/manual_categories.py
 usr/local/opnsense/scripts/gowiththeflow/pf_state_poller.py
 usr/local/opnsense/scripts/gowiththeflow/ptr_resolver.py
 usr/local/opnsense/scripts/gowiththeflow/rollup.py

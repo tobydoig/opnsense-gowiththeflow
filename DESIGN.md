@@ -419,6 +419,57 @@
   `pkg repo .` on the VM, following the repo's own "replace, don't
   accumulate" convention) -- available to nostromo on its next
   `pkg update -f && pkg upgrade`.
+- **1.0.9 — real-box category feedback from nostromo, three real issues
+  found and fixed.** The user ran 1.0.8 against real traffic and
+  reported: Top Talkers' By Category tab showing only "Uncategorized";
+  several real hostnames (`anthropic.com`, `googleapis.com`,
+  `teams.microsoft.com`, `oculus.com`, `facebook.com`) with no category
+  on the Live page; and `ec2-3-248-160-245.eu-west-1.compute.amazonaws.com`
+  wrongly categorized as Shopping. Investigated by fetching the real
+  v2fly files directly (no nostromo access needed for this part) rather
+  than assuming:
+  1. **Confirmed real bug**: v2fly's own `amazon` file does a bare
+     `include:aws`, and the `aws` file lists `amazonaws.com` *and*
+     `cloudfront.net` -- both were landing in Shopping via the same
+     "coarse company file" pattern already caught once for
+     `doubleclick.net`/Ads_Tracking. Fixed the same way: added `"aws"`
+     to Cloud Infrastructure's own sources and moved Cloud
+     Infrastructure earlier in `CATEGORY_SOURCES` so it's checked
+     before Shopping. Re-verified against a freshly-fetched real corpus
+     (not just the offline test fixtures) that this and every
+     previously-fixed case are still correct.
+  2. **Confirmed real scope gaps**: `oculus.com` has no top-level v2fly
+     file of its own reachable from our Social Media sources (only
+     reachable via a `meta` file we never included) -- fixed by adding
+     `"oculus"` directly. `anthropic.com`/`openai.com` had nowhere to
+     go at all despite v2fly carrying real, well-populated files for
+     both -- added a new `"AI"` category sourced from them.
+     `googleapis.com`/`teams.microsoft.com`/`facebook.com`, on the
+     other hand, checked out fine against the real fetched data (all
+     three correctly resolve given a populated cache) -- their gap on
+     nostromo is most plausibly the next item, not a matching bug.
+  3. **Real reliability gap**: `category_updater.fetch_all()` fetched
+     its ~280 files one at a time with only a 10s-per-file timeout and
+     no retry -- fine on the lab VM's clean VirtualBox NAT path (~2s
+     total, measured), but plausibly much slower and less reliable on
+     nostromo's real home connection, which would explain "categories
+     for some, but not many" shortly after upgrading (anything resolved
+     before the slow initial fetch finished got permanently frozen at
+     no-category, the same "hostname snapshotted at write time"
+     behavior already accepted for closed sessions). Fixed by fetching
+     each round concurrently (bounded pool, `ThreadPoolExecutor`) with
+     one retry per file before giving up.
+  Also built, per the user's own suggestion, the other half of the
+  workflow for domains no upstream file will ever cover: a
+  `manual_categories.py` module (hostname/suffix -> category,
+  initially empty) checked *before* the v2fly-based `CategoryMatcher`
+  -- same precedence `static_overrides` gets over the automated
+  hostname resolvers -- plus a new Top Talkers "Uncategorized Hosts"
+  tab (`ToptalkersController::uncategorizedAction()`) listing real
+  currently-uncategorized hostnames by traffic volume, exportable to
+  CSV, so future gaps get found from what the box actually sees and
+  brought back for a manual entry rather than guessed at ahead of time.
+  103 tests passing. Version bumped to **1.0.9**.
 - **Not yet started**: the deferred History chart and staticOverrides
   grid editor, proper repo signing before this pkg-repo is relied on for
   anything that matters. See "Roadmap" below for the larger post-launch

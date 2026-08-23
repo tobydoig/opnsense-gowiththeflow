@@ -5,6 +5,7 @@ separate from categories.py so that module stays fully offline-testable.
 
 from __future__ import annotations
 
+import concurrent.futures
 import os
 import urllib.request
 
@@ -12,11 +13,29 @@ from categories import CATEGORY_SOURCES, parse_file
 
 BASE_URL = "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/"
 FETCH_TIMEOUT_S = 10
+MAX_CONCURRENT_FETCHES = 12
 
 
 def _http_get(url: str) -> str:
     with urllib.request.urlopen(url, timeout=FETCH_TIMEOUT_S) as resp:  # noqa: S310 (fixed https, not user input)
         return resp.read().decode("utf-8")
+
+
+def _fetch_or_none(fetch_fn, name: str) -> str | None:
+    # One retry -- CATEGORY_SOURCES's full include chain is ~280 files
+    # fetched over real, not-always-pristine home internet connections
+    # (confirmed slower/less reliable than the isolated lab VM this was
+    # first tested against), and a single transient failure otherwise
+    # leaves that file's domains uncategorized for a full day, until the
+    # next scheduled refresh.
+    for _attempt in range(2):
+        try:
+            text = fetch_fn(name)
+        except Exception:
+            continue
+        if text is not None:
+            return text
+    return None
 
 
 def resolve_top_level_files(category_sources: dict[str, list[str]] | None = None) -> set[str]:
@@ -37,28 +56,42 @@ def fetch_all(
     chains iteratively until no new file names appear. `fetch_fn(name) ->
     str` is injectable for tests; defaults to a real HTTP GET against
     BASE_URL. Returns only what was successfully fetched -- a file that
-    fails to fetch is just missing from the result, not an exception;
-    callers merge this with whatever's already cached so one bad fetch
-    doesn't wipe out previously-good data for that file."""
+    fails to fetch (even after one retry) is just missing from the
+    result, not an exception; callers merge this with whatever's already
+    cached so one bad fetch doesn't wipe out previously-good data for
+    that file.
+
+    Fetches within a round concurrently (bounded by
+    MAX_CONCURRENT_FETCHES) -- CATEGORY_SOURCES's full include chain is
+    ~280 files, and fetching those one at a time made the very first
+    refresh after an install/upgrade take long enough on a real home
+    connection that most traffic seen in the meantime went
+    uncategorized. New `include:` targets are only known after parsing
+    a round's fetched text, so this still proceeds in rounds -- just
+    with each round's own fetches happening in parallel rather than
+    serially."""
     fetch_fn = fetch_fn or (lambda name: _http_get(BASE_URL + name))
-    to_fetch = resolve_top_level_files(category_sources)
-    fetched: dict[str, str] = {}
     seen: set[str] = set()
+    fetched: dict[str, str] = {}
+    to_fetch = resolve_top_level_files(category_sources)
+
     while to_fetch:
-        name = to_fetch.pop()
-        if name in seen:
-            continue
-        seen.add(name)
-        try:
-            text = fetch_fn(name)
-        except Exception:
-            continue
-        if text is None:
-            continue
-        fetched[name] = text
-        for inc in parse_file(text).includes:
-            if inc.name not in seen:
-                to_fetch.add(inc.name)
+        round_names = list(to_fetch)
+        seen.update(round_names)
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=min(MAX_CONCURRENT_FETCHES, len(round_names))
+        ) as pool:
+            texts = pool.map(lambda name: _fetch_or_none(fetch_fn, name), round_names)
+
+        to_fetch = set()
+        for name, text in zip(round_names, texts):
+            if text is None:
+                continue
+            fetched[name] = text
+            for inc in parse_file(text).includes:
+                if inc.name not in seen:
+                    to_fetch.add(inc.name)
+
     return fetched
 
 

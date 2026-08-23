@@ -32,6 +32,32 @@ def test_fetch_all_treats_none_return_as_a_failed_fetch():
     assert fetched == {}
 
 
+def test_fetch_all_retries_once_before_giving_up_on_a_transient_failure():
+    attempts = {"flaky": 0}
+
+    def fetch_fn(name):
+        attempts[name] += 1
+        if name == "flaky" and attempts[name] == 1:
+            raise OSError("transient network blip")
+        return "some.host.example.com"
+
+    fetched = cu.fetch_all({"X": ["flaky"]}, fetch_fn=fetch_fn)
+    assert fetched == {"flaky": "some.host.example.com"}
+    assert attempts["flaky"] == 2
+
+
+def test_fetch_all_gives_up_after_two_failed_attempts():
+    attempts = {"broken": 0}
+
+    def fetch_fn(name):
+        attempts[name] += 1
+        raise OSError("network down")
+
+    fetched = cu.fetch_all({"X": ["broken"]}, fetch_fn=fetch_fn)
+    assert fetched == {}
+    assert attempts["broken"] == 2
+
+
 def test_cache_round_trips_through_disk(tmp_path):
     files = {"netflix": "netflix.com", "category-social-media-!cn": "include:facebook"}
     cu.save_cached_files(str(tmp_path), files)

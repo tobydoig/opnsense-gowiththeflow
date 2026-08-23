@@ -19,23 +19,30 @@ from dataclasses import dataclass, field
 
 # Order matters: categorize() returns the first match, and company-wide
 # files (google, microsoft, amazon, apple, ...) include their own
-# ad-serving subdomains as one bare (untagged) blob when we pull them in
-# for Cloud/Productivity or Shopping -- confirmed against real data that
-# e.g. doubleclick.net is only @ads-tagged inside google's own file, with
-# no untagged entry, so a plain include:google (no tag filter, since
-# it's just a bare name in *our* mapping) still catches it. Ads/Tracking
-# has to come first so those domains land there instead of being
-# shadowed by the broader company category they happen to also live in.
+# ad-serving subdomains -- or, in amazon's case, its entire cloud
+# infrastructure business -- as one bare (untagged) blob when we pull
+# them in for Cloud/Productivity or Shopping. Confirmed against real
+# data twice now: doubleclick.net is only @ads-tagged inside google's
+# own file with no untagged entry, so a plain include:google (no tag
+# filter, since it's just a bare name in *our* mapping) still catches
+# it; and amazon's own file does a bare include:aws, so *.amazonaws.com
+# and cloudfront.net were landing in Shopping until this was caught
+# against a real "ec2-...amazonaws.com" hostname on the user's actual
+# box. Ads/Tracking and Cloud Infrastructure both have to come before
+# the broader company categories they'd otherwise be shadowed by.
 CATEGORY_SOURCES: dict[str, list[str]] = {
     "Ads/Tracking": ["category-ads"],
-    "Social Media": ["category-social-media-!cn", "tiktok", "snapchat", "pinterest", "reddit"],
+    "Cloud Infrastructure": ["category-cdn-!cn", "cloudflare", "akamai", "fastly", "aws"],
+    "Social Media": [
+        "category-social-media-!cn", "tiktok", "snapchat", "pinterest", "reddit", "oculus",
+    ],
     "Streaming/Video": ["netflix", "youtube", "disney", "hulu", "primevideo", "twitch"],
     "Music": ["spotify", "soundcloud", "pandora"],
     "Gaming": ["category-games-!cn", "steam", "xbox", "playstation", "nintendo", "epicgames"],
     "Communication": ["whatsapp", "telegram", "signal", "discord", "zoom", "slack"],
+    "AI": ["anthropic", "openai"],
     "Cloud/Productivity": ["google", "microsoft", "apple", "dropbox"],
     "Shopping": ["amazon", "ebay", "etsy"],
-    "Cloud Infrastructure": ["category-cdn-!cn", "cloudflare", "akamai", "fastly"],
 }
 
 

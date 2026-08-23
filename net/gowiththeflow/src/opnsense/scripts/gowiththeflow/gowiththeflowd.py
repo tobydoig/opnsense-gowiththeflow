@@ -25,6 +25,7 @@ import db
 import dns_sniffer
 import hostcache
 import localhost_identity
+import manual_categories
 import ptr_resolver
 import rollup
 import sni_sniffer
@@ -49,6 +50,12 @@ class _CategoryMatcherHolder:
         self.matcher = matcher
 
     def categorize(self, hostname: str | None) -> str | None:
+        # A hand-curated call (manual_categories.py) always wins over the
+        # v2fly-derived lookup -- same precedence static_overrides gets
+        # over the automated hostname resolvers in correlator.py.
+        override = manual_categories.categorize(hostname)
+        if override is not None:
+            return override
         return self.matcher.categorize(hostname)
 
 

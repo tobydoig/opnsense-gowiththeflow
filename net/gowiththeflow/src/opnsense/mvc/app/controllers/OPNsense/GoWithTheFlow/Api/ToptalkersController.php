@@ -132,4 +132,46 @@ class ToptalkersController extends DbApiControllerBase
 
         return $this->searchRecordsetBase($records, null, 'bytes_total');
     }
+
+    public function uncategorizedAction()
+    {
+        $days = max(1, (int)($this->request->getPost('days') ?: 7));
+        $cutoff = time() - $days * 86400;
+        $table = $this->rollupTableForDays($days);
+
+        $records = [];
+        $db = $this->openDb();
+        if ($db !== null) {
+            // A hostname's category can vary across older/newer buckets
+            // (e.g. it predates a categories.py fix) -- HAVING checks
+            // only the *most recent* bucket's category, same correlated-
+            // subquery pattern as remote_hostname/category elsewhere, so
+            // an already-fixed hostname doesn't linger on this list just
+            // because some of its older buckets are still uncategorized.
+            $sql = "
+                SELECT
+                  r1.remote_hostname,
+                  SUM(r1.bytes_in) AS bytes_in, SUM(r1.bytes_out) AS bytes_out,
+                  SUM(r1.conn_count) AS conn_count
+                FROM $table r1
+                WHERE r1.bucket_start >= :cutoff AND r1.remote_hostname IS NOT NULL
+                GROUP BY r1.remote_hostname
+                HAVING (
+                  SELECT r2.category FROM $table r2
+                  WHERE r2.remote_hostname = r1.remote_hostname AND r2.bucket_start >= :cutoff
+                  ORDER BY r2.bucket_start DESC LIMIT 1
+                ) IS NULL
+            ";
+            $stmt = $db->prepare($sql);
+            $stmt->bindValue(':cutoff', $cutoff, SQLITE3_INTEGER);
+            $result = $stmt->execute();
+            while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
+                $row['row_id'] = $row['remote_hostname'];
+                $row['bytes_total'] = (int)$row['bytes_in'] + (int)$row['bytes_out'];
+                $records[] = $row;
+            }
+        }
+
+        return $this->searchRecordsetBase($records, null, 'bytes_total');
+    }
 }
