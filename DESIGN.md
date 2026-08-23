@@ -340,10 +340,10 @@
   not yet installed there.
 - **Not yet started**: the deferred History chart and staticOverrides
   grid editor, proper repo signing before this pkg-repo is relied on for
-  anything that matters, adding QUIC/HTTP-3 SNI-equivalent parsing (a
-  real, known gap -- flagged when the user noticed a lot of unresolved
-  port-443 remote hosts; likely also ECH and DoH, which are inherent
-  limits of passive DNS+SNI sniffing rather than something fixable here).
+  anything that matters. See "Roadmap" below for the larger post-launch
+  feature set (app/category classification, local<->local tracking,
+  Sankey visualization, DPI) agreed after the user asked to aim for
+  rough feature parity with the commercial ZenArmor plugin.
 - **Distribution repos**: both GitHub repos created and pushed —
   `github.com/tobydoig/opnsense-gowiththeflow` (private, source, this repo)
   and `github.com/tobydoig/gowiththeflow-pkg-repo` (public, placeholder
@@ -352,6 +352,64 @@
   (`~/.ssh/gowiththeflow_deploy`, ed25519) added to the GitHub account —
   needed because the existing personal keys were passphrase-protected and
   `ssh`/`ssh-add` can't prompt for a passphrase in a non-interactive shell.
+
+## Roadmap: post-launch feature set (ZenArmor-inspired, scoped down)
+
+Prompted by the user asking to make this "as full-featured as possible,
+on a par with the commercial ZenArmor plugin." ZenArmor's real feature
+set spans several genuinely different problem domains -- malware/botnet
+detection and threat-intel feeds, multi-site cloud management, SSL
+inspection -- that the user explicitly said they don't want (no interest
+in malware detection or "multi-cloud whatnot"), so the scoped-down list
+below is deliberately narrower than "everything ZenArmor has":
+
+1. **App/category classification** (agreed as the first of these to
+   build). Not DPI -- a lookup enrichment on hostnames already resolved
+   via DNS/SNI/PTR against a free, actively-maintained domain->category
+   list (candidate: `v2fly/domain-list-community`, MIT licensed, files
+   like `category-social-media`, `netflix`, `youtube`, `games`; matched
+   by domain suffix, which is a better fit than IP-based lists since CDN
+   IPs rotate but the resolved hostname doesn't). Store the category
+   alongside the existing hostname cache, surface it as a column/filter
+   in Live/History/TopTalkers, add a bytes-by-category rollup.
+2. **Local<->local traffic tracking** (agreed, general case only).
+   `classify_local_remote()` currently discards any pf state where both
+   ends are local -- extending this to emit a third "local<->local"
+   category needs its own schema (asymmetric local/remote columns don't
+   fit) and hostname resolution via ARP/DHCP-lease lookups on *both*
+   ends rather than DNS/SNI. **Important caveat, confirmed on the real
+   box**: this only works for local traffic that actually routes through
+   the firewall (e.g. devices on separate VLANs/subnets). Checked the
+   motivating example directly (`cam-path` -> `nvr`, both on the same
+   192.168.200.0/24) via `pfctl -vvs state` and found zero states
+   between them -- only broadcast/multicast discovery traffic and the
+   NVR's own internet-bound connection appeared. Two devices on the same
+   L2 broadcast domain switch traffic directly and never reach the
+   firewall at all, so this feature (or any firewall-based tool,
+   ZenArmor included) categorically cannot see same-subnet traffic like
+   that -- not a limitation of this project specifically.
+3. **Sankey-style flow visualization**. Client-side rendering on data we
+   already have (more interesting once category data from #1 exists --
+   local host -> category -> remote host is a much better diagram than
+   local -> remote alone).
+4. **DPI (nDPI or similar)** -- added to the backlog, explicitly scoped
+   after discussing the tradeoff: gives protocol/app identification
+   independent of hostname/port (works for non-standard ports, obscure
+   protocols) and QUIC/HTTP-3 awareness (a real current gap -- some of
+   the unresolved port-443 entries the user noticed are likely QUIC,
+   which the current sniffer doesn't parse at all), plus some resilience
+   to encrypted DNS (DoH) since it doesn't depend on seeing the DNS
+   query. Does **not** help with Encrypted Client Hello (ECH) -- SNI
+   hidden cryptographically, unreadable by any packet inspection;
+   defeating it needs active SSL/TLS interception (installing a trusted
+   root cert on every device, decrypting and re-encrypting everything),
+   a much bigger and more invasive undertaking than DPI itself, out of
+   scope. A materially heavier architecture than the passive-sniffing
+   design this project started with (new dependency, more CPU/memory) --
+   user is explicitly fine with the resource cost given their hardware
+   (16GB RAM, 4-core i7) and belief that requirements won't exceed
+   ZenArmor's own, but this needs its own scoping pass before starting,
+   not a quick add-on to the existing daemon.
 
 ## Context
 
