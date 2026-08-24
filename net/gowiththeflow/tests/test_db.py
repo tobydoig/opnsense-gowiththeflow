@@ -1,7 +1,7 @@
 import os
 
 import db
-from pf_state_poller import InternalPairKey, PfStatePoller
+from pf_state_poller import PfStatePoller
 
 FIXTURES_DIR = os.path.join(os.path.dirname(__file__), "fixtures")
 LOCAL_SUBNETS = ["192.168.1.0/24"]
@@ -44,6 +44,27 @@ def test_load_live_sessions_as_snapshots_round_trips_for_seeding(tmp_path):
         assert loaded.pkts_out == opened.pkts_out
 
 
+def test_load_live_sessions_as_snapshots_round_trips_peer_is_local(tmp_path):
+    # Both values must round-trip correctly -- a restart that silently
+    # defaulted every seeded session to peer_is_local=False would make
+    # record_diff()'s resolver short-circuit misfire for a local-peer
+    # session that closes without ever reappearing in a real poll.
+    conn = _fresh_conn(tmp_path)
+    poller = PfStatePoller(LOCAL_SUBNETS)
+    diff = poller.poll(
+        "tcp 192.168.1.50:1234 -> 93.184.216.34:443       ESTABLISHED:ESTABLISHED\n"
+        "   age 00:00:01, expires in 100s, 1:1 pkts, 100:100 bytes, rule 1\n"
+        "tcp 192.168.1.10:5000 -> 192.168.1.20:22       ESTABLISHED:ESTABLISHED\n"
+        "   age 00:00:01, expires in 100s, 1:1 pkts, 100:100 bytes, rule 1\n"
+    )
+    db.record_diff(conn, diff, now=NOW1)
+
+    snapshots = db.load_live_sessions_as_snapshots(conn)
+    by_peer = {s.key.peer_ip: s for s in snapshots}
+    assert by_peer["93.184.216.34"].peer_is_local is False
+    assert by_peer["192.168.1.20"].peer_is_local is True
+
+
 def test_connect_creates_missing_parent_directory(tmp_path):
     # Regression test: a fresh install has no reason to have
     # /var/db/gowiththeflow already -- only pytest's tmp_path (already a
@@ -64,7 +85,7 @@ def test_opened_sessions_land_in_live_sessions_with_backdated_first_seen(tmp_pat
     db.record_diff(conn, diff, now=NOW1)
 
     rows = {
-        r["remote_ip"]: r
+        r["peer_ip"]: r
         for r in conn.execute("SELECT * FROM live_sessions").fetchall()
     }
     assert set(rows) == {"93.184.216.34", "8.8.8.8"}
@@ -75,7 +96,8 @@ def test_opened_sessions_land_in_live_sessions_with_backdated_first_seen(tmp_pat
     assert tcp_row["last_seen"] == NOW1
     assert tcp_row["bytes_out"] == 9843
     assert tcp_row["bytes_in"] == 1420
-    assert tcp_row["remote_hostname"] is None  # no hostname resolution yet
+    assert tcp_row["peer_hostname"] is None  # no hostname resolution yet
+    assert tcp_row["peer_is_local"] == 0
 
     assert conn.execute("SELECT COUNT(*) FROM connections_raw").fetchone()[0] == 0
 
@@ -88,7 +110,7 @@ def test_second_poll_updates_persisted_session_and_closes_vanished_one(tmp_path)
     db.record_diff(conn, poller.poll(_load_fixture("pfctl_state_poll_2.txt")), now=NOW2)
 
     live_rows = {
-        r["remote_ip"]: r
+        r["peer_ip"]: r
         for r in conn.execute("SELECT * FROM live_sessions").fetchall()
     }
     # 8.8.8.8 closed and must be gone from live_sessions.
@@ -107,7 +129,7 @@ def test_second_poll_updates_persisted_session_and_closes_vanished_one(tmp_path)
     raw_rows = conn.execute("SELECT * FROM connections_raw").fetchall()
     assert len(raw_rows) == 1
     closed = raw_rows[0]
-    assert closed["remote_ip"] == "8.8.8.8"
+    assert closed["peer_ip"] == "8.8.8.8"
     assert closed["started_at"] == NOW1 - 2  # age was 00:00:02 at poll 1
     assert closed["ended_at"] == NOW1  # last time it was actually seen alive
     assert closed["duration_s"] == 2
@@ -115,11 +137,37 @@ def test_second_poll_updates_persisted_session_and_closes_vanished_one(tmp_path)
     assert closed["bytes_in"] == 256
 
 
+def test_record_diff_never_resolves_hostname_for_a_local_peer(tmp_path):
+    # A local peer's IP would never resolve to anything via DNS/SNI/
+    # hostcache anyway, but the short-circuit in record_diff()'s _resolve
+    # must skip calling the resolver entirely for peer_is_local=True
+    # snapshots, rather than relying on it happening to return nothing --
+    # confirmed here by passing a resolver that fails loudly if called.
+    conn = _fresh_conn(tmp_path)
+    poller = PfStatePoller(LOCAL_SUBNETS)
+    diff = poller.poll(
+        "tcp 192.168.1.10:1234 -> 192.168.1.20:445       ESTABLISHED:ESTABLISHED\n"
+        "   age 00:00:01, expires in 100s, 1:1 pkts, 100:100 bytes, rule 1\n"
+    )
+
+    def _resolver_that_must_not_be_called(snap):
+        raise AssertionError("resolve_hostname must not be called for a local peer")
+
+    db.record_diff(conn, diff, now=NOW1, resolve_hostname=_resolver_that_must_not_be_called)
+
+    row = conn.execute("SELECT * FROM live_sessions").fetchone()
+    assert row["peer_hostname"] is None
+    assert row["hostname_source"] is None
+    assert row["category"] == "Internal"
+
+
 def test_init_schema_migrates_category_column_onto_a_pre_existing_install(tmp_path):
     # Simulates an install from before "category" existed: create the
     # tables by hand without it, then confirm init_schema's ALTER TABLE
     # migration adds it rather than relying on CREATE TABLE IF NOT
-    # EXISTS, which is a no-op against tables that already exist.
+    # EXISTS, which is a no-op against tables that already exist. Uses the
+    # pre-unification column names deliberately -- this test is only
+    # about the ALTER TABLE mechanism, unrelated to the local/peer rename.
     conn = db.connect(str(tmp_path / "flows.db"))
     conn.execute(
         """
@@ -175,89 +223,8 @@ def test_schema_init_is_idempotent(tmp_path):
         "ip_hostname_cache",
         "local_host_identity",
         "rollup_state",
-        "internal_live_sessions",
-        "internal_connections_raw",
-        "internal_rollup_hourly",
-        "internal_rollup_daily",
     } <= tables
-
-
-def test_load_internal_live_sessions_as_snapshots_round_trips_for_seeding(tmp_path):
-    conn = _fresh_conn(tmp_path)
-    poller = PfStatePoller(LOCAL_SUBNETS)
-    diff = poller.poll_internal_pairs(
-        "tcp 192.168.1.10:1234 -> 192.168.1.20:445       ESTABLISHED:ESTABLISHED\n"
-        "   age 00:00:01, expires in 100s, 3:4 pkts, 300:400 bytes, rule 1\n"
-    )
-    db.record_internal_diff(conn, diff, now=NOW1)
-
-    snapshots = db.load_internal_live_sessions_as_snapshots(conn)
-
-    assert len(snapshots) == 1
-    loaded = snapshots[0]
-    assert loaded.key == InternalPairKey("tcp", "192.168.1.10", 1234, "192.168.1.20", 445)
-    assert loaded.bytes_a_to_b == 300
-    assert loaded.bytes_b_to_a == 400
-    assert loaded.pkts_a_to_b == 3
-    assert loaded.pkts_b_to_a == 4
-
-
-def test_internal_pair_opened_lands_in_internal_live_sessions_with_backdated_first_seen(tmp_path):
-    conn = _fresh_conn(tmp_path)
-    poller = PfStatePoller(LOCAL_SUBNETS)
-
-    diff = poller.poll_internal_pairs(
-        "tcp 192.168.1.10:1234 -> 192.168.1.20:445       ESTABLISHED:ESTABLISHED\n"
-        "   age 00:00:12, expires in 100s, 3:4 pkts, 300:400 bytes, rule 1\n"
-    )
-    db.record_internal_diff(conn, diff, now=NOW1)
-
-    row = conn.execute("SELECT * FROM internal_live_sessions").fetchone()
-    assert row["ip_a"] == "192.168.1.10"
-    assert row["ip_b"] == "192.168.1.20"
-    assert row["first_seen"] == NOW1 - 12
-    assert row["last_seen"] == NOW1
-    assert row["bytes_a_to_b"] == 300
-    assert row["bytes_b_to_a"] == 400
-
-    assert conn.execute("SELECT COUNT(*) FROM internal_connections_raw").fetchone()[0] == 0
-
-
-def test_internal_pair_second_poll_updates_persisted_pair_and_closes_vanished_one(tmp_path):
-    conn = _fresh_conn(tmp_path)
-    poller = PfStatePoller(LOCAL_SUBNETS)
-
-    poll_1 = (
-        "tcp 192.168.1.10:1234 -> 192.168.1.20:445       ESTABLISHED:ESTABLISHED\n"
-        "   age 00:00:02, expires in 100s, 1:1 pkts, 128:256 bytes, rule 1\n"
-        "tcp 192.168.1.30:5000 -> 192.168.1.40:22       ESTABLISHED:ESTABLISHED\n"
-        "   age 00:00:01, expires in 100s, 1:1 pkts, 100:100 bytes, rule 1\n"
-    )
-    db.record_internal_diff(conn, poller.poll_internal_pairs(poll_1), now=NOW1)
-
-    poll_2 = (
-        "tcp 192.168.1.10:1234 -> 192.168.1.20:445       ESTABLISHED:ESTABLISHED\n"
-        "   age 00:00:07, expires in 100s, 30:22 pkts, 25000:3100 bytes, rule 1\n"
-    )
-    db.record_internal_diff(conn, poller.poll_internal_pairs(poll_2), now=NOW2)
-
-    live_rows = {
-        r["ip_b"]: r for r in conn.execute("SELECT * FROM internal_live_sessions").fetchall()
-    }
-    assert set(live_rows) == {"192.168.1.20"}  # .40 closed and must be gone
-
-    updated = live_rows["192.168.1.20"]
-    assert updated["first_seen"] == NOW1 - 2  # preserved across the update
-    assert updated["last_seen"] == NOW2
-    assert updated["bytes_a_to_b"] == 25000
-    assert updated["bytes_b_to_a"] == 3100
-
-    raw_rows = conn.execute("SELECT * FROM internal_connections_raw").fetchall()
-    assert len(raw_rows) == 1
-    closed = raw_rows[0]
-    assert closed["ip_a"] == "192.168.1.30"
-    assert closed["ip_b"] == "192.168.1.40"
-    assert closed["started_at"] == NOW1 - 1
-    assert closed["ended_at"] == NOW1
-    assert closed["bytes_a_to_b"] == 100
-    assert closed["bytes_b_to_a"] == 100
+    assert "internal_live_sessions" not in tables
+    assert "internal_connections_raw" not in tables
+    assert "internal_rollup_hourly" not in tables
+    assert "internal_rollup_daily" not in tables

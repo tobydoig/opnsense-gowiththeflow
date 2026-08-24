@@ -115,7 +115,6 @@ def run(config: Config) -> None:
 
     poller = PfStatePoller(config.local_subnets)
     poller.seed(db.load_live_sessions_as_snapshots(conn))
-    poller.seed_internal_pairs(db.load_internal_live_sessions_as_snapshots(conn))
     flow_hints = FlowHintCache()
     static_overrides = correlator.parse_static_overrides(config.static_overrides)
     ptr = ptr_resolver.PtrResolver(ptr_resolver.live_resolve_fn) if config.enable_ptr_fallback else None
@@ -183,24 +182,22 @@ def run(config: Config) -> None:
         )
         db.record_diff(conn, diff, now=now_i, resolve_hostname=resolver)
 
-        # Same already-fetched pfctl_output text, re-parsed by
-        # poll_internal_pairs() itself -- no new subprocess call. Internal
-        # (local<->local) pairs have no hostname to resolve, so there's no
-        # equivalent of the PTR-fallback block below for this pipeline.
-        internal_diff = poller.poll_internal_pairs(pfctl_output)
-        db.record_internal_diff(conn, internal_diff, now=now_i)
-
         if ptr is not None:
             # Any newly-opened session the resolver couldn't name gets a
             # rate-limited, best-effort PTR attempt; a hit is cached so the
-            # *next* poll picks it up via the normal hostcache path.
+            # *next* poll picks it up via the normal hostcache path. Skipped
+            # entirely for a local peer -- its IP would never PTR-resolve to
+            # anything meaningful, and db.record_diff never calls the
+            # resolver for one anyway.
             for snap in diff.opened:
+                if snap.peer_is_local:
+                    continue
                 hostname, _source, _category = resolver(snap)
                 if hostname is None:
-                    ptr_hostname = ptr.resolve(snap.key.remote_ip, now)
+                    ptr_hostname = ptr.resolve(snap.key.peer_ip, now)
                     if ptr_hostname is not None:
                         hostcache.upsert_hostname(
-                            conn, snap.key.remote_ip, ptr_hostname, "ptr", PTR_TTL_S, now_i
+                            conn, snap.key.peer_ip, ptr_hostname, "ptr", PTR_TTL_S, now_i
                         )
 
         if now - last_localhost_refresh >= LOCALHOST_REFRESH_INTERVAL_S:
@@ -211,24 +208,12 @@ def run(config: Config) -> None:
             rollup.checkpoint_long_lived_sessions(conn, now_i)
             rollup.rollup_hourly(conn, now_i)
             rollup.prune_raw(conn, now_i, config.raw_retention_days)
-            rollup.checkpoint_long_lived_internal_sessions(conn, now_i)
-            rollup.rollup_internal_hourly(conn, now_i)
-            rollup.prune_raw(
-                conn, now_i, config.raw_retention_days,
-                table="internal_connections_raw", rollup_watermark_kind="internal_hourly",
-            )
             last_hourly_job = now
 
         if now - last_daily_job >= DAILY_JOB_INTERVAL_S:
             rollup.rollup_daily(conn, now_i)
             rollup.prune_hourly(conn, now_i, config.rollup_hourly_retention_days)
             rollup.prune_daily(conn, now_i, config.rollup_daily_retention_days)
-            rollup.rollup_internal_daily(conn, now_i)
-            rollup.prune_hourly(
-                conn, now_i, config.rollup_hourly_retention_days,
-                table="internal_rollup_hourly", rollup_watermark_kind="internal_daily",
-            )
-            rollup.prune_daily(conn, now_i, config.rollup_daily_retention_days, table="internal_rollup_daily")
             rollup.incremental_vacuum(conn)
             _refresh_categories_in_background(category_holder)
             last_daily_job = now

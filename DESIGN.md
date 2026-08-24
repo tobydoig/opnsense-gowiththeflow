@@ -573,12 +573,103 @@
   really are local), not worth the extra complexity of detecting
   OPNsense's own interface addresses unless it proves annoying in
   practice. Revisit if it does.
-- **Not yet started**: the deferred History chart and staticOverrides
-  grid editor, proper repo signing before this pkg-repo is relied on for
-  anything that matters. See "Roadmap" below for the larger post-launch
-  feature set (app/category classification, local<->local tracking,
-  Sankey visualization, DPI) agreed after the user asked to aim for
-  rough feature parity with the commercial ZenArmor plugin.
+- **1.2.0 — unified the local/remote and Internal Traffic pipelines into
+  one "peer" model, added pf state + Live/History Overview charts,
+  fixed a real History performance bug. Built and unit-tested (113
+  tests), not yet VM-verified or published.** Using 1.1.0's separate
+  Internal Traffic page in practice, the user observed the real
+  distinction was never "local<->remote vs local<->local" as two kinds
+  of thing -- it's always "one machine talking to another," where the
+  other machine happens to be local or remote. Two parallel pipelines
+  were duplicating the same logic and made the pages harder to reason
+  about (the user's original "why don't I see cam-frontdoor talking to
+  nvr" question came from checking the wrong page for exactly this
+  reason). **This supersedes roadmap item #2 below** -- local<->local
+  tracking is no longer a separate feature, it's `peer_is_local=1` rows
+  flowing through the same Live/History/Top Talkers pipeline as every
+  other peer.
+  - Schema: `remote_ip`/`remote_port`/`remote_hostname` renamed to
+    `peer_ip`/`peer_port`/`peer_hostname` on all four session/rollup
+    tables; new `peer_is_local` column (0 = internet peer, 1 = local
+    peer -- today's Internal Traffic case, named via a
+    `local_host_identity` lookup at query time instead of DNS/SNI, and
+    given the literal category sentinel `'Internal'`). The four
+    `internal_*` tables and their dedicated poller/rollup/PHP code paths
+    were deleted outright. Confirmed with the user that clearing
+    existing tracking data is acceptable (still dev/testing) -- no
+    migration path was built, `flows.db` just gets deleted before the
+    upgraded daemon starts.
+  - **A dedicated Plan-agent validation pass, run before writing any
+    code (same discipline used for Internal Traffic originally), caught
+    a real, previously-unconsidered bug**: canonicalizing
+    `peer_is_local=1` pairs by numeric IP (needed so the same device
+    pair doesn't fragment into two rollup rows depending on who
+    initiated) means `local_ip` for an internal pair no longer reliably
+    means "the host to filter/rank by." Three places would have
+    silently misattributed or dropped internal-pair traffic for
+    whichever pair member has the numerically larger address: History's
+    `local_host` filter, Top Talkers' "Top Local Hosts," and -- most
+    ironically -- Top Talkers' "Top Peers" (the ranking meant to let a
+    device like an NVR show up as a top talker would have systematically
+    failed for exactly that kind of low-static-IP device). Fixed
+    entirely in the PHP query layer (no schema/rollup change) via
+    `UNION ALL` queries that credit both members of an internal pair
+    from their own point of view, swapping `bytes_in`/`bytes_out` on the
+    reinterpreted branch. Independently verified correct against
+    synthetic data via standalone Python `sqlite3` scripts before being
+    trusted (no PHP test harness or local PHP interpreter exists in this
+    project).
+  - New `state` column (pf's own connection state, e.g. `ESTABLISHED`,
+    `TIME_WAIT`, `FIN_WAIT_2:CLOSE_WAIT`) captured from `pfctl -vvs
+    state`'s header line (previously parsed and discarded) and shown as
+    a new Live column, addressing the user's stated skepticism about
+    whether every row in the Live list is genuinely still active.
+  - Real, reproduced-and-measured performance fix: the History page
+    took 7.5s against a realistic 45-day/39k-row synthetic dataset,
+    because its correlated subqueries had no index with
+    `local_ip`/`peer_ip` as a leading column. Two new covering indexes
+    (`(local_ip, peer_ip, bucket_start)` and `(peer_ip, bucket_start)`
+    on both rollup tables, kept alongside the existing bucket_start-
+    leading indexes -- both shapes are needed for different query
+    patterns) brought it to 0.089s (~84x), confirmed via `EXPLAIN QUERY
+    PLAN` showing an index `SEARCH` where there was previously a `SCAN`.
+  - Live and History both became 2-tab pages (Overview + Table).
+    Live's Overview: one shared client-side delta-computation pipeline
+    (diffs each poll's cumulative bytes against the previous poll,
+    grouped by local host or peer port, capped to the top 10 groups +
+    "Other") rendered through 3 switchable views -- Line, Stacked Bar
+    (both trivial Chart.js config swaps on one shared instance), and an
+    experimental hand-drawn SVG node-link "Graph" view (edges/nodes
+    fade out over ~4s when a connection closes, rather than vanishing
+    instantly) -- category-based grouping and a real Sankey library were
+    both explicitly rejected for this tab (category coverage isn't
+    trusted enough yet for a glanceable view; Sankey wasn't confirmed
+    available and wasn't needed for what this tab requires). Clicking a
+    line/node/legend entry switches to the Table tab filtered to that
+    host/port. History's Overview: a new `HistoryController::
+    timeseriesAction()` endpoint (plain JSON, not a Bootgrid search)
+    backing a per-local-host Line/Stacked-Bar chart at 1-hour or 1-day
+    resolution (per-minute was considered and dropped as overkill),
+    reusing the existing day-range and local-host-filter controls.
+    Chart.js confirmed already bundled on the target OPNsense VM
+    (`chart.umd.min.js`, same convention OPNsense core's own
+    Diagnostics > Traffic page uses) -- no new frontend dependency.
+  - Version bumped to **1.2.0** (minor, given the schema rewrite and the
+    genuinely new charting feature, not just a bugfix).
+- **Not yet started**: the staticOverrides grid editor, proper repo
+  signing before this pkg-repo is relied on for anything that matters,
+  and a possible future "scheduled traffic blocking" feature (the
+  user's original motivating real-world case -- catching a kid's gaming
+  device active late at night, wanting to eventually block it during set
+  hours). The unified peer model and the new `state` field are already
+  compatible with that future feature; it's deliberately not designed or
+  scoped yet, and would most likely layer on top via pf's own
+  schedule-based rules rather than this plugin reinventing blocking
+  itself. See "Roadmap" below for the larger post-launch feature set
+  (app/category classification, local<->local tracking, Sankey
+  visualization, DPI) agreed after the user asked to aim for rough
+  feature parity with the commercial ZenArmor plugin -- items #2 and #3
+  below are now partially superseded by the 1.2.0 work above.
 - **Distribution repos**: both GitHub repos created and pushed —
   `github.com/tobydoig/opnsense-gowiththeflow` (private, source, this repo)
   and `github.com/tobydoig/gowiththeflow-pkg-repo` (public, placeholder
@@ -608,7 +699,11 @@ below is deliberately narrower than "everything ZenArmor has":
    alongside the existing hostname cache, surface it as a column/filter
    in Live/History/TopTalkers, add a bytes-by-category rollup.
 2. **Local<->local traffic tracking** (agreed, general case only) --
-   **built as "Internal Traffic," see the Status entry above.**
+   **built as "Internal Traffic," then superseded by the 1.2.0
+   local/remote-unification work (see the Status entry above) -- it's
+   no longer a separate page/pipeline, just `peer_is_local=1` rows
+   flowing through the same Live/History/Top Talkers views as any other
+   peer.**
    `classify_local_remote()` currently discards any pf state where both
    ends are local -- extending this to emit a third "local<->local"
    category needs its own schema (asymmetric local/remote columns don't
@@ -624,20 +719,21 @@ below is deliberately narrower than "everything ZenArmor has":
    firewall at all, so this feature (or any firewall-based tool,
    ZenArmor included) categorically cannot see same-subnet traffic like
    that -- not a limitation of this project specifically.
-3. **Live page redesign + Sankey-style flow visualization.** The Live
-   grid is currently one row per individual connection -- on a real
-   network with several always-reconnecting devices (see the
-   `cam-cabin`/TIME_WAIT investigation above) that's 5 pages of mostly
-   noise, not useful at a glance. Agreed redesign: one row per *local
-   host* by default, showing aggregate totals (bytes in/out summed
-   across that host's current connections) instead of a flat per-
-   connection list; clicking a host row drills into a Sankey-style
-   diagram of just that host's own connections (local host -> each
-   remote host/category, sized by bytes). Client-side rendering on data
-   we already have; more interesting once category data from #1 exists
-   (local host -> category -> remote host is a much better diagram than
-   local -> remote alone, and gives the Sankey a middle tier to branch
-   through).
+3. **Live page redesign + Sankey-style flow visualization** -- **the
+   Live page redesign half was built as part of 1.2.0's Overview/Table
+   split (see the Status entry above)**, though not exactly as
+   originally sketched: rather than one aggregated row per local host,
+   Live's Overview tab is a Line/Stacked-Bar/Graph chart of per-host (or
+   per-port) throughput over time, with the Table tab kept as the
+   existing flat per-connection list (click-through from the chart, not
+   a host-row drill-down). A real Sankey diagram was explicitly
+   considered and rejected for now -- the user judged it "too busy" for
+   a single source host's own connections (a table is just as good
+   there) and category data isn't trusted enough yet to make a
+   host -> category -> peer diagram worthwhile. The experimental
+   node-link "Graph" view built instead is the closest analog currently
+   shipped; revisit true Sankey rendering later if the Graph view proves
+   insufficient once category coverage improves.
 4. **DPI (nDPI or similar)** -- added to the backlog, explicitly scoped
    after discussing the tradeoff: gives protocol/app identification
    independent of hostname/port (works for non-standard ports, obscure
@@ -789,8 +885,8 @@ net/gowiththeflow/
     │   │   │   └── Api/
     │   │   │       ├── DbApiControllerBase.php # DONE -- shared DB_PATH/openDb()/formatHost()/rollupTableForDays()
     │   │   │       ├── LiveController.php      # DONE -- reads live_sessions via native SQLite3, searchRecordsetBase()
-    │   │   │       ├── HistoryController.php   # DONE -- aggregates rollup_hourly/rollup_daily by (local_ip, remote_ip)
-    │   │   │       ├── ToptalkersController.php # DONE -- localAction()/remoteAction(), ranks by bytes/connections
+    │   │   │       ├── HistoryController.php   # DONE -- aggregates rollup_hourly/rollup_daily by (local_ip, peer_ip); timeseriesAction() backs the Overview chart
+    │   │   │       ├── ToptalkersController.php # DONE -- localAction()/peerAction(), ranks by bytes/connections
     │   │   │       ├── ServiceController.php   # DONE -- trivial ApiMutableServiceControllerBase subclass
     │   │   │       └── SettingsController.php  # DONE -- ApiMutableModelControllerBase + clearData/resetHostnameCache
     │   │   ├── models/OPNsense/GoWithTheFlow/
@@ -799,9 +895,9 @@ net/gowiththeflow/
     │   │   │   ├── ACL/ACL.xml                 # DONE -- ui/gowiththeflow/*, api/gowiththeflow/*
     │   │   │   └── Menu/Menu.xml               # DONE -- Reporting > Go With The Flow > Live/History/Top Talkers; Services > Go With The Flow > Settings
     │   │   └── views/OPNsense/GoWithTheFlow/
-    │   │       ├── live.volt                   # DONE -- Bootgrid with byte/duration formatters
-    │   │       ├── history.volt                # DONE -- Bootgrid breakdown table + day-range/local-host filters
-    │   │       ├── toptalkers.volt              # DONE -- two Bootgrids (local/remote) + shared days selector
+    │   │       ├── live.volt                   # DONE -- Overview (Line/Stacked-Bar/Graph chart) + Table tabs, byte/duration formatters
+    │   │       ├── history.volt                # DONE -- Overview (per-host chart) + Table tabs, day-range/local-host/resolution filters
+    │   │       ├── toptalkers.volt              # DONE -- Bootgrids (local/peer/category/uncategorized) + shared days selector
     │   │       └── settings.volt                # DONE -- form + save/apply + housekeeping buttons
     │
     │   Naming gotcha (confirmed on the real VM): OPNsense/Phalcon's
@@ -1032,11 +1128,11 @@ controller's job is just: query SQLite, build that array, hand it off.
 
 | Method | Path | Params | Returns |
 |---|---|---|---|
-| POST | `/api/gowiththeflow/live/search/` | Bootgrid standard (`current`, `rowCount`, `sort`, `searchPhrase`) | **DONE.** local/remote (`hostname (ip)`), proto, port, bytes in/out, live-computed duration |
-| POST | `/api/gowiththeflow/history/search/` | + `days`, `local_host?` | **DONE.** rollup rows aggregated by (local_ip, remote_ip), granularity auto-picked by `days` vs. the 45-day hourly-retention threshold, plus a `local_hosts` map for the filter dropdown |
-| — | *(deferred)* timeseries endpoint for the History chart | `local_host`, `remote_host`, `days`, `bucket=hour\|day` | `{ts, bytes_in, bytes_out}[]` for charting (not a Bootgrid search — a plain data endpoint) |
-| POST | `/api/gowiththeflow/toptalkers/local` | `days` | **DONE.** ranked local hosts by total bytes/connections (sortable by clicking either column — no separate `sort_by` param needed) |
-| POST | `/api/gowiththeflow/toptalkers/remote` | `days`, `local_host?` | **DONE.** ranked remote hosts; filtering by `local_host` correctly shows only that host's share of a shared-IP remote, not the combined total |
+| POST | `/api/gowiththeflow/live/search/` | Bootgrid standard (`current`, `rowCount`, `sort`, `searchPhrase`) | **DONE.** local/peer (`hostname (ip)`), `peer_is_local`, `category`, `state` (pf's own connection state), proto, port, bytes in/out, live-computed duration |
+| POST | `/api/gowiththeflow/history/search/` | + `days`, `local_host?` | **DONE.** rollup rows aggregated by (local_ip, peer_ip), granularity auto-picked by `days` vs. the 45-day hourly-retention threshold, plus a `local_hosts` map for the filter dropdown. `local_host` filter and bytes correctly account for `peer_is_local=1` pairs via a UNION ALL (see 1.2.0 Status entry) |
+| POST | `/api/gowiththeflow/history/timeseries` | `days`, `bucket=hour\|day`, `local_host?` | **DONE (1.2.0).** `{buckets, series: {ip: bytes[]}, local_hosts}`, top-10-by-total capped with an "Other" aggregate — backs History's Overview chart |
+| POST | `/api/gowiththeflow/toptalkers/local` | `days` | **DONE.** ranked local hosts by total bytes/connections (sortable by clicking either column — no separate `sort_by` param needed); a UNION ALL credits both members of an internal pair from their own point of view |
+| POST | `/api/gowiththeflow/toptalkers/peer` | `days`, `local_host?` | **DONE** (renamed from `remote` in 1.2.0). ranked peers (internet or local); filtering by `local_host` correctly shows only that host's share of a shared-IP peer, not the combined total; a UNION ALL also surfaces the numerically-smaller member of an internal pair, which would otherwise never appear here at all |
 | GET/POST | `/api/gowiththeflow/service/{start,stop,restart,status,reconfigure}` | — | **DONE.** standard `ApiMutableServiceControllerBase` envelope |
 | GET/POST | `/api/gowiththeflow/settings/{get,set}` | note: `get` needs an actual GET; `set` needs fields nested under `gowiththeflow[...]` | **DONE.** standard `ApiMutableModelControllerBase` envelope |
 | POST | `/api/gowiththeflow/settings/clearData` | — | **DONE.** truncates `connections_raw`/`rollup_hourly`/`rollup_daily`/`live_sessions` (housekeeping action button) |

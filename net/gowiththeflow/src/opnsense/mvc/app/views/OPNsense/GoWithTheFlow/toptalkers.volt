@@ -6,14 +6,14 @@
         $("#days-selection").change(function () {
             selected_days = $(this).val();
             $("#grid-toptalkers-local").bootgrid('reload');
-            $("#grid-toptalkers-remote").bootgrid('reload');
+            $("#grid-toptalkers-peer").bootgrid('reload');
             $("#grid-toptalkers-category").bootgrid('reload');
             $("#grid-toptalkers-uncategorized").bootgrid('reload');
         });
 
         $("#local-host-selection").on("changed.bs.select", function () {
             selected_local_host = $(this).val() || "";
-            $("#grid-toptalkers-remote").bootgrid('reload');
+            $("#grid-toptalkers-peer").bootgrid('reload');
         });
 
         $("#grid-toptalkers-local").UIBootgrid({
@@ -33,8 +33,8 @@
             }
         });
 
-        $("#grid-toptalkers-remote").UIBootgrid({
-            search:'/api/gowiththeflow/toptalkers/remote',
+        $("#grid-toptalkers-peer").UIBootgrid({
+            search:'/api/gowiththeflow/toptalkers/peer',
             options: {
                 selection: false,
                 multiSelect: false,
@@ -103,7 +103,7 @@
         });
 
         addCsvExportButtonGWTF('grid-toptalkers-local', 'gowiththeflow-toptalkers-local.csv');
-        addCsvExportButtonGWTF('grid-toptalkers-remote', 'gowiththeflow-toptalkers-remote.csv');
+        addCsvExportButtonGWTF('grid-toptalkers-peer', 'gowiththeflow-toptalkers-peer.csv');
         addCsvExportButtonGWTF('grid-toptalkers-category', 'gowiththeflow-toptalkers-category.csv');
         addCsvExportButtonGWTF('grid-toptalkers-uncategorized', 'gowiththeflow-toptalkers-uncategorized.csv');
 
@@ -117,9 +117,9 @@
         localTable.on("tableBuilt", function () {
             localTable.setSort("bytes_total", "desc");
         });
-        let remoteTable = $("#grid-toptalkers-remote").data('UIBootgrid').getTable();
-        remoteTable.on("tableBuilt", function () {
-            remoteTable.setSort("bytes_total", "desc");
+        let peerTable = $("#grid-toptalkers-peer").data('UIBootgrid').getTable();
+        peerTable.on("tableBuilt", function () {
+            peerTable.setSort("bytes_total", "desc");
         });
         let categoryTable = $("#grid-toptalkers-category").data('UIBootgrid').getTable();
         categoryTable.on("tableBuilt", function () {
@@ -131,7 +131,7 @@
         });
 
         $("#days-selection-wrapper").detach().insertAfter('#grid-toptalkers-local-header .search');
-        $("#local-host-selection-wrapper").detach().insertAfter('#grid-toptalkers-remote-header .search');
+        $("#local-host-selection-wrapper").detach().insertAfter('#grid-toptalkers-peer-header .search');
     });
 
     // Reuses the grid's own action-button row (the same one the built-in
@@ -166,7 +166,7 @@
 
 <ul class="nav nav-tabs" data-tabs="tabs" id="toptalkerstabs">
     <li class="active"><a data-toggle="tab" href="#toptalkers-local">{{ lang._('Top Local Hosts') }}</a></li>
-    <li><a data-toggle="tab" href="#toptalkers-remote">{{ lang._('Top Remote Hosts') }}</a></li>
+    <li><a data-toggle="tab" href="#toptalkers-peer">{{ lang._('Top Peers') }}</a></li>
     <li><a data-toggle="tab" href="#toptalkers-category">{{ lang._('By Category') }}</a></li>
     <li><a data-toggle="tab" href="#toptalkers-uncategorized">{{ lang._('Uncategorized Hosts') }}</a></li>
 </ul>
@@ -187,7 +187,7 @@
                     <th data-column-id="row_id" data-identifier="true" data-visible="false">id</th>
                     <th data-column-id="local" data-type="string">{{ lang._('Local Host') }}</th>
                     <th data-column-id="conn_count" data-type="numeric" data-width="8em">{{ lang._('Connections') }}</th>
-                    <th data-column-id="unique_remote_hosts" data-type="numeric" data-width="8em">{{ lang._('Unique Remote Hosts') }}</th>
+                    <th data-column-id="unique_peer_hosts" data-type="numeric" data-width="8em">{{ lang._('Unique Peer Hosts') }}</th>
                     <th data-column-id="bytes_in" data-type="numeric" data-formatter="bytesformatter">{{ lang._('Bytes In') }}</th>
                     <th data-column-id="bytes_out" data-type="numeric" data-formatter="bytesformatter">{{ lang._('Bytes Out') }}</th>
                     <th data-column-id="bytes_total" data-type="numeric" data-formatter="bytesformatter">{{ lang._('Total') }}</th>
@@ -197,16 +197,16 @@
             </tbody>
         </table>
     </div>
-    <div id="toptalkers-remote" class="tab-pane fade in">
+    <div id="toptalkers-peer" class="tab-pane fade in">
         <div class="btn-group" id="local-host-selection-wrapper">
             <select class="selectpicker" data-live-search="true" id="local-host-selection" data-width="auto" title="{{ lang._('All Local Hosts') }}">
             </select>
         </div>
-        <table id="grid-toptalkers-remote" class="table table-condensed table-hover table-striped table-responsive">
+        <table id="grid-toptalkers-peer" class="table table-condensed table-hover table-striped table-responsive">
             <thead>
                 <tr>
                     <th data-column-id="row_id" data-identifier="true" data-visible="false">id</th>
-                    <th data-column-id="remote" data-type="string">{{ lang._('Remote Host') }}</th>
+                    <th data-column-id="peer" data-type="string">{{ lang._('Peer') }}</th>
                     <th data-column-id="category" data-type="string" data-width="10em">{{ lang._('Category') }}</th>
                     <th data-column-id="conn_count" data-type="numeric" data-width="8em">{{ lang._('Connections') }}</th>
                     <th data-column-id="unique_local_hosts" data-type="numeric" data-width="8em">{{ lang._('Unique Local Hosts') }}</th>
@@ -226,7 +226,7 @@
                     <th data-column-id="row_id" data-identifier="true" data-visible="false">id</th>
                     <th data-column-id="category" data-type="string">{{ lang._('Category') }}</th>
                     <th data-column-id="conn_count" data-type="numeric" data-width="8em">{{ lang._('Connections') }}</th>
-                    <th data-column-id="unique_remote_hosts" data-type="numeric" data-width="8em">{{ lang._('Unique Remote Hosts') }}</th>
+                    <th data-column-id="unique_peer_hosts" data-type="numeric" data-width="8em">{{ lang._('Unique Peer Hosts') }}</th>
                     <th data-column-id="bytes_in" data-type="numeric" data-formatter="bytesformatter">{{ lang._('Bytes In') }}</th>
                     <th data-column-id="bytes_out" data-type="numeric" data-formatter="bytesformatter">{{ lang._('Bytes Out') }}</th>
                     <th data-column-id="bytes_total" data-type="numeric" data-formatter="bytesformatter">{{ lang._('Total') }}</th>
@@ -244,7 +244,7 @@
             <thead>
                 <tr>
                     <th data-column-id="row_id" data-identifier="true" data-visible="false">id</th>
-                    <th data-column-id="remote_hostname" data-type="string">{{ lang._('Hostname') }}</th>
+                    <th data-column-id="peer_hostname" data-type="string">{{ lang._('Hostname') }}</th>
                     <th data-column-id="conn_count" data-type="numeric" data-width="8em">{{ lang._('Connections') }}</th>
                     <th data-column-id="bytes_in" data-type="numeric" data-formatter="bytesformatter">{{ lang._('Bytes In') }}</th>
                     <th data-column-id="bytes_out" data-type="numeric" data-formatter="bytesformatter">{{ lang._('Bytes Out') }}</th>

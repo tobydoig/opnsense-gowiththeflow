@@ -147,7 +147,7 @@ def test_end_to_end_pf_state_plus_sni_hint_lands_a_resolved_hostname_in_the_db(t
     db.record_diff(conn, diff, now=now, resolve_hostname=resolver)
 
     row = conn.execute("SELECT * FROM live_sessions").fetchone()
-    assert row["remote_hostname"] == "example.com"
+    assert row["peer_hostname"] == "example.com"
     assert row["hostname_source"] == "sni"
 
 
@@ -178,5 +178,5 @@ def test_hostname_is_not_blanked_out_when_the_sni_hint_expires_between_polls(tmp
     db.record_diff(conn, diff2, now=now2, resolve_hostname=correlator.make_resolver(conn, [], flow_hints, now2))
 
     row = conn.execute("SELECT * FROM live_sessions").fetchone()
-    assert row["remote_hostname"] == "example.com"  # preserved, not blanked
+    assert row["peer_hostname"] == "example.com"  # preserved, not blanked
     assert row["bytes_in"] == 4000  # counters still updated normally

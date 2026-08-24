@@ -4,7 +4,6 @@
             <Live order="10" url="/ui/gowiththeflow/live"/>
             <History order="20" url="/ui/gowiththeflow/history"/>
             <TopTalkers VisibleName="Top Talkers" order="30" url="/ui/gowiththeflow/toptalkers"/>
-            <Internal VisibleName="Internal Traffic" order="40" url="/ui/gowiththeflow/internal"/>
         </GoWithTheFlow>
     </Reporting>
     <Services>

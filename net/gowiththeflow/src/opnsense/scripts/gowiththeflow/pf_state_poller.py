@@ -4,7 +4,7 @@ open/update/close events for connection tracking.
 pf reports two packet/byte counters per state, corresponding to traffic in
 the state's original (matching) direction and its reverse. For a
 LAN-initiated outbound state this is assumed to map directly to
-(local->remote, remote->local) -- confirmed against real pfctl output on
+(local->peer, peer->local) -- confirmed against real pfctl output on
 an OPNsense 26.7 test VM during Phase B.
 
 The real output format (confirmed against that VM, and meaningfully
@@ -20,6 +20,11 @@ different from this module's original Phase A assumptions) is:
   expect at all.
 - <src>/<dst> are IPv4 as "ip:port" but IPv6 as "ip[port]" (brackets,
   since the address itself contains colons).
+- <STATE>:<STATE> is pf's own connection state (e.g. ESTABLISHED:ESTABLISHED,
+  TIME_WAIT:TIME_WAIT, sometimes asymmetric per direction for a half-closed
+  connection like FIN_WAIT_2:CLOSE_WAIT) -- captured verbatim as `state`
+  so callers can show it directly rather than only inferring liveness from
+  whether a row is still present.
 - The stats line is not always immediately after the header line (TCP
   states have an extra window-scale line first), so this module scans all
   lines belonging to a block rather than assuming a fixed offset.
@@ -101,11 +106,14 @@ def _parse_header_line(line: str) -> dict | None:
     dst_ip, dst_port = _split_addr_port(tokens[arrow_idx + 1])
     if src_ip is None or dst_ip is None or src_port is None or dst_port is None:
         return None
-    return {
+    result = {
         "proto": proto,
         "src_ip": src_ip, "src_port": src_port,
         "dst_ip": dst_ip, "dst_port": dst_port,
     }
+    if arrow_idx + 2 < len(tokens):
+        result["state"] = tokens[arrow_idx + 2]
+    return result
 
 
 @dataclass(frozen=True)
@@ -113,8 +121,8 @@ class StateKey:
     proto: str
     local_ip: str
     local_port: int
-    remote_ip: str
-    remote_port: int
+    peer_ip: str
+    peer_port: int
 
 
 @dataclass
@@ -125,6 +133,18 @@ class StateSnapshot:
     pkts_out: int
     pkts_in: int
     age_s: int
+    # True when peer_ip is ALSO local (a "both local" pair, e.g. two
+    # devices on different VLANs/subnets routed through the firewall) --
+    # False for the ordinary local<->internet case. A pure function of
+    # local_ip/peer_ip plus static local_subnets config, not part of the
+    # key's identity, but carried here since db.record_diff needs it to
+    # decide whether to resolve a remote hostname at all.
+    peer_is_local: bool = False
+    # pf's own connection state (e.g. "ESTABLISHED:ESTABLISHED",
+    # "TIME_WAIT:TIME_WAIT") -- None if the header line had no state token
+    # for some reason (shouldn't happen in practice, but the stats regex
+    # match is already tolerant of missing detail lines elsewhere).
+    state: str | None = None
 
 
 def _parse_age(age_str: str) -> int:
@@ -162,13 +182,20 @@ def parse_pfctl_state_text(text: str) -> list[dict]:
     return records
 
 
-def classify_local_remote(
+def classify_sessions(
     records: Iterable[dict], local_subnets: list[str]
 ) -> list[StateSnapshot]:
-    """Reorients each parsed pf state record onto (local, remote) using the
-    configured local subnets, discarding states where both or neither
-    endpoint is local (e.g. two local hosts talking directly, or a hairpin
-    state with neither side in a configured subnet)."""
+    """Reorients each parsed pf state record onto (local, peer) using the
+    configured local subnets, discarding only states where NEITHER
+    endpoint is local (e.g. the firewall's own outbound traffic -- out of
+    scope, see DESIGN.md). Unlike the exclusively-remote-tracking pipeline
+    this replaced, a state where BOTH endpoints are local is kept (not
+    discarded) -- local_ip is picked the same way either way (whichever
+    side matched a configured subnet; if both did, local_ip is simply
+    whichever side pf called src, uncanonicalized -- see rollup.py's
+    hourly rollup for where that gets canonicalized for pair-ranking
+    purposes), and `peer_is_local` records whether the OTHER side is also
+    local so callers know not to attempt hostname resolution for it."""
     networks = [ipaddress.ip_network(s) for s in local_subnets]
     snapshots = []
     for rec in records:
@@ -178,19 +205,19 @@ def classify_local_remote(
         dst_ip = ipaddress.ip_address(rec["dst_ip"])
         src_local = any(src_ip in n for n in networks)
         dst_local = any(dst_ip in n for n in networks)
-        if src_local == dst_local:
+        if not src_local and not dst_local:
             continue
         if src_local:
             local_ip, local_port = rec["src_ip"], int(rec["src_port"])
-            remote_ip, remote_port = rec["dst_ip"], int(rec["dst_port"])
+            peer_ip, peer_port = rec["dst_ip"], int(rec["dst_port"])
             bytes_out, bytes_in = int(rec["bytes_a"]), int(rec["bytes_b"])
             pkts_out, pkts_in = int(rec["pkts_a"]), int(rec["pkts_b"])
         else:
             local_ip, local_port = rec["dst_ip"], int(rec["dst_port"])
-            remote_ip, remote_port = rec["src_ip"], int(rec["src_port"])
+            peer_ip, peer_port = rec["src_ip"], int(rec["src_port"])
             bytes_in, bytes_out = int(rec["bytes_a"]), int(rec["bytes_b"])
             pkts_in, pkts_out = int(rec["pkts_a"]), int(rec["pkts_b"])
-        key = StateKey(rec["proto"], local_ip, local_port, remote_ip, remote_port)
+        key = StateKey(rec["proto"], local_ip, local_port, peer_ip, peer_port)
         snapshots.append(
             StateSnapshot(
                 key=key,
@@ -199,6 +226,8 @@ def classify_local_remote(
                 pkts_out=pkts_out,
                 pkts_in=pkts_in,
                 age_s=_parse_age(rec["age"]),
+                peer_is_local=src_local and dst_local,
+                state=rec.get("state"),
             )
         )
     return snapshots
@@ -211,75 +240,6 @@ class DiffResult:
     closed: list[StateSnapshot] = field(default_factory=list)
 
 
-@dataclass(frozen=True)
-class InternalPairKey:
-    """Unlike StateKey, neither side of an internal (local<->local) pair is
-    'more local' than the other -- ip_a/port_a is simply whichever side pf
-    reported as src, ip_b/port_b whichever it reported as dst. This is
-    stable for one connection's lifetime (pf doesn't flip src/dst mid
-    state), which is all diffing needs -- it is NOT canonicalized (e.g.
-    lowest-IP-first), so the same physical device pair can appear as both
-    (A,B) and (B,A) across different flows. rollup.py's hourly rollup is
-    where that gets canonicalized for pair-ranking purposes; this layer
-    intentionally reports the raw, per-flow truth."""
-
-    proto: str
-    ip_a: str
-    port_a: int
-    ip_b: str
-    port_b: int
-
-
-@dataclass
-class InternalPairSnapshot:
-    key: InternalPairKey
-    bytes_a_to_b: int
-    bytes_b_to_a: int
-    pkts_a_to_b: int
-    pkts_b_to_a: int
-    age_s: int
-
-
-def classify_internal_pairs(
-    records: Iterable[dict], local_subnets: list[str]
-) -> list[InternalPairSnapshot]:
-    """Sibling of classify_local_remote(), keeping the mirror-image subset:
-    only states where BOTH endpoints are local. No reorientation needed
-    (unlike the local/remote case) -- src stays 'a', dst stays 'b'."""
-    networks = [ipaddress.ip_network(s) for s in local_subnets]
-    snapshots = []
-    for rec in records:
-        if "pkts_a" not in rec:
-            continue  # no stats line parsed; incomplete record, skip
-        src_ip = ipaddress.ip_address(rec["src_ip"])
-        dst_ip = ipaddress.ip_address(rec["dst_ip"])
-        src_local = any(src_ip in n for n in networks)
-        dst_local = any(dst_ip in n for n in networks)
-        if not (src_local and dst_local):
-            continue
-        key = InternalPairKey(
-            rec["proto"], rec["src_ip"], int(rec["src_port"]), rec["dst_ip"], int(rec["dst_port"])
-        )
-        snapshots.append(
-            InternalPairSnapshot(
-                key=key,
-                bytes_a_to_b=int(rec["bytes_a"]),
-                bytes_b_to_a=int(rec["bytes_b"]),
-                pkts_a_to_b=int(rec["pkts_a"]),
-                pkts_b_to_a=int(rec["pkts_b"]),
-                age_s=_parse_age(rec["age"]),
-            )
-        )
-    return snapshots
-
-
-@dataclass
-class InternalPairDiffResult:
-    opened: list[InternalPairSnapshot] = field(default_factory=list)
-    updated: list[InternalPairSnapshot] = field(default_factory=list)
-    closed: list[InternalPairSnapshot] = field(default_factory=list)
-
-
 class PfStatePoller:
     """Maintains the previous snapshot set and diffs each new poll against
     it, keyed by 4-tuple + proto so a session survives across polls even as
@@ -288,7 +248,6 @@ class PfStatePoller:
     def __init__(self, local_subnets: list[str]):
         self._local_subnets = local_subnets
         self._prev: dict[StateKey, StateSnapshot] = {}
-        self._prev_pairs: dict[InternalPairKey, InternalPairSnapshot] = {}
 
     def seed(self, snapshots: Iterable[StateSnapshot]) -> None:
         """Pre-populates the previous-poll snapshot set, e.g. from
@@ -309,7 +268,7 @@ class PfStatePoller:
     def poll(self, pfctl_output_text: str) -> DiffResult:
         records = parse_pfctl_state_text(pfctl_output_text)
         current = {
-            s.key: s for s in classify_local_remote(records, self._local_subnets)
+            s.key: s for s in classify_sessions(records, self._local_subnets)
         }
 
         result = DiffResult()
@@ -323,35 +282,4 @@ class PfStatePoller:
                 result.closed.append(snap)
 
         self._prev = current
-        return result
-
-    def seed_internal_pairs(self, snapshots: Iterable[InternalPairSnapshot]) -> None:
-        """Same restart-safety as seed(), for the internal (local<->local)
-        pipeline -- added proactively rather than waiting to rediscover
-        the equivalent bug already found and fixed for the remote path."""
-        for snap in snapshots:
-            self._prev_pairs[snap.key] = snap
-
-    def poll_internal_pairs(self, pfctl_output_text: str) -> InternalPairDiffResult:
-        """Independent of poll()/DiffResult on purpose -- re-parses the
-        same already-fetched text a second time (cheap: dozens to a few
-        hundred pf state blocks on a home network) rather than changing
-        poll()'s existing contract, which db.record_diff/gowiththeflowd.py/
-        several tests construct and consume directly."""
-        records = parse_pfctl_state_text(pfctl_output_text)
-        current = {
-            s.key: s for s in classify_internal_pairs(records, self._local_subnets)
-        }
-
-        result = InternalPairDiffResult()
-        for key, snap in current.items():
-            if key not in self._prev_pairs:
-                result.opened.append(snap)
-            else:
-                result.updated.append(snap)
-        for key, snap in self._prev_pairs.items():
-            if key not in current:
-                result.closed.append(snap)
-
-        self._prev_pairs = current
         return result

@@ -80,7 +80,7 @@ def make_resolver(
         return resolve_remote_hostname(
             conn,
             snap.key.local_ip, snap.key.local_port,
-            snap.key.remote_ip, snap.key.remote_port,
+            snap.key.peer_ip, snap.key.peer_port,
             static_overrides, flow_hints, now,
             categorize_fn,
         )

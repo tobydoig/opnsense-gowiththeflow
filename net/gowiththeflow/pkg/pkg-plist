@@ -1,13 +1,11 @@
 usr/local/etc/rc.d/gowiththeflow
 usr/local/opnsense/mvc/app/controllers/OPNsense/GoWithTheFlow/Api/DbApiControllerBase.php
 usr/local/opnsense/mvc/app/controllers/OPNsense/GoWithTheFlow/Api/HistoryController.php
-usr/local/opnsense/mvc/app/controllers/OPNsense/GoWithTheFlow/Api/InternalController.php
 usr/local/opnsense/mvc/app/controllers/OPNsense/GoWithTheFlow/Api/LiveController.php
 usr/local/opnsense/mvc/app/controllers/OPNsense/GoWithTheFlow/Api/ServiceController.php
 usr/local/opnsense/mvc/app/controllers/OPNsense/GoWithTheFlow/Api/SettingsController.php
 usr/local/opnsense/mvc/app/controllers/OPNsense/GoWithTheFlow/Api/ToptalkersController.php
 usr/local/opnsense/mvc/app/controllers/OPNsense/GoWithTheFlow/HistoryController.php
-usr/local/opnsense/mvc/app/controllers/OPNsense/GoWithTheFlow/InternalController.php
 usr/local/opnsense/mvc/app/controllers/OPNsense/GoWithTheFlow/LiveController.php
 usr/local/opnsense/mvc/app/controllers/OPNsense/GoWithTheFlow/SettingsController.php
 usr/local/opnsense/mvc/app/controllers/OPNsense/GoWithTheFlow/ToptalkersController.php
@@ -17,7 +15,6 @@ usr/local/opnsense/mvc/app/models/OPNsense/GoWithTheFlow/GoWithTheFlow.php
 usr/local/opnsense/mvc/app/models/OPNsense/GoWithTheFlow/GoWithTheFlow.xml
 usr/local/opnsense/mvc/app/models/OPNsense/GoWithTheFlow/Menu/Menu.xml
 usr/local/opnsense/mvc/app/views/OPNsense/GoWithTheFlow/history.volt
-usr/local/opnsense/mvc/app/views/OPNsense/GoWithTheFlow/internal.volt
 usr/local/opnsense/mvc/app/views/OPNsense/GoWithTheFlow/live.volt
 usr/local/opnsense/mvc/app/views/OPNsense/GoWithTheFlow/settings.volt
 usr/local/opnsense/mvc/app/views/OPNsense/GoWithTheFlow/toptalkers.volt
