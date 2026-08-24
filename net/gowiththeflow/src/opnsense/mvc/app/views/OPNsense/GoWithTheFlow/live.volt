@@ -13,8 +13,8 @@
     let chartHistory = [];             // [{time, groups: {key: bytesDelta}}]
     let groupLabels = {};              // raw key -> display label (hostname where known)
     let hiddenGroupKeys = new Set();   // raw keys shift-clicked out of the Line/Bar chart
-    const MAX_POINTS = 60;
-    const TOP_N = 10;
+    let liveChartRangeMinutes = 5;     // how much history the Line/Bar chart shows, user-configurable
+    let liveChartTopN = 10;            // Line/Bar chart's line cap, user-configurable -- 0 means "all"
     const GRAPH_FADE_MS = 4000;
     let graphNodes = {};                // "local_ip|peer_ip|peer_port" -> {el, lastSeen, fading}
     let forceNodePositions = {};        // ip -> {x, y} -- persists across ticks so the force layout
@@ -35,10 +35,6 @@
                     request['peer_port'] = liveFilter.peer_port;
                     request['host_ip'] = liveFilter.host_ip;
                     return request;
-                },
-                responseHandler: function (response) {
-                    updateLiveOverview(response.rows || []);
-                    return response;
                 },
                 formatters: {
                     "bytesformatter": function (column, row) {
@@ -78,20 +74,60 @@
             if (stored) {
                 $("#interval").val(stored).selectpicker('refresh');
             }
+            let storedRange = window.localStorage.getItem('gowiththeflow.live.rangeMinutes');
+            if (storedRange) {
+                $("#live-range").val(storedRange).selectpicker('refresh');
+                liveChartRangeMinutes = parseInt(storedRange, 10) || liveChartRangeMinutes;
+            }
+            let storedTopN = window.localStorage.getItem('gowiththeflow.live.topN');
+            if (storedTopN !== null) {
+                $("#live-top-n").val(storedTopN).selectpicker('refresh');
+                liveChartTopN = parseInt(storedTopN, 10) || 0;
+            }
         }
 
         $("#interval").change(function () {
             if (window.localStorage) {
                 window.localStorage.setItem(storageKey, $(this).val());
             }
+            // The interval is also the chart's tick width, so changing it
+            // changes how many points are needed for the same real-time
+            // range -- reconcile immediately rather than waiting for the
+            // buffer to slowly grow/shrink one poll at a time.
+            gwtfReconcileChartHistoryLength();
+            renderLiveChart();
         });
 
+        $("#live-range").on("changed.bs.select", function () {
+            liveChartRangeMinutes = parseInt($(this).val(), 10) || 5;
+            if (window.localStorage) {
+                window.localStorage.setItem('gowiththeflow.live.rangeMinutes', String(liveChartRangeMinutes));
+            }
+            gwtfReconcileChartHistoryLength();
+            renderLiveChart();
+        });
+
+        $("#live-top-n").on("changed.bs.select", function () {
+            liveChartTopN = parseInt($(this).val(), 10) || 0;
+            if (window.localStorage) {
+                window.localStorage.setItem('gowiththeflow.live.topN', String(liveChartTopN));
+            }
+            renderLiveChart();
+        });
+
+        // Deliberately its own poll, not fed from the table's own
+        // responseHandler -- the table's response is one Bootgrid page
+        // (default 50 rows) of a result that can easily be larger on a
+        // busy network, and last_seen bumping on every still-open
+        // session every tick means which sessions land on that one page
+        // is essentially arbitrary. A dominant real host's traffic
+        // (confirmed with a phone running speedtest.net) could silently
+        // never appear on the chart/graph at all if its rows just
+        // weren't on the page the table happened to be showing.
+        gwtfPollLiveOverview();
+
         (function livePoller() {
-            // NOT `|| 2000` -- 0 ("Don't refresh") is falsy in JS, so that
-            // would silently fall back to the default and never actually
-            // stop refreshing.
-            let parsed = parseInt($("#interval").val(), 10);
-            let interval = Number.isNaN(parsed) ? 2000 : parsed;
+            const interval = gwtfCurrentPollIntervalMs();
             if (interval <= 0) {
                 // "Don't refresh" -- do nothing, but keep checking in case
                 // the user changes the dropdown again later.
@@ -100,6 +136,7 @@
             }
             setTimeout(function () {
                 $("#grid-live").bootgrid('reload');
+                gwtfPollLiveOverview();
                 livePoller();
             }, interval);
         })();
@@ -115,6 +152,9 @@
             const chartType = $(this).val() || 'line';
             $("#live-chart-canvas-wrapper").toggle(chartType !== 'graph');
             $("#live-graph-wrapper").toggle(chartType === 'graph');
+            // Range/Top N only mean anything for Line/Bar -- Graph shows
+            // every host/edge currently open, uncapped, unconditionally.
+            $("#live-linebar-controls").toggle(chartType !== 'graph');
             renderLiveChart();
             // Graph mode is only ever driven from updateLiveOverview() on a
             // poll tick -- without this, switching to it shows nothing at
@@ -136,18 +176,33 @@
         });
     });
 
-    // Delta-per-tick, computed entirely client-side from the same poll the
-    // table already does (via responseHandler, so no extra AJAX call) --
-    // pf's own byte counters are cumulative, so each tick's contribution is
-    // this row's current total minus its own value last tick (0 for a
-    // brand-new row -- a reasonable approximation for a just-opened
-    // connection). A connection that closes between two polls has no
-    // "current" entry to diff against, so its last partial interval is
-    // dropped from the chart -- accepted tradeoff for a live glance chart,
-    // not a metering system; the Table tab and History are unaffected.
-    function updateLiveOverview(rows) {
-        seedChartHistoryGWTF();
+    // A dedicated poll against the unpaginated overview endpoint, kept
+    // deliberately separate from the Table tab's own Bootgrid ajax call
+    // (see the comment where this is scheduled) -- costs one extra
+    // request per tick, but a busy real network with more concurrent
+    // sessions than one Bootgrid page can miss a genuinely dominant
+    // host's traffic entirely otherwise, which is worse than the extra
+    // request.
+    function gwtfPollLiveOverview() {
+        $.ajax({
+            url: '/api/gowiththeflow/live/overview',
+            type: 'POST',
+            dataType: 'json'
+        }).done(function (response) {
+            updateLiveOverview(response.rows || []);
+        });
+    }
 
+    // Delta-per-tick, computed client-side from gwtfPollLiveOverview()'s
+    // own poll -- pf's own byte counters are cumulative, so each tick's
+    // contribution is this row's current total minus its own value last
+    // tick (0 for a brand-new row -- a reasonable approximation for a
+    // just-opened connection). A connection that closes between two
+    // polls has no "current" entry to diff against, so its last partial
+    // interval is dropped from the chart -- accepted tradeoff for a
+    // live glance chart, not a metering system; the Table tab and
+    // History are unaffected.
+    function updateLiveOverview(rows) {
         const currentSnapshot = new Map();
         const deltasByGroup = {};
 
@@ -164,9 +219,7 @@
 
         previousSnapshot = currentSnapshot;
         chartHistory.push({ time: new Date(), groups: deltasByGroup });
-        if (chartHistory.length > MAX_POINTS) {
-            chartHistory.shift();
-        }
+        gwtfReconcileChartHistoryLength();
 
         lastRows = rows;
         lastDeltasByGroup = deltasByGroup;
@@ -175,24 +228,51 @@
         renderLiveGraph(rows, deltasByGroup);
     }
 
-    // Without this, the chart starts at 1 point and grows wider on every
-    // tick until it reaches MAX_POINTS -- the x-axis keeps re-scaling
-    // instead of showing a fixed time window from the very first draw.
-    // Empty placeholder points (no `groups` entries) contribute 0 to
-    // every dataset and are invisible to topGroupKeysGWTF's totals, so
-    // they don't skew which groups count as "top".
-    function seedChartHistoryGWTF() {
-        if (chartHistory.length > 0) {
-            return;
-        }
+    // NOT `|| 2000` -- 0 ("Don't refresh") is falsy in JS, so that would
+    // silently fall back to the default and never actually stop
+    // refreshing.
+    function gwtfCurrentPollIntervalMs() {
         const parsed = parseInt($("#interval").val(), 10);
-        const interval = Number.isNaN(parsed) || parsed <= 0 ? 2000 : parsed;
-        const now = Date.now();
-        for (let i = MAX_POINTS - 1; i >= 1; i--) {
-            chartHistory.push({ time: new Date(now - i * interval), groups: {} });
+        return Number.isNaN(parsed) ? 2000 : parsed;
+    }
+
+    // How many chartHistory points are needed to cover
+    // liveChartRangeMinutes of real time at the current poll interval --
+    // recomputed on demand rather than cached, since either input can
+    // change independently (the range selector, or the interval
+    // dropdown, which doubles as the chart's own tick width).
+    function gwtfLiveMaxPoints() {
+        const intervalMs = Math.max(gwtfCurrentPollIntervalMs(), 250);
+        return Math.max(10, Math.ceil((liveChartRangeMinutes * 60000) / intervalMs));
+    }
+
+    // Keeps chartHistory at exactly gwtfLiveMaxPoints() long, padding
+    // with empty placeholder points at the front (stepping backward in
+    // time from whatever's already there, or from now if starting from
+    // empty) when it needs to grow, and trimming from the front when it
+    // needs to shrink. Without padding, the chart would start at 1
+    // point and slowly grow into the requested range instead of showing
+    // a fixed window from the very first draw; empty points contribute
+    // 0 to every dataset and are invisible to topGroupKeysGWTF's totals,
+    // so they never skew which groups count as "top". Called every tick
+    // (self-correcting, idempotent) and immediately on a range/interval
+    // change so the resize is instant rather than waiting on the next poll.
+    function gwtfReconcileChartHistoryLength() {
+        const target = gwtfLiveMaxPoints();
+        const intervalMs = gwtfCurrentPollIntervalMs();
+        while (chartHistory.length > target) {
+            chartHistory.shift();
+        }
+        while (chartHistory.length < target) {
+            const oldest = chartHistory[0];
+            const t = oldest ? oldest.time.getTime() - intervalMs : Date.now();
+            chartHistory.unshift({ time: new Date(t), groups: {} });
         }
     }
 
+    // liveChartTopN === 0 means "show every group" -- all === top, so
+    // the "Other" bucket in renderLiveChart() naturally ends up empty
+    // and isn't drawn.
     function topGroupKeysGWTF(groupsHistory) {
         const totals = {};
         groupsHistory.forEach(function (point) {
@@ -201,7 +281,8 @@
             });
         });
         const sorted = Object.keys(totals).sort(function (a, b) { return totals[b] - totals[a]; });
-        return { top: sorted.slice(0, TOP_N), all: sorted };
+        const top = liveChartTopN > 0 ? sorted.slice(0, liveChartTopN) : sorted;
+        return { top: top, all: sorted };
     }
 
     const GWTF_PALETTE = ['#4e79a7', '#f28e2b', '#e15759', '#76b7b2', '#59a14f',
@@ -835,6 +916,22 @@
                 <option value="local_ip" selected="selected">{{ lang._('Local Host') }}</option>
                 <option value="peer_port">{{ lang._('Peer Port') }}</option>
             </select>
+            <span id="live-linebar-controls">
+                <label style="font-weight: normal; margin: 0 4px 0 12px;">{{ lang._('Range') }}</label>
+                <select class="selectpicker" id="live-range" data-width="auto">
+                    <option value="2">2 {{ lang._('minutes') }}</option>
+                    <option value="5" selected="selected">5 {{ lang._('minutes') }}</option>
+                    <option value="10">10 {{ lang._('minutes') }}</option>
+                    <option value="30">30 {{ lang._('minutes') }}</option>
+                </select>
+                <label style="font-weight: normal; margin: 0 4px 0 12px;">{{ lang._('Top N') }}</label>
+                <select class="selectpicker" id="live-top-n" data-width="auto">
+                    <option value="5">5</option>
+                    <option value="10" selected="selected">10</option>
+                    <option value="20">20</option>
+                    <option value="0">{{ lang._('All') }}</option>
+                </select>
+            </span>
         </div>
         <div id="live-chart-canvas-wrapper" style="min-height: 320px;">
             <canvas id="live-overview-canvas"></canvas>

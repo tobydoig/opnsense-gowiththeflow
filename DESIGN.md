@@ -895,6 +895,48 @@
   waiting on Chart.js's internal resize observer). The markup's fixed
   `height: 320px` became a `min-height: 320px` floor for the moment
   before JS first runs. Version bumped to **1.2.6**.
+- **1.2.7 -- configurable Line/Bar range/Top N, then a real and
+  significant bug found by a concrete real-box test.**
+  1. Added user-configurable controls next to Live's Overview "Group
+     by": **Range** (2/5/10/30 minutes -- previously a fixed ~60-point
+     buffer whose real-time width silently depended on whatever poll
+     interval happened to be selected) and **Top N** (5/10/20/0=All,
+     0 meaning show every group with no cap). Persisted via
+     localStorage, same convention as the existing interval dropdown.
+     `chartHistory`'s length is now reconciled to
+     `range_minutes * 60000 / poll_interval_ms` on every tick and
+     immediately on a range/interval change (padding with empty
+     placeholder points at the front when it needs to grow, trimming
+     from the front when it needs to shrink), rather than a fixed
+     `MAX_POINTS` constant. Ranking by total throughput *within the
+     currently-displayed window* -- something the user separately
+     asked about -- turned out to already be correct: `chartHistory`
+     itself only ever holds the visible window's points, so summing
+     over it for the Top-N ranking was never using a different (e.g.
+     lifetime) measure to begin with.
+  2. **Real bug, found via a real test**: running speedtest.net on a
+     phone several times (large, genuinely dominant transfers) never
+     made it appear on the Overview chart at all, even though the same
+     traffic was immediately obvious on OPNsense's own Reporting >
+     Traffic graph. Root cause: the chart was fed from the Table tab's
+     own Bootgrid `responseHandler` -- but that's one *paginated* page
+     of results (default page size 50), and `last_seen` bumps on every
+     poll for every still-open session regardless of actual traffic,
+     so on a network with more concurrent sessions than one page, which
+     sessions land on page 1 vs. page 2+ is essentially arbitrary --
+     not weighted toward high-traffic connections in any way. A
+     dominant host's rows simply not being on the page the table
+     happened to be showing meant its traffic was invisible to the
+     chart, silently. Fixed with a dedicated `LiveController::
+     overviewAction()` -- unpaginated, every currently-open session,
+     only the handful of fields the chart/graph renderers actually
+     read -- polled independently of the table's own ajax cycle (one
+     extra request per tick; correctness here matters more than saving
+     it). Same "don't derive a chart from a paginated table response"
+     lesson History's `timeseriesAction()` already encoded; hadn't been
+     applied to Live yet.
+  117 tests passing (Python side untouched -- Volt/PHP only). Version
+  bumped to **1.2.7**.
 - **Not yet started**: the staticOverrides grid editor, proper repo
   signing before this pkg-repo is relied on for anything that matters,
   and a possible future "scheduled traffic blocking" feature (the
@@ -1369,6 +1411,7 @@ controller's job is just: query SQLite, build that array, hand it off.
 | Method | Path | Params | Returns |
 |---|---|---|---|
 | POST | `/api/gowiththeflow/live/search/` | Bootgrid standard, + optional `local_ip`/`peer_ip`/`peer_port` (exact, ANDed) and `host_ip` (matches either side) | **DONE.** local/peer (`hostname (ip)`), `peer_is_local`, `category`, `state` (pf's own connection state), `last_activity` (1.2.2 -- only advances on real bytes/state change, unlike `last_seen`), proto, port, bytes in/out, live-computed duration. The filter params (1.2.2) back the Overview chart's click-through, which needs a real server-side filter since this grid is ajax-backed |
+| POST | `/api/gowiththeflow/live/overview` | none (no pagination at all) | **DONE (1.2.7).** Every currently open session, unpaginated -- `local_ip`/`peer_ip`/`peer_port`/`bytes_in`/`bytes_out`/`last_activity`/`local`/`peer`/`row_id` only. Backs the Overview chart/Graph, polled independently of the Table tab's own Bootgrid ajax call -- deriving the chart from that paginated response (default page size 50) meant a genuinely dominant host's traffic could be silently invisible if its rows weren't on the page the table happened to be showing, confirmed for real with a phone's speedtest.net traffic never appearing on the chart |
 | POST | `/api/gowiththeflow/history/search/` | + `days`, `local_host?` | **DONE.** rollup rows aggregated by (local_ip, peer_ip), granularity auto-picked by `days` vs. `DbApiControllerBase::HOURLY_RETENTION_DAYS` (8, matching the default `rollupHourlyRetentionDays` setting), plus a `local_hosts` map for the filter dropdown. `local_host` filter and bytes correctly account for `peer_is_local=1` pairs via a UNION ALL (see 1.2.0 Status entry) |
 | POST | `/api/gowiththeflow/history/timeseries` | `days`, `bucket=hour\|day`, `local_host?` | **DONE (1.2.0).** `{buckets, series: {ip: bytes[]}, local_hosts}`, top-10-by-total capped with an "Other" aggregate — backs History's Overview chart |
 | POST | `/api/gowiththeflow/toptalkers/local` | `days` | **DONE.** ranked local hosts by total bytes/connections (sortable by clicking either column — no separate `sort_by` param needed); a UNION ALL credits both members of an internal pair from their own point of view |

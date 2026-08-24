@@ -88,4 +88,54 @@ class LiveController extends DbApiControllerBase
 
         return $this->searchRecordsetBase($records, null, 'last_seen');
     }
+
+    public function overviewAction()
+    {
+        // Deliberately NOT a slice of searchAction()'s data -- that's a
+        // Bootgrid-paginated response (default page size 50), and
+        // last_seen bumps on *every* poll for *every* still-open
+        // session regardless of actual traffic, so which sessions land
+        // on page 1 vs. page 2+ is essentially arbitrary once there are
+        // more than one page's worth open at once. A real-box test
+        // confirmed the failure mode directly: several rounds of a
+        // phone running speedtest.net (large, genuinely dominant
+        // transfers) never appeared on the Overview chart at all,
+        // because their rows simply weren't on the page the table
+        // happened to be showing -- even though the same traffic was
+        // immediately obvious on OPNsense's own Reporting > Traffic
+        // graph. This endpoint returns every currently open session,
+        // unpaginated, with only the handful of fields the chart/graph
+        // renderers actually read.
+        $records = [];
+        $db = $this->openDb();
+        if ($db !== null) {
+            $result = $db->query(
+                'SELECT ls.proto, ls.local_ip, ls.local_port, ls.peer_ip, ls.peer_port,
+                        ls.bytes_in, ls.bytes_out, ls.last_activity,
+                        lhi.hostname AS local_hostname,
+                        CASE WHEN ls.peer_is_local = 1
+                             THEN (SELECT hostname FROM local_host_identity WHERE ip = ls.peer_ip
+                                   ORDER BY updated_at DESC LIMIT 1)
+                             ELSE ls.peer_hostname
+                        END AS peer_hostname
+                 FROM live_sessions ls
+                 LEFT JOIN local_host_identity lhi ON lhi.ip = ls.local_ip'
+            );
+            while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
+                $row['row_id'] = sprintf(
+                    '%s-%s:%d-%s:%d',
+                    $row['proto'],
+                    $row['local_ip'],
+                    $row['local_port'],
+                    $row['peer_ip'],
+                    $row['peer_port']
+                );
+                $row['local'] = $this->formatHost($row['local_hostname'], $row['local_ip']);
+                $row['peer'] = $this->formatHost($row['peer_hostname'], $row['peer_ip']);
+                $records[] = $row;
+            }
+        }
+
+        return ['rows' => $records];
+    }
 }
