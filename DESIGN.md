@@ -803,6 +803,23 @@
   against them), and the timeseries chart alone kept working because its
   query happens to only touch columns that existed under both schemas.
   117 tests passing. Version bumped to **1.2.2**.
+- **1.2.3 -- Graph view uncapped.** The user asked whether the Graph
+  view limits how many hosts it shows -- yes, indirectly: edges were
+  capped to the busiest `TOP_N` (10), and nodes were only ever the
+  endpoints of surviving edges, so a host with no edge in the top 10
+  didn't appear at all, and per-port edges (added in 1.2.2) made this
+  worse by letting one busy host-peer pair eat several of those 10
+  slots on its own. Asked whether to just raise the cap or guarantee
+  each host at least one edge; the user's answer was neither -- show
+  every host and every edge, no cap at all. Removed the `slice(0,
+  TOP_N)` entirely (kept the sort, now only deciding curve-offset order
+  for same-pair edges, not what's shown). The circle's radius is now
+  driven by how many nodes actually need to fit (enough arc length per
+  node to keep labels legible) rather than clamped to the wrapper's
+  visible size -- the canvas grows and the wrapper scrolls (both axes
+  now) instead of cramming a busy network into a fixed box. `TOP_N`
+  remains unchanged for the unrelated Line/Bar chart's per-tick group
+  cap. Version bumped to **1.2.3**.
 - **Not yet started**: the staticOverrides grid editor, proper repo
   signing before this pkg-repo is relied on for anything that matters,
   and a possible future "scheduled traffic blocking" feature (the

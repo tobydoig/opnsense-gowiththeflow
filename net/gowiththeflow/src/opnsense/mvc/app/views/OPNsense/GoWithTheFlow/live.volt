@@ -403,11 +403,12 @@
     // mean" question this feature grew out of. An arrowhead at each
     // edge's midpoint points local_ip -> peer_ip, i.e. the side pf itself
     // recorded as the connection's source. Clicking a node or edge jumps
-    // to the Table tab filtered accordingly. Capped to the busiest TOP_N
-    // edges; the rest are dropped outright -- there's no natural
-    // "collapse into one node" here without a central hub to hang it
-    // off of (unlike the earlier hub-based design), acceptable for a
-    // live glance view but worth revisiting if it proves confusing.
+    // to the Table tab filtered accordingly. Deliberately uncapped --
+    // every host and every edge currently open is shown, not just the
+    // busiest N -- so a host doesn't silently vanish just because its
+    // own traffic is small next to everyone else's; sorted by bytes only
+    // so the busiest edges get first pick of curve-offset slots, not to
+    // decide what's shown at all.
     function renderLiveGraph(rows, deltasByGroup) {
         const wrapper = document.getElementById('live-graph-wrapper');
         if (!wrapper || $("#live-chart-type").val() !== 'graph') {
@@ -430,7 +431,6 @@
 
         let edgeKeys = Object.keys(edgeTotals);
         edgeKeys.sort(function (a, b) { return edgeTotals[b].bytes - edgeTotals[a].bytes; });
-        edgeKeys = edgeKeys.slice(0, TOP_N);
         const edges = {};
         edgeKeys.forEach(function (k) { edges[k] = edgeTotals[k]; });
 
@@ -446,10 +446,19 @@
         });
         const nodeIps = Array.from(nodeIpSet);
 
-        const width = wrapper.clientWidth || 600;
-        const height = Math.max(320, Math.min(Math.round(width * 0.75), 560));
+        // The circle's radius is driven by how many nodes actually need
+        // to fit around it (enough arc length per node for its label to
+        // stay legible), not clamped to the wrapper's own visible size --
+        // with nothing capping how many hosts/edges can show now, a busy
+        // network should make this diagram bigger and scroll, not
+        // silently cram everyone into a fixed box.
+        const minArcSpacing = 26;
+        const circleRadius = Math.max(80, (minArcSpacing * nodeIps.length) / (2 * Math.PI));
+        const margin = 140;  // room for node labels sticking out past the circle
+        const size = Math.round(circleRadius * 2 + margin);
+        const width = Math.max(wrapper.clientWidth || 600, size);
+        const height = size;
         const centerX = width / 2, centerY = height / 2;
-        const circleRadius = Math.max(80, Math.min(Math.min(width, height) / 2 - 50, 16 * nodeIps.length || 80));
 
         let legend = wrapper.querySelector('.gwtf-graph-legend');
         if (!legend) {
@@ -662,7 +671,7 @@
 
 <style>
     #live-graph-wrapper {
-        overflow-y: auto; max-height: 560px; position: relative;
+        overflow: auto; max-height: 560px; position: relative;
     }
     .gwtf-graph-svg {
         display: block;
