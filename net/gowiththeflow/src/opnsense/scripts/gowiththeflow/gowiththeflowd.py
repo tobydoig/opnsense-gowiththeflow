@@ -78,8 +78,8 @@ class Config:
     enable_sni_sniffing: bool = True
     enable_ptr_fallback: bool = True
     raw_retention_days: int = 10
-    rollup_hourly_retention_days: int = 45
-    rollup_daily_retention_days: int = 730
+    rollup_hourly_retention_days: int = 8
+    rollup_daily_retention_days: int = 32
 
     @classmethod
     def load(cls, path: str) -> "Config":
@@ -104,8 +104,8 @@ class Config:
             enable_sni_sniffing=bool(data.get("enable_sni_sniffing", True)),
             enable_ptr_fallback=bool(data.get("enable_ptr_fallback", True)),
             raw_retention_days=int(data.get("raw_retention_days", 10)),
-            rollup_hourly_retention_days=int(data.get("rollup_hourly_retention_days", 45)),
-            rollup_daily_retention_days=int(data.get("rollup_daily_retention_days", 730)),
+            rollup_hourly_retention_days=int(data.get("rollup_hourly_retention_days", 8)),
+            rollup_daily_retention_days=int(data.get("rollup_daily_retention_days", 32)),
         )
 
 

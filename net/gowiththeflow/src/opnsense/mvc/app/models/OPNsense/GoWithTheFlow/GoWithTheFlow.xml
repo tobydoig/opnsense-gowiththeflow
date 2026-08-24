@@ -23,13 +23,13 @@
             <rollupHourlyRetentionDays type="IntegerField">
                 <MinimumValue>1</MinimumValue>
                 <MaximumValue>3650</MaximumValue>
-                <Default>45</Default>
+                <Default>8</Default>
                 <Required>Y</Required>
             </rollupHourlyRetentionDays>
             <rollupDailyRetentionDays type="IntegerField">
                 <MinimumValue>1</MinimumValue>
                 <MaximumValue>36500</MaximumValue>
-                <Default>730</Default>
+                <Default>32</Default>
                 <Required>Y</Required>
             </rollupDailyRetentionDays>
             <cpuLimitPct type="IntegerField">

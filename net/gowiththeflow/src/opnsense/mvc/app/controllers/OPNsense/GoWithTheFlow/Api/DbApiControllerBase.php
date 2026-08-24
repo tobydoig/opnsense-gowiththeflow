@@ -10,10 +10,11 @@ abstract class DbApiControllerBase extends ApiControllerBase
     // user-configurable setting, just the fixed on-disk convention.
     protected const DB_PATH = '/var/db/gowiththeflow/flows.db';
 
-    // Matches rollup.py's default RollupHourlyRetentionDays -- hourly
-    // buckets aren't kept past this, so anything asking for a longer
-    // window must read the (coarser, longer-retained) daily rollup.
-    protected const HOURLY_RETENTION_DAYS = 45;
+    // Matches GoWithTheFlow.xml's default rollupHourlyRetentionDays --
+    // hourly buckets aren't kept past this, so anything asking for a
+    // longer window must read the (coarser, longer-retained) daily
+    // rollup instead.
+    protected const HOURLY_RETENTION_DAYS = 8;
 
     protected function openDb(): ?\SQLite3
     {

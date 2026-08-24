@@ -34,14 +34,14 @@
         <id>gowiththeflow.general.rollupHourlyRetentionDays</id>
         <label>Hourly rollup retention (days)</label>
         <type>text</type>
-        <hint>45</hint>
+        <hint>8</hint>
         <advanced>true</advanced>
     </field>
     <field>
         <id>gowiththeflow.general.rollupDailyRetentionDays</id>
         <label>Daily rollup retention (days)</label>
         <type>text</type>
-        <hint>730</hint>
+        <hint>32</hint>
         <advanced>true</advanced>
     </field>
     <field>

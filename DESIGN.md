@@ -654,6 +654,27 @@
     Chart.js confirmed already bundled on the target OPNsense VM
     (`chart.umd.min.js`, same convention OPNsense core's own
     Diagnostics > Traffic page uses) -- no new frontend dependency.
+  - Default retention lowered: `rollupHourlyRetentionDays` 45 -> 8,
+    `rollupDailyRetentionDays` 730 -> 32 (`GoWithTheFlow.xml`'s
+    `<Default>`, `general.xml`'s form `<hint>`, and
+    `gowiththeflowd.py`'s `Config` dataclass fallbacks all kept in sync).
+    `DbApiControllerBase::HOURLY_RETENTION_DAYS` -- a hardcoded PHP
+    constant that decides whether History/Top Talkers read `rollup_hourly`
+    or `rollup_daily` for a given day-range, meant to mirror this same
+    setting -- was updated to 8 alongside it; missing that would have
+    silently queried already-pruned hourly rows for any selection past 8
+    days. The daily-prune job this retention setting feeds
+    (`rollup.prune_hourly`/`prune_daily`) already runs on a schedule --
+    it's a timer inside the daemon's own long-running loop
+    (`gowiththeflowd.py`'s `last_daily_job`/`DAILY_JOB_INTERVAL_S`), not
+    an OS-level cron entry, consistent with "the daemon is the only
+    process" -- no separate scheduled job needed to be added. **Existing
+    installs** (this VM, nostromo) keep whatever value is already saved
+    in their `config.xml` -- an XML `<Default>` only applies to a field
+    that's never been explicitly saved, so the new lower defaults only
+    take effect for a fresh install; an existing install needs its
+    Settings page value changed and re-applied manually if the new
+    default is wanted there too.
   - Version bumped to **1.2.0** (minor, given the schema rewrite and the
     genuinely new charting feature, not just a bugfix).
 - **Not yet started**: the staticOverrides grid editor, proper repo
@@ -1098,8 +1119,9 @@ nothing reads them into an actual `rctl` rule yet. TODO before Phase D.)*
     see Real-world corrections), `localSubnets` (CIDR list via
     `NetworkField`/`AsList`, editable so VPN tunnel subnets can optionally
     count as "local"), `rawRetentionDays` (default 10),
-    `rollupHourlyRetentionDays` (default 45), `rollupDailyRetentionDays`
-    (default 730), `cpuLimitPct` and `memLimitMB` (rctl cap fields exist
+    `rollupHourlyRetentionDays` (default 8, changed from 45 in 1.2.0),
+    `rollupDailyRetentionDays` (default 32, changed from 730 in 1.2.0),
+    `cpuLimitPct` and `memLimitMB` (rctl cap fields exist
     and save correctly; not yet wired into an actual `rctl` rule — see
     the gap noted above).
   - **Hostname tuning**: `enableDnsSniffing`, `enableSniSniffing`,
@@ -1129,7 +1151,7 @@ controller's job is just: query SQLite, build that array, hand it off.
 | Method | Path | Params | Returns |
 |---|---|---|---|
 | POST | `/api/gowiththeflow/live/search/` | Bootgrid standard (`current`, `rowCount`, `sort`, `searchPhrase`) | **DONE.** local/peer (`hostname (ip)`), `peer_is_local`, `category`, `state` (pf's own connection state), proto, port, bytes in/out, live-computed duration |
-| POST | `/api/gowiththeflow/history/search/` | + `days`, `local_host?` | **DONE.** rollup rows aggregated by (local_ip, peer_ip), granularity auto-picked by `days` vs. the 45-day hourly-retention threshold, plus a `local_hosts` map for the filter dropdown. `local_host` filter and bytes correctly account for `peer_is_local=1` pairs via a UNION ALL (see 1.2.0 Status entry) |
+| POST | `/api/gowiththeflow/history/search/` | + `days`, `local_host?` | **DONE.** rollup rows aggregated by (local_ip, peer_ip), granularity auto-picked by `days` vs. `DbApiControllerBase::HOURLY_RETENTION_DAYS` (8, matching the default `rollupHourlyRetentionDays` setting), plus a `local_hosts` map for the filter dropdown. `local_host` filter and bytes correctly account for `peer_is_local=1` pairs via a UNION ALL (see 1.2.0 Status entry) |
 | POST | `/api/gowiththeflow/history/timeseries` | `days`, `bucket=hour\|day`, `local_host?` | **DONE (1.2.0).** `{buckets, series: {ip: bytes[]}, local_hosts}`, top-10-by-total capped with an "Other" aggregate — backs History's Overview chart |
 | POST | `/api/gowiththeflow/toptalkers/local` | `days` | **DONE.** ranked local hosts by total bytes/connections (sortable by clicking either column — no separate `sort_by` param needed); a UNION ALL credits both members of an internal pair from their own point of view |
 | POST | `/api/gowiththeflow/toptalkers/peer` | `days`, `local_host?` | **DONE** (renamed from `remote` in 1.2.0). ranked peers (internet or local); filtering by `local_host` correctly shows only that host's share of a shared-IP peer, not the combined total; a UNION ALL also surfaces the numerically-smaller member of an internal pair, which would otherwise never appear here at all |
