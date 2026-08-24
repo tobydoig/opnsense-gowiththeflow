@@ -118,6 +118,11 @@
                     scales: {
                         y: {
                             stacked: selected_chart_type === 'bar',
+                            // Byte counts are never negative -- without this,
+                            // Chart.js's auto-range pads symmetrically around
+                            // 0 when every visible point is 0 (e.g. an empty
+                            // window), producing a nonsensical -1..1 axis.
+                            min: 0,
                             ticks: { callback: function (v) { return formatBytesGWTF(v); } }
                         },
                         x: { stacked: selected_chart_type === 'bar' }

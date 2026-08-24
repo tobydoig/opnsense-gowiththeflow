@@ -161,6 +161,126 @@ def test_record_diff_never_resolves_hostname_for_a_local_peer(tmp_path):
     assert row["category"] == "Internal"
 
 
+def test_last_activity_does_not_advance_when_nothing_actually_changed(tmp_path):
+    # last_seen bumps on every poll a session is still present, regardless
+    # of real traffic -- last_activity must only bump when bytes/state
+    # actually differ from the previous poll, so it stays a genuine "last
+    # real activity" signal distinct from "still in pf's state table."
+    conn = _fresh_conn(tmp_path)
+    poller = PfStatePoller(LOCAL_SUBNETS)
+
+    idle_state = (
+        "tcp 192.168.1.10:1234 -> 192.168.1.20:445       ESTABLISHED:ESTABLISHED\n"
+        "   age 00:00:01, expires in 100s, 1:1 pkts, 100:100 bytes, rule 1\n"
+    )
+    db.record_diff(conn, poller.poll(idle_state), now=NOW1)
+    row = conn.execute("SELECT * FROM live_sessions").fetchone()
+    assert row["last_activity"] == NOW1
+
+    # Same bytes/state on the second poll -- session is still open (pf
+    # still reports it), but nothing actually happened.
+    db.record_diff(conn, poller.poll(idle_state), now=NOW2)
+    row = conn.execute("SELECT * FROM live_sessions").fetchone()
+    assert row["last_seen"] == NOW2
+    assert row["last_activity"] == NOW1  # unchanged -- no real activity
+
+
+def test_last_activity_advances_when_bytes_change(tmp_path):
+    conn = _fresh_conn(tmp_path)
+    poller = PfStatePoller(LOCAL_SUBNETS)
+
+    db.record_diff(
+        conn,
+        poller.poll(
+            "tcp 192.168.1.10:1234 -> 192.168.1.20:445       ESTABLISHED:ESTABLISHED\n"
+            "   age 00:00:01, expires in 100s, 1:1 pkts, 100:100 bytes, rule 1\n"
+        ),
+        now=NOW1,
+    )
+    db.record_diff(
+        conn,
+        poller.poll(
+            "tcp 192.168.1.10:1234 -> 192.168.1.20:445       ESTABLISHED:ESTABLISHED\n"
+            "   age 00:00:06, expires in 100s, 2:2 pkts, 200:200 bytes, rule 1\n"
+        ),
+        now=NOW2,
+    )
+
+    row = conn.execute("SELECT * FROM live_sessions").fetchone()
+    assert row["last_seen"] == NOW2
+    assert row["last_activity"] == NOW2  # bytes grew -- real activity
+
+
+def test_last_activity_advances_when_only_state_changes(tmp_path):
+    # A connection winding down (e.g. FIN_WAIT_2) with byte counters that
+    # happen to be identical between two polls is still real activity --
+    # the state transition itself is meaningful, not just byte deltas.
+    conn = _fresh_conn(tmp_path)
+    poller = PfStatePoller(LOCAL_SUBNETS)
+
+    db.record_diff(
+        conn,
+        poller.poll(
+            "tcp 192.168.1.10:1234 -> 192.168.1.20:445       ESTABLISHED:ESTABLISHED\n"
+            "   age 00:00:01, expires in 100s, 1:1 pkts, 100:100 bytes, rule 1\n"
+        ),
+        now=NOW1,
+    )
+    db.record_diff(
+        conn,
+        poller.poll(
+            "tcp 192.168.1.10:1234 -> 192.168.1.20:445       FIN_WAIT_2:FIN_WAIT_2\n"
+            "   age 00:00:06, expires in 100s, 1:1 pkts, 100:100 bytes, rule 1\n"
+        ),
+        now=NOW2,
+    )
+
+    row = conn.execute("SELECT * FROM live_sessions").fetchone()
+    assert row["last_seen"] == NOW2
+    assert row["last_activity"] == NOW2  # state changed even though bytes didn't
+
+
+def test_init_schema_migrates_last_activity_column_backfilled_from_last_seen(tmp_path):
+    # Simulates a pre-1.2.2 install: create live_sessions by hand without
+    # last_activity, insert a row with a real last_seen, then confirm
+    # init_schema()'s ALTER TABLE migration adds the column AND backfills
+    # it from last_seen -- not just from the placeholder 0/1970 default,
+    # which would show as a nonsensical timestamp in the UI.
+    conn = db.connect(str(tmp_path / "flows.db"))
+    conn.execute(
+        """
+        CREATE TABLE live_sessions (
+          id INTEGER PRIMARY KEY,
+          proto TEXT NOT NULL,
+          local_ip TEXT NOT NULL, local_port INTEGER NOT NULL,
+          peer_ip TEXT NOT NULL, peer_port INTEGER NOT NULL,
+          peer_is_local INTEGER NOT NULL DEFAULT 0,
+          peer_hostname TEXT, hostname_source TEXT, category TEXT, state TEXT,
+          first_seen INTEGER NOT NULL, last_seen INTEGER NOT NULL,
+          bytes_in INTEGER NOT NULL DEFAULT 0, bytes_out INTEGER NOT NULL DEFAULT 0,
+          pkts_in INTEGER NOT NULL DEFAULT 0, pkts_out INTEGER NOT NULL DEFAULT 0,
+          last_checkpoint_at INTEGER NOT NULL DEFAULT 0,
+          baseline_bytes_in INTEGER NOT NULL DEFAULT 0, baseline_bytes_out INTEGER NOT NULL DEFAULT 0,
+          baseline_pkts_in INTEGER NOT NULL DEFAULT 0, baseline_pkts_out INTEGER NOT NULL DEFAULT 0,
+          UNIQUE(proto, local_ip, local_port, peer_ip, peer_port)
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO live_sessions
+            (proto, local_ip, local_port, peer_ip, peer_port, first_seen, last_seen)
+        VALUES ('tcp', '192.168.1.10', 1234, '1.2.3.4', 443, 500, 12345)
+        """
+    )
+    conn.commit()
+
+    db.init_schema(conn)  # must not raise, and must add + backfill the column
+
+    row = conn.execute("SELECT last_seen, last_activity FROM live_sessions").fetchone()
+    assert row["last_activity"] == row["last_seen"] == 12345
+
+
 def test_init_schema_migrates_category_column_onto_a_pre_existing_install(tmp_path):
     # Simulates an install from before "category" existed: create the
     # tables by hand without it, then confirm init_schema's ALTER TABLE

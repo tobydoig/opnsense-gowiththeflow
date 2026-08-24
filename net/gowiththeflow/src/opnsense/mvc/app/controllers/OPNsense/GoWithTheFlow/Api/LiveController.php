@@ -6,6 +6,21 @@ class LiveController extends DbApiControllerBase
 {
     public function searchAction()
     {
+        // Optional exact-match filters -- driven by the Overview chart's
+        // click-through (Live's grid is ajax-backed, so a client-side
+        // Tabulator setFilter() only ever filters whatever page of rows
+        // already happens to be loaded locally; it doesn't request the
+        // server for the full matching set the way this does, same
+        // pattern History/Top Talkers already use for their own filters).
+        $filterLocalIp = $this->request->getPost('local_ip') ?: '';
+        $filterPeerIp = $this->request->getPost('peer_ip') ?: '';
+        $filterPeerPort = $this->request->getPost('peer_port') ?: '';
+        // Matches either side of a session -- for the Graph view's node
+        // click, where a single IP can appear as local_ip in one session
+        // and peer_ip in another (live_sessions is never canonicalized by
+        // role for a peer_is_local pair, unlike the rollup tables).
+        $filterHostIp = $this->request->getPost('host_ip') ?: '';
+
         $records = [];
         $db = $this->openDb();
         if ($db !== null) {
@@ -14,10 +29,9 @@ class LiveController extends DbApiControllerBase
             // also a local host), name it via the same local_host_identity
             // lookup local_ip already uses, rather than the stored (always
             // NULL in that case) column.
-            $result = $db->query(
-                'SELECT ls.proto, ls.local_ip, ls.local_port, ls.peer_ip, ls.peer_port,
+            $sql = 'SELECT ls.proto, ls.local_ip, ls.local_port, ls.peer_ip, ls.peer_port,
                         ls.peer_is_local, ls.hostname_source, ls.category, ls.state,
-                        ls.first_seen, ls.last_seen,
+                        ls.first_seen, ls.last_seen, ls.last_activity,
                         ls.bytes_in, ls.bytes_out, ls.pkts_in, ls.pkts_out,
                         lhi.hostname AS local_hostname,
                         CASE WHEN ls.peer_is_local = 1
@@ -26,8 +40,35 @@ class LiveController extends DbApiControllerBase
                              ELSE ls.peer_hostname
                         END AS peer_hostname
                  FROM live_sessions ls
-                 LEFT JOIN local_host_identity lhi ON lhi.ip = ls.local_ip'
-            );
+                 LEFT JOIN local_host_identity lhi ON lhi.ip = ls.local_ip
+                 WHERE 1=1';
+            if ($filterLocalIp !== '') {
+                $sql .= ' AND ls.local_ip = :local_ip';
+            }
+            if ($filterPeerIp !== '') {
+                $sql .= ' AND ls.peer_ip = :peer_ip';
+            }
+            if ($filterPeerPort !== '') {
+                $sql .= ' AND ls.peer_port = :peer_port';
+            }
+            if ($filterHostIp !== '') {
+                $sql .= ' AND (ls.local_ip = :host_ip OR ls.peer_ip = :host_ip)';
+            }
+
+            $stmt = $db->prepare($sql);
+            if ($filterLocalIp !== '') {
+                $stmt->bindValue(':local_ip', $filterLocalIp, SQLITE3_TEXT);
+            }
+            if ($filterPeerIp !== '') {
+                $stmt->bindValue(':peer_ip', $filterPeerIp, SQLITE3_TEXT);
+            }
+            if ($filterPeerPort !== '') {
+                $stmt->bindValue(':peer_port', (int)$filterPeerPort, SQLITE3_INTEGER);
+            }
+            if ($filterHostIp !== '') {
+                $stmt->bindValue(':host_ip', $filterHostIp, SQLITE3_TEXT);
+            }
+            $result = $stmt->execute();
             $now = time();
             while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
                 $row['row_id'] = sprintf(

@@ -30,6 +30,12 @@ CREATE TABLE IF NOT EXISTS live_sessions (
   peer_hostname TEXT, hostname_source TEXT, category TEXT,
   state TEXT,
   first_seen INTEGER NOT NULL, last_seen INTEGER NOT NULL,
+  -- last_seen bumps on every poll a session is still present in pf's own
+  -- state table, regardless of whether any real traffic happened --
+  -- last_activity only bumps when bytes_in/bytes_out/state actually
+  -- changed since the previous poll, so the gap between the two is
+  -- itself the "how long has this been sitting idle" signal.
+  last_activity INTEGER NOT NULL,
   bytes_in INTEGER NOT NULL DEFAULT 0, bytes_out INTEGER NOT NULL DEFAULT 0,
   pkts_in INTEGER NOT NULL DEFAULT 0, pkts_out INTEGER NOT NULL DEFAULT 0,
   -- pf's counters are cumulative-since-creation and never reset, so an
@@ -158,6 +164,22 @@ def init_schema(conn: sqlite3.Connection) -> None:
             if "duplicate column" not in str(e).lower():
                 raise
 
+    # Same pattern for last_activity, added later still -- but this one is
+    # NOT NULL, so SQLite requires a DEFAULT to add it to a non-empty
+    # table; backfill real rows from last_seen (the best available guess:
+    # "as far as we knew, it was active as of the last time we saw it")
+    # rather than leaving them at the placeholder 0 (1970) forever. Only
+    # ever runs once -- every later call hits "duplicate column" and is a
+    # no-op, same as the category migration above.
+    try:
+        conn.execute("ALTER TABLE live_sessions ADD COLUMN last_activity INTEGER NOT NULL DEFAULT 0")
+        conn.commit()
+        conn.execute("UPDATE live_sessions SET last_activity = last_seen WHERE last_activity = 0")
+        conn.commit()
+    except sqlite3.OperationalError as e:
+        if "duplicate column" not in str(e).lower():
+            raise
+
 
 def load_live_sessions_as_snapshots(conn: sqlite3.Connection) -> list[StateSnapshot]:
     """For seeding PfStatePoller.seed() at daemon startup -- see its
@@ -234,12 +256,16 @@ def record_diff(
             INSERT INTO live_sessions
                 (proto, local_ip, local_port, peer_ip, peer_port, peer_is_local,
                  peer_hostname, hostname_source, category, state,
-                 first_seen, last_seen, bytes_in, bytes_out, pkts_in, pkts_out,
+                 first_seen, last_seen, last_activity, bytes_in, bytes_out, pkts_in, pkts_out,
                  last_checkpoint_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(proto, local_ip, local_port, peer_ip, peer_port)
             DO UPDATE SET
                 last_seen=excluded.last_seen,
+                last_activity = CASE
+                    WHEN bytes_in != excluded.bytes_in OR bytes_out != excluded.bytes_out
+                         OR state IS NOT excluded.state
+                    THEN excluded.last_seen ELSE last_activity END,
                 bytes_in=excluded.bytes_in,
                 bytes_out=excluded.bytes_out,
                 pkts_in=excluded.pkts_in,
@@ -253,7 +279,7 @@ def record_diff(
                 snap.key.proto, snap.key.local_ip, snap.key.local_port,
                 snap.key.peer_ip, snap.key.peer_port, int(snap.peer_is_local),
                 hostname, source, category, snap.state,
-                first_seen, now_i, snap.bytes_in, snap.bytes_out,
+                first_seen, now_i, now_i, snap.bytes_in, snap.bytes_out,
                 snap.pkts_in, snap.pkts_out, first_seen,
             ),
         )
@@ -263,14 +289,20 @@ def record_diff(
         conn.execute(
             """
             UPDATE live_sessions
-            SET last_seen=?, bytes_in=?, bytes_out=?, pkts_in=?, pkts_out=?, state=?,
+            SET last_seen=?,
+                last_activity = CASE
+                    WHEN bytes_in != ? OR bytes_out != ? OR state IS NOT ?
+                    THEN ? ELSE last_activity END,
+                bytes_in=?, bytes_out=?, pkts_in=?, pkts_out=?, state=?,
                 peer_hostname=COALESCE(?, peer_hostname),
                 hostname_source=COALESCE(?, hostname_source),
                 category=COALESCE(?, category)
             WHERE proto=? AND local_ip=? AND local_port=? AND peer_ip=? AND peer_port=?
             """,
             (
-                now_i, snap.bytes_in, snap.bytes_out, snap.pkts_in, snap.pkts_out, snap.state,
+                now_i,
+                snap.bytes_in, snap.bytes_out, snap.state, now_i,
+                snap.bytes_in, snap.bytes_out, snap.pkts_in, snap.pkts_out, snap.state,
                 hostname, source, category,
                 snap.key.proto, snap.key.local_ip, snap.key.local_port,
                 snap.key.peer_ip, snap.key.peer_port,

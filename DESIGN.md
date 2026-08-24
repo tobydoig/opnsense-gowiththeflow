@@ -723,6 +723,86 @@
      out over a few seconds when a pair disappears rather than vanishing
      instantly.
   No schema/Python changes -- Volt/JS only. Version bumped to **1.2.1**.
+- **1.2.2 -- "Last Activity", a real click-to-filter bug, and a full
+  Graph-view redesign, all from continued real-box use.**
+  1. **New `last_activity` column on `live_sessions`.** The user pointed
+     out `last_seen` isn't actually useful for spotting a stale
+     connection -- it bumps on every poll a session is still present in
+     pf's own state table, regardless of whether any real traffic
+     happened. Added a second, additive column that only advances when
+     `bytes_in`/`bytes_out`/`state` actually change since the previous
+     poll (a `CASE` inside the same `UPDATE`/`INSERT ... ON CONFLICT`
+     statement, comparing against the row's own pre-update values --
+     no separate read needed). Deliberately kept `last_seen` unchanged
+     (still feeds History's `duration_s`/`ended_at`, which legitimately
+     means "how long pf kept the state alive," idle tail included) --
+     considered and rejected repurposing `last_seen` itself, since that
+     would have silently changed what every closed session's duration
+     means. Migrated via the same `ALTER TABLE` pattern the `category`
+     column used, with a backfill from `last_seen` (not left at the
+     placeholder 0/1970) since this one is `NOT NULL`. New "Last
+     Activity" column on Live, next to the existing "Last Seen".
+  2. **Real bug: the Overview chart's click-through never actually
+     filtered anything.** `#grid-live` is ajax-backed, so Tabulator's own
+     client-side `setFilter()` only filters whatever page of rows is
+     already loaded locally -- it never asks the server for the real
+     matching set, unlike History/Top Talkers' own filters. Replaced with
+     the same server-side filter-param pattern those pages already use:
+     `LiveController::searchAction()` gained optional `local_ip`/
+     `peer_ip`/`peer_port` (exact-match, ANDed) and `host_ip` (matches
+     *either* side -- needed because `live_sessions` is never
+     canonicalized by role for a `peer_is_local` pair, so one IP can be
+     `local_ip` in one session and `peer_ip` in another) params, wired
+     through a `requestHandler` and a small "Filtered by X -- Clear"
+     indicator shown above both tabs (since the filter also scopes the
+     Overview chart while active, matching History's own shared-filter
+     behavior).
+  3. **Live Overview chart: y-axis showed -1..1 on first load.**
+     Chart.js's linear-scale auto-range pads symmetrically around 0 when
+     every visible point is still 0 (right after load, or an empty
+     window) -- fixed with an explicit `min: 0` (byte counts are never
+     negative). Same latent bug existed on History's Overview chart;
+     fixed there too.
+  4. **The Graph view didn't read as a network graph at all, then went
+     through two more real-usage rounds before landing.** Round 1 (this
+     entry's starting point) was a two-column node-link diagram --
+     real feedback: "just shows a single line from a host to a remote
+     host," and separately, described a materially different mental
+     model of what should be nodes/edges. Rebuilt as a flat circular
+     network graph per that description: every unique host (local or
+     peer) is a node on one circle, one edge per (local host, peer,
+     *destination port*) triple -- not collapsed by host+peer alone,
+     since two different ports to the same peer are genuinely different
+     things to look at; multiple edges between the same two nodes fan
+     out via increasing bezier curvature instead of drawing on top of
+     each other. Iterated twice more from there: edge color was first a
+     relative-to-current-max gradient, changed to fixed absolute
+     KB/MB bands with a legend (a relative scale made the same 50KB
+     connection look "red" on a quiet network and "pale blue" on a busy
+     one); a ctrl/cmd+click "solo one host" mode was built, then
+     abandoned -- neither the click event's own `ctrlKey` nor a
+     separately-tracked `keydown`/`keyup` fallback ever reliably reached
+     the handler on the user's real Windows setup (something in the
+     input stack was swallowing the modifier before either path saw it),
+     and once a non-modifier icon-based alternative was floated the user
+     said no to adding an icon at all, so the whole solo-mode idea was
+     dropped rather than chasing it further. Final addition: a small
+     arrowhead at each edge's midpoint pointing `local_ip -> peer_ip`
+     (the side pf itself recorded as source), positioned using the
+     property that a quadratic bezier's tangent at its midpoint is
+     always parallel to the straight chord between its endpoints
+     regardless of curvature -- so the rotation angle is a plain
+     `atan2` on the two node positions, no real curve math needed.
+     Edge opacity (recency, from `last_activity`) was kept from the
+     prior round unchanged.
+  Also caught and fixed along the way (nostromo, not the VM): after
+  upgrading to 1.2.1, every search API 500'd except the History
+  timeseries chart -- turned out to be operator error, not a code bug:
+  `flows.db` wasn't deleted before the 1.2.0 upgrade, so the old-schema
+  tables were still in place (`CREATE TABLE IF NOT EXISTS` is a no-op
+  against them), and the timeseries chart alone kept working because its
+  query happens to only touch columns that existed under both schemas.
+  117 tests passing. Version bumped to **1.2.2**.
 - **Not yet started**: the staticOverrides grid editor, proper repo
   signing before this pkg-repo is relied on for anything that matters,
   and a possible future "scheduled traffic blocking" feature (the
@@ -1196,7 +1276,7 @@ controller's job is just: query SQLite, build that array, hand it off.
 
 | Method | Path | Params | Returns |
 |---|---|---|---|
-| POST | `/api/gowiththeflow/live/search/` | Bootgrid standard (`current`, `rowCount`, `sort`, `searchPhrase`) | **DONE.** local/peer (`hostname (ip)`), `peer_is_local`, `category`, `state` (pf's own connection state), proto, port, bytes in/out, live-computed duration |
+| POST | `/api/gowiththeflow/live/search/` | Bootgrid standard, + optional `local_ip`/`peer_ip`/`peer_port` (exact, ANDed) and `host_ip` (matches either side) | **DONE.** local/peer (`hostname (ip)`), `peer_is_local`, `category`, `state` (pf's own connection state), `last_activity` (1.2.2 -- only advances on real bytes/state change, unlike `last_seen`), proto, port, bytes in/out, live-computed duration. The filter params (1.2.2) back the Overview chart's click-through, which needs a real server-side filter since this grid is ajax-backed |
 | POST | `/api/gowiththeflow/history/search/` | + `days`, `local_host?` | **DONE.** rollup rows aggregated by (local_ip, peer_ip), granularity auto-picked by `days` vs. `DbApiControllerBase::HOURLY_RETENTION_DAYS` (8, matching the default `rollupHourlyRetentionDays` setting), plus a `local_hosts` map for the filter dropdown. `local_host` filter and bytes correctly account for `peer_is_local=1` pairs via a UNION ALL (see 1.2.0 Status entry) |
 | POST | `/api/gowiththeflow/history/timeseries` | `days`, `bucket=hour\|day`, `local_host?` | **DONE (1.2.0).** `{buckets, series: {ip: bytes[]}, local_hosts}`, top-10-by-total capped with an "Other" aggregate — backs History's Overview chart |
 | POST | `/api/gowiththeflow/toptalkers/local` | `days` | **DONE.** ranked local hosts by total bytes/connections (sortable by clicking either column — no separate `sort_by` param needed); a UNION ALL credits both members of an internal pair from their own point of view |

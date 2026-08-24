@@ -16,9 +16,10 @@
     const MAX_POINTS = 60;
     const TOP_N = 10;
     const GRAPH_FADE_MS = 4000;
-    let graphNodes = {};                // "local_ip|peer_ip" -> {el, lastSeen, fading}
+    let graphNodes = {};                // "local_ip|peer_ip|peer_port" -> {el, lastSeen, fading}
     let lastRows = null;                // most recent live/search rows, cached so switching
     let lastDeltasByGroup = null;       // to Graph mode can render immediately, not wait a tick
+    let liveFilter = { local_ip: '', peer_ip: '', peer_port: '', host_ip: '' };  // server-side, via requestHandler
 
     $( document ).ready(function() {
         $("#grid-live").UIBootgrid({
@@ -26,6 +27,13 @@
             options: {
                 selection: false,
                 multiSelect: false,
+                requestHandler: function (request) {
+                    request['local_ip'] = liveFilter.local_ip;
+                    request['peer_ip'] = liveFilter.peer_ip;
+                    request['peer_port'] = liveFilter.peer_port;
+                    request['host_ip'] = liveFilter.host_ip;
+                    return request;
+                },
                 responseHandler: function (response) {
                     updateLiveOverview(response.rows || []);
                     return response;
@@ -119,6 +127,10 @@
             // time -- an IntersectionObserver elsewhere already handles
             // redrawing it once visible, matching every other tabbed grid
             // in this plugin.
+        });
+
+        $("#live-filter-clear").on('click', function () {
+            clearLiveFilterGWTF();
         });
     });
 
@@ -240,6 +252,12 @@
                 scales: {
                     y: {
                         stacked: chartType === 'bar',
+                        // Byte counts are never negative -- without this,
+                        // Chart.js's auto-range pads symmetrically around 0
+                        // when every visible point is still 0 (e.g. right
+                        // after load, before real deltas arrive), producing
+                        // a nonsensical -1..1 axis instead of sitting at 0.
+                        min: 0,
                         ticks: { callback: function (v) { return formatBytesGWTF(v); } }
                     },
                     x: { stacked: chartType === 'bar' }
@@ -302,165 +320,292 @@
         return window.__gwtfLiveChart || null;
     }
 
+    // Server-side filter for the ajax-backed Live grid (Tabulator's own
+    // client-side setFilter() only ever filters whatever page of rows is
+    // already loaded locally -- it never asked the server for the actual
+    // matching set, so a click-through never showed anything). Same
+    // requestHandler-param pattern History/Top Talkers already use for
+    // their own local_host filter.
+    function setLiveFilterGWTF(filter, label) {
+        liveFilter = Object.assign({ local_ip: '', peer_ip: '', peer_port: '', host_ip: '' }, filter);
+        const active = !!(liveFilter.local_ip || liveFilter.peer_ip || liveFilter.peer_port || liveFilter.host_ip);
+        $("#live-filter-label").text(label || '');
+        $("#live-filter-indicator").toggle(active);
+        $("#grid-live").bootgrid('reload');
+    }
+
+    function clearLiveFilterGWTF() {
+        setLiveFilterGWTF({}, '');
+    }
+
     function filterLiveTableByGroupGWTF(rawKey) {
         if (!rawKey) {
             return; // "Other" isn't one specific host/port to filter by
         }
         $('a[href="#live-table"]').tab('show');
-        const table = $("#grid-live").data('UIBootgrid').getTable();
-        const field = window.__gwtfGroupBy === 'peer_port' ? 'peer_port' : 'local_ip';
-        table.setFilter(field, "=", rawKey);
+        if (window.__gwtfGroupBy === 'peer_port') {
+            setLiveFilterGWTF({ peer_port: rawKey }, '{{ lang._("Port") }} ' + rawKey);
+        } else {
+            setLiveFilterGWTF({ local_ip: rawKey }, groupLabels[rawKey] || rawKey);
+        }
     }
 
-    const GRAPH_OTHER_PEER_KEY = '__other__';
+    // Node click in the Graph view -- a single IP can be local_ip in one
+    // session and peer_ip in another, so this matches either side rather
+    // than assuming the node is always "the local one."
+    function filterLiveTableByHostIpGWTF(ip, label) {
+        $('a[href="#live-table"]').tab('show');
+        setLiveFilterGWTF({ host_ip: ip }, label || ip);
+    }
 
-    // Experimental "try it and see" renderer -- an actual bipartite
-    // node-link diagram: local hosts as nodes in a left column, their
-    // current peers as nodes in a right column, an edge between every
-    // active (local, peer) pair with its stroke-width scaled by current
-    // throughput. Capped to the busiest TOP_N pairs; the rest are
-    // collapsed into edges pointing at one shared "Other" peer node
-    // (per local host that has overflow), rather than dropped outright.
-    // A pair that drops out of the latest poll fades its edge out over a
-    // few seconds rather than disappearing instantly (nodes themselves
-    // are cheap to redraw fresh each tick, so they don't fade -- only
-    // the edges, the part that actually needed real animation, do).
+    // Edge click in the Graph view -- one specific (host, peer,
+    // destination port) triple, matching that edge's own granularity.
+    function filterLiveTableByTripleGWTF(localIp, peerIp, peerPort, label) {
+        $('a[href="#live-table"]').tab('show');
+        setLiveFilterGWTF({ local_ip: localIp, peer_ip: peerIp, peer_port: String(peerPort) }, label);
+    }
+
+    const GRAPH_NODE_R = 9;
+    const GRAPH_RECENCY_FADE_S = 120;      // fully faded once idle this long
+    const GRAPH_MIN_EDGE_OPACITY = 0.15;
+
+    // Fixed absolute bands, not a relative-to-current-max gradient --
+    // a relative scale would make the same 50KB connection look "red"
+    // on a quiet network and "pale blue" on a busy one, which defeats
+    // the point of a color cue. Bounds are in bytes (total transferred
+    // so far this session); tune freely, this is a first pass.
+    const GRAPH_EDGE_BANDS = [
+        { maxBytes: 10 * 1024, color: '#9ecae1', label: '< 10 KB' },
+        { maxBytes: 100 * 1024, color: '#6baed6', label: '10 KB – 100 KB' },
+        { maxBytes: 1024 * 1024, color: '#fd8d3c', label: '100 KB – 1 MB' },
+        { maxBytes: 10 * 1024 * 1024, color: '#e6550d', label: '1 MB – 10 MB' },
+        { maxBytes: Infinity, color: '#d62728', label: '> 10 MB' },
+    ];
+
+    function gwtfEdgeColor(bytes) {
+        for (let i = 0; i < GRAPH_EDGE_BANDS.length; i++) {
+            if (bytes <= GRAPH_EDGE_BANDS[i].maxBytes) {
+                return GRAPH_EDGE_BANDS[i].color;
+            }
+        }
+        return GRAPH_EDGE_BANDS[GRAPH_EDGE_BANDS.length - 1].color;
+    }
+
+    // Experimental "try it and see" renderer -- a flat circular network
+    // graph: every unique host (local or peer) is a node placed evenly
+    // around a circle, one edge per (local host, peer, destination port)
+    // triple -- not collapsed by host+peer alone, since two different
+    // ports to the same peer are two genuinely different things to look
+    // at. Edge color encodes current throughput (light blue -> red); edge
+    // opacity encodes how long since last_activity, so an idle-but-not-
+    // yet-closed connection visibly fades even while it's technically
+    // still "live" -- directly answering the "what does Last Seen even
+    // mean" question this feature grew out of. An arrowhead at each
+    // edge's midpoint points local_ip -> peer_ip, i.e. the side pf itself
+    // recorded as the connection's source. Clicking a node or edge jumps
+    // to the Table tab filtered accordingly. Capped to the busiest TOP_N
+    // edges; the rest are dropped outright -- there's no natural
+    // "collapse into one node" here without a central hub to hang it
+    // off of (unlike the earlier hub-based design), acceptable for a
+    // live glance view but worth revisiting if it proves confusing.
     function renderLiveGraph(rows, deltasByGroup) {
         const wrapper = document.getElementById('live-graph-wrapper');
         if (!wrapper || $("#live-chart-type").val() !== 'graph') {
             return;
         }
 
-        const pairTotals = {};
-        const hostSet = {};
-        const peerSet = {};
+        const nowS = Date.now() / 1000;
+        const edgeTotals = {};  // "local|peer|port" -> {localIp, peerIp, peerPort, bytes, lastActivity}
+        const labelByIp = {};
         rows.forEach(function (row) {
-            const key = row.local_ip + '|' + row.peer_ip;
-            pairTotals[key] = (pairTotals[key] || 0) + (Number(row.bytes_in) || 0) + (Number(row.bytes_out) || 0);
-            hostSet[row.local_ip] = row.local;
-            peerSet[row.peer_ip] = row.peer;
+            const key = row.local_ip + '|' + row.peer_ip + '|' + row.peer_port;
+            if (!edgeTotals[key]) {
+                edgeTotals[key] = { localIp: row.local_ip, peerIp: row.peer_ip, peerPort: row.peer_port, bytes: 0, lastActivity: 0 };
+            }
+            edgeTotals[key].bytes += (Number(row.bytes_in) || 0) + (Number(row.bytes_out) || 0);
+            edgeTotals[key].lastActivity = Math.max(edgeTotals[key].lastActivity, Number(row.last_activity) || 0);
+            labelByIp[row.local_ip] = row.local;
+            labelByIp[row.peer_ip] = row.peer;
         });
 
-        const sortedPairs = Object.keys(pairTotals).sort(function (a, b) { return pairTotals[b] - pairTotals[a]; });
-        const shownPairs = sortedPairs.slice(0, TOP_N);
-        const overflowPairs = sortedPairs.slice(TOP_N);
+        let edgeKeys = Object.keys(edgeTotals);
+        edgeKeys.sort(function (a, b) { return edgeTotals[b].bytes - edgeTotals[a].bytes; });
+        edgeKeys = edgeKeys.slice(0, TOP_N);
+        const edges = {};
+        edgeKeys.forEach(function (k) { edges[k] = edgeTotals[k]; });
 
-        const edges = {};  // edge key -> {localIp, peerIp, total}
-        shownPairs.forEach(function (key) {
-            const parts = key.split('|');
-            edges[key] = { localIp: parts[0], peerIp: parts[1], total: pairTotals[key] };
+        // Node set: real edges' endpoints, plus any still-fading edge's
+        // endpoints too (so a node doesn't vanish before its own edge
+        // finishes fading out) -- but the fading edge itself is NOT
+        // reprocessed below; its own CSS transition is left alone.
+        const nodeIpSet = new Set();
+        edgeKeys.forEach(function (k) { nodeIpSet.add(edges[k].localIp); nodeIpSet.add(edges[k].peerIp); });
+        Object.keys(graphNodes).forEach(function (k) {
+            const n = graphNodes[k];
+            if (n.fading) { nodeIpSet.add(n.localIp); nodeIpSet.add(n.peerIp); }
         });
-        if (overflowPairs.length) {
-            const overflowByHost = {};
-            overflowPairs.forEach(function (key) {
-                const localIp = key.split('|')[0];
-                overflowByHost[localIp] = (overflowByHost[localIp] || 0) + pairTotals[key];
-            });
-            Object.keys(overflowByHost).forEach(function (localIp) {
-                edges[localIp + '|' + GRAPH_OTHER_PEER_KEY] = {
-                    localIp: localIp, peerIp: GRAPH_OTHER_PEER_KEY, total: overflowByHost[localIp]
-                };
-            });
-            peerSet[GRAPH_OTHER_PEER_KEY] = '{{ lang._("Other") }}';
-        }
-
-        const edgeKeys = Object.keys(edges);
-        const hostIps = Array.from(new Set(edgeKeys.map(function (k) { return edges[k].localIp; })));
-        const peerIps = Array.from(new Set(edgeKeys.map(function (k) { return edges[k].peerIp; })));
+        const nodeIps = Array.from(nodeIpSet);
 
         const width = wrapper.clientWidth || 600;
-        const rowHeight = 32;
-        const height = Math.max(rowHeight * Math.max(hostIps.length, peerIps.length, 1) + 24, 160);
-        const hostX = 12, peerX = width - 12;
-        const hostY = {}, peerY = {};
-        hostIps.forEach(function (ip, i) { hostY[ip] = 20 + i * rowHeight; });
-        peerIps.forEach(function (ip, i) { peerY[ip] = 20 + i * rowHeight; });
+        const height = Math.max(320, Math.min(Math.round(width * 0.75), 560));
+        const centerX = width / 2, centerY = height / 2;
+        const circleRadius = Math.max(80, Math.min(Math.min(width, height) / 2 - 50, 16 * nodeIps.length || 80));
+
+        let legend = wrapper.querySelector('.gwtf-graph-legend');
+        if (!legend) {
+            legend = document.createElement('div');
+            legend.className = 'gwtf-graph-legend';
+            legend.textContent = '{{ lang._("Edge color = total bytes so far") }}: ';
+            GRAPH_EDGE_BANDS.forEach(function (band) {
+                const swatch = document.createElement('span');
+                swatch.className = 'gwtf-graph-legend-swatch';
+                swatch.style.backgroundColor = band.color;
+                legend.appendChild(swatch);
+                const text = document.createElement('span');
+                text.className = 'gwtf-graph-legend-text';
+                text.textContent = band.label;
+                legend.appendChild(text);
+            });
+            wrapper.appendChild(legend);
+        }
 
         let svg = wrapper.querySelector('svg');
         if (!svg) {
             svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
             svg.setAttribute('class', 'gwtf-graph-svg');
-            wrapper.appendChild(svg);
+            wrapper.insertBefore(svg, legend);
             graphNodes = {};
         }
         svg.setAttribute('width', width);
         svg.setAttribute('height', height);
         svg.setAttribute('viewBox', '0 0 ' + width + ' ' + height);
 
-        const now = Date.now();
-        const maxTotal = edgeKeys.length
-            ? Math.max.apply(null, edgeKeys.map(function (k) { return edges[k].total; })) || 1
-            : 1;
+        const nodePos = {};
+        nodeIps.forEach(function (ip, i) {
+            const angle = (2 * Math.PI * i) / nodeIps.length - Math.PI / 2;
+            nodePos[ip] = { x: centerX + circleRadius * Math.cos(angle), y: centerY + circleRadius * Math.sin(angle), angle: angle };
+        });
 
+        // Multiple edges between the same two nodes (different
+        // destination ports) fan out via increasing curvature instead of
+        // drawing directly on top of each other.
+        const curvePairIndex = {};
+        function nextCurveOffset(ipA, ipB) {
+            const pairKey = [ipA, ipB].sort().join('|');
+            const i = curvePairIndex[pairKey] || 0;
+            curvePairIndex[pairKey] = i + 1;
+            return (i % 2 === 0 ? 1 : -1) * Math.ceil((i + 1) / 2) * 18;
+        }
+
+        const now = Date.now();
         edgeKeys.forEach(function (key) {
             const e = edges[key];
+            const p1 = nodePos[e.localIp], p2 = nodePos[e.peerIp];
             let node = graphNodes[key];
             if (!node) {
-                const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
-                line.setAttribute('class', 'gwtf-graph-edge-line');
-                line.addEventListener('click', function () {
-                    $('a[href="#live-table"]').tab('show');
-                    const table = $("#grid-live").data('UIBootgrid').getTable();
-                    table.setFilter('local_ip', '=', e.localIp);
+                const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+                path.setAttribute('class', 'gwtf-graph-edge-line');
+                path.style.cursor = 'pointer';
+                path.addEventListener('click', function () {
+                    filterLiveTableByTripleGWTF(e.localIp, e.peerIp, e.peerPort,
+                        (labelByIp[e.localIp] || e.localIp) + ' → ' + (labelByIp[e.peerIp] || e.peerIp) + ':' + e.peerPort);
                 });
-                svg.appendChild(line);
-                node = { el: line };
+                svg.appendChild(path);
+                node = {
+                    el: path, localIp: e.localIp, peerIp: e.peerIp, peerPort: e.peerPort,
+                    curveOffset: nextCurveOffset(e.localIp, e.peerIp),
+                };
                 graphNodes[key] = node;
             }
-            const strokeWidth = Math.max(1, Math.round((e.total / maxTotal) * 8));
-            node.el.setAttribute('x1', hostX);
-            node.el.setAttribute('y1', hostY[e.localIp]);
-            node.el.setAttribute('x2', peerX);
-            node.el.setAttribute('y2', peerY[e.peerIp]);
-            node.el.setAttribute('stroke-width', strokeWidth);
+
+            const mx = (p1.x + p2.x) / 2, my = (p1.y + p2.y) / 2;
+            const dx = p2.x - p1.x, dy = p2.y - p1.y;
+            const len = Math.sqrt(dx * dx + dy * dy) || 1;
+            const cx = mx + (-dy / len) * node.curveOffset;
+            const cy = my + (dx / len) * node.curveOffset;
+            node.el.setAttribute('d', 'M ' + p1.x + ' ' + p1.y + ' Q ' + cx + ' ' + cy + ' ' + p2.x + ' ' + p2.y);
+            const color = gwtfEdgeColor(e.bytes);
+            node.el.setAttribute('stroke', color);
+
+            if (!node.arrowEl) {
+                const arrow = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
+                arrow.setAttribute('points', '-5,-4 5,0 -5,4');
+                arrow.setAttribute('class', 'gwtf-graph-edge-arrow');
+                svg.appendChild(arrow);
+                node.arrowEl = arrow;
+            }
+            // Midpoint of the quadratic bezier at t=0.5 (NOT the straight
+            // chord's midpoint -- it sits on the actual curve). The
+            // bezier's tangent at t=0.5 is always parallel to p2-p1
+            // regardless of curvature, so atan2(dy, dx) is the right
+            // rotation even though the curve visibly bows away from that
+            // straight line. Direction is local_ip -> peer_ip -- the side
+            // pf itself recorded as source for this specific flow.
+            const midX = 0.25 * p1.x + 0.5 * cx + 0.25 * p2.x;
+            const midY = 0.25 * p1.y + 0.5 * cy + 0.25 * p2.y;
+            const angleDeg = (Math.atan2(dy, dx) * 180) / Math.PI;
+            node.arrowEl.setAttribute('transform', 'translate(' + midX + ',' + midY + ') rotate(' + angleDeg + ')');
+            node.arrowEl.setAttribute('fill', color);
+
+            const ageS = Math.max(0, nowS - e.lastActivity);
+            const opacity = Math.max(GRAPH_MIN_EDGE_OPACITY, 1 - ageS / GRAPH_RECENCY_FADE_S);
             node.el.style.transition = '';
-            node.el.style.opacity = 1;
+            node.el.style.opacity = opacity;
+            node.arrowEl.style.transition = '';
+            node.arrowEl.style.opacity = opacity;
             node.fading = false;
             node.lastSeen = now;
         });
 
-        // Fade out and remove any edge not seen in this poll.
+        // Fade out and remove any edge not seen in this poll -- once an
+        // edge starts fading it's left alone here on every later tick
+        // until its own setTimeout below actually removes it.
         Object.keys(graphNodes).forEach(function (key) {
             const node = graphNodes[key];
-            if (node.lastSeen === now) {
+            if (node.lastSeen === now || node.fading) {
                 return;
             }
-            if (!node.fading) {
-                node.fading = true;
-                node.el.style.transition = 'opacity ' + GRAPH_FADE_MS + 'ms';
-                node.el.style.opacity = 0;
-                setTimeout(function () {
-                    if (node.el.parentNode) {
-                        node.el.parentNode.removeChild(node.el);
-                    }
-                    delete graphNodes[key];
-                }, GRAPH_FADE_MS);
+            node.fading = true;
+            node.el.style.transition = 'opacity ' + GRAPH_FADE_MS + 'ms';
+            node.el.style.opacity = 0;
+            if (node.arrowEl) {
+                node.arrowEl.style.transition = 'opacity ' + GRAPH_FADE_MS + 'ms';
+                node.arrowEl.style.opacity = 0;
             }
+            setTimeout(function () {
+                if (node.el.parentNode) {
+                    node.el.parentNode.removeChild(node.el);
+                }
+                if (node.arrowEl && node.arrowEl.parentNode) {
+                    node.arrowEl.parentNode.removeChild(node.arrowEl);
+                }
+                delete graphNodes[key];
+            }, GRAPH_FADE_MS);
         });
 
-        // Nodes/labels are cheap to redraw wholesale each tick -- avoids
-        // separately tracking their lifetime on top of the edges' own.
-        Array.prototype.forEach.call(svg.querySelectorAll('.gwtf-graph-node, .gwtf-graph-label'), function (el) {
-            el.remove();
-        });
-        function drawNode(x, y, label, isHost) {
+        Array.prototype.forEach.call(svg.querySelectorAll('.gwtf-graph-node, .gwtf-graph-label'), function (el) { el.remove(); });
+
+        nodeIps.forEach(function (ip) {
+            const pos = nodePos[ip];
             const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-            circle.setAttribute('cx', x);
-            circle.setAttribute('cy', y);
-            circle.setAttribute('r', 5);
-            circle.setAttribute('class', 'gwtf-graph-node ' + (isHost ? 'gwtf-graph-node-host' : 'gwtf-graph-node-peer'));
+            circle.setAttribute('cx', pos.x);
+            circle.setAttribute('cy', pos.y);
+            circle.setAttribute('r', GRAPH_NODE_R);
+            circle.setAttribute('class', 'gwtf-graph-node');
+            circle.style.cursor = 'pointer';
+            circle.addEventListener('click', function () {
+                filterLiveTableByHostIpGWTF(ip, labelByIp[ip] || ip);
+            });
             svg.appendChild(circle);
-            const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-            text.setAttribute('x', isHost ? x + 10 : x - 10);
-            text.setAttribute('y', y + 4);
-            text.setAttribute('text-anchor', isHost ? 'start' : 'end');
-            text.setAttribute('class', 'gwtf-graph-label');
-            text.textContent = label;
-            svg.appendChild(text);
-        }
-        hostIps.forEach(function (ip) { drawNode(hostX, hostY[ip], hostSet[ip] || ip, true); });
-        peerIps.forEach(function (ip) {
-            drawNode(peerX, peerY[ip], ip === GRAPH_OTHER_PEER_KEY ? peerSet[ip] : (peerSet[ip] || ip), false);
+
+            const name = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+            const pointsRight = Math.cos(pos.angle) >= 0;
+            name.setAttribute('x', pos.x + (pointsRight ? 1 : -1) * (GRAPH_NODE_R + 6));
+            name.setAttribute('y', pos.y + 4);
+            name.setAttribute('text-anchor', pointsRight ? 'start' : 'end');
+            name.setAttribute('class', 'gwtf-graph-label gwtf-graph-name-label');
+            name.textContent = labelByIp[ip] || ip;
+            svg.appendChild(name);
         });
     }
 
@@ -517,35 +662,51 @@
 
 <style>
     #live-graph-wrapper {
-        overflow-y: auto; max-height: 420px;
+        overflow-y: auto; max-height: 560px; position: relative;
     }
     .gwtf-graph-svg {
         display: block;
     }
     .gwtf-graph-edge-line {
-        stroke: #4e79a7; cursor: pointer;
+        fill: none; stroke-width: 2;
     }
-    .gwtf-graph-node-host {
-        fill: #4e79a7;
+    .gwtf-graph-edge-arrow {
+        pointer-events: none;
     }
-    .gwtf-graph-node-peer {
-        fill: #f28e2b;
+    .gwtf-graph-node {
+        fill: #4e79a7; stroke: #fff; stroke-width: 1.5;
     }
-    .gwtf-graph-label {
-        font-size: 11px; fill: currentColor;
+    .gwtf-graph-name-label {
+        font-size: 10px; fill: currentColor; pointer-events: none;
+    }
+    .gwtf-graph-legend {
+        font-size: 11px; margin-top: 6px;
+    }
+    .gwtf-graph-legend-swatch {
+        display: inline-block; width: 10px; height: 10px; border-radius: 2px;
+        margin: 0 4px 0 10px; vertical-align: middle;
+    }
+    .gwtf-graph-legend-text {
+        vertical-align: middle;
     }
 </style>
 
-<div class="content-box col-xs-12 __mb" style="text-align: right; padding-bottom: 6px;">
-    <label for="interval" style="font-weight: normal; margin-right: 4px;">{{ lang._('Refresh every') }}</label>
-    <select class="selectpicker" id="interval" data-width="150">
-        <option value="500">500 {{ lang._('Milliseconds') }}</option>
-        <option value="1000">1 {{ lang._('Second') }}</option>
-        <option value="2000" selected="selected">2 {{ lang._('Seconds') }}</option>
-        <option value="5000">5 {{ lang._('Seconds') }}</option>
-        <option value="10000">10 {{ lang._('Seconds') }}</option>
-        <option value="0">{{ lang._("Don't refresh") }}</option>
-    </select>
+<div class="content-box col-xs-12 __mb" style="display: flex; align-items: center; justify-content: space-between; padding-bottom: 6px;">
+    <div id="live-filter-indicator" style="display: none;">
+        {{ lang._('Filtered by') }} <strong id="live-filter-label"></strong>
+        <button id="live-filter-clear" type="button" class="btn btn-xs btn-default">{{ lang._('Clear') }}</button>
+    </div>
+    <div>
+        <label for="interval" style="font-weight: normal; margin-right: 4px;">{{ lang._('Refresh every') }}</label>
+        <select class="selectpicker" id="interval" data-width="150">
+            <option value="500">500 {{ lang._('Milliseconds') }}</option>
+            <option value="1000">1 {{ lang._('Second') }}</option>
+            <option value="2000" selected="selected">2 {{ lang._('Seconds') }}</option>
+            <option value="5000">5 {{ lang._('Seconds') }}</option>
+            <option value="10000">10 {{ lang._('Seconds') }}</option>
+            <option value="0">{{ lang._("Don't refresh") }}</option>
+        </select>
+    </div>
 </div>
 <ul class="nav nav-tabs" data-tabs="tabs" id="livetabs">
     <li class="active"><a data-toggle="tab" href="#live-overview">{{ lang._('Overview') }}</a></li>
@@ -586,6 +747,7 @@
                     <th data-column-id="bytes_in" data-type="numeric" data-formatter="bytesformatter">{{ lang._('Bytes In') }}</th>
                     <th data-column-id="bytes_out" data-type="numeric" data-formatter="bytesformatter">{{ lang._('Bytes Out') }}</th>
                     <th data-column-id="duration" data-type="numeric" data-formatter="durationformatter">{{ lang._('Duration') }}</th>
+                    <th data-column-id="last_activity" data-type="numeric" data-formatter="timestampformatter">{{ lang._('Last Activity') }}</th>
                     <th data-column-id="last_seen" data-type="numeric" data-formatter="timestampformatter">{{ lang._('Last Seen') }}</th>
                 </tr>
             </thead>

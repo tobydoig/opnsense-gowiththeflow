@@ -230,10 +230,10 @@ def test_checkpoint_long_lived_session_writes_delta_and_advances_baseline(tmp_pa
         """
         INSERT INTO live_sessions
             (proto, local_ip, local_port, peer_ip, peer_port, category,
-             first_seen, last_seen, bytes_in, bytes_out, pkts_in, pkts_out, last_checkpoint_at)
-        VALUES ('tcp', '192.168.1.10', 5000, '9.9.9.9', 443, 'Cloud/Productivity', ?, ?, 100000, 200000, 100, 200, ?)
+             first_seen, last_seen, last_activity, bytes_in, bytes_out, pkts_in, pkts_out, last_checkpoint_at)
+        VALUES ('tcp', '192.168.1.10', 5000, '9.9.9.9', 443, 'Cloud/Productivity', ?, ?, ?, 100000, 200000, 100, 200, ?)
         """,
-        (t0, t0, t0),
+        (t0, t0, t0, t0),
     )
     conn.commit()
 
@@ -281,11 +281,11 @@ def test_checkpoint_long_lived_session_carries_peer_is_local_and_state_through(t
         """
         INSERT INTO live_sessions
             (proto, local_ip, local_port, peer_ip, peer_port, peer_is_local, category, state,
-             first_seen, last_seen, bytes_in, bytes_out, pkts_in, pkts_out, last_checkpoint_at)
+             first_seen, last_seen, last_activity, bytes_in, bytes_out, pkts_in, pkts_out, last_checkpoint_at)
         VALUES ('tcp', '192.168.1.10', 5000, '192.168.1.20', 445, 1, 'Internal', 'ESTABLISHED:ESTABLISHED',
-                ?, ?, 1000, 2000, 10, 20, ?)
+                ?, ?, ?, 1000, 2000, 10, 20, ?)
         """,
-        (t0, t0, t0),
+        (t0, t0, t0, t0),
     )
     conn.commit()
 
