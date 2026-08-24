@@ -883,6 +883,18 @@
   doesn't account for -- measured its real height directly
   (`.getBoundingClientRect().height`) rather than guessing a constant.
   Version bumped to **1.2.5**.
+- **1.2.6 -- Line/Bar chart got the same viewport-fill treatment.** The
+  user noticed Live's Line/Bar chart still sat in a fixed 320px box
+  while the Graph view now fills the tab -- a plain leftover, never
+  revisited when the Graph view's sizing was fixed. Factored the 1.2.5
+  sizing logic out into a shared `gwtfFillTabHeight(el)` helper and
+  applied it to `#live-chart-canvas-wrapper` too (Chart.js's own
+  `responsive`/`maintainAspectRatio: false` handling picks up the
+  resulting container-height change on its own; an explicit
+  `chart.resize()` call after `update()` makes it immediate rather than
+  waiting on Chart.js's internal resize observer). The markup's fixed
+  `height: 320px` became a `min-height: 320px` floor for the moment
+  before JS first runs. Version bumped to **1.2.6**.
 - **Not yet started**: the staticOverrides grid editor, proper repo
   signing before this pkg-repo is relied on for anything that matters,
   and a possible future "scheduled traffic blocking" feature (the

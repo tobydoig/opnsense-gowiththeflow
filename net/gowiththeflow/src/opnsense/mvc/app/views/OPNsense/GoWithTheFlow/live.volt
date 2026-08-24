@@ -207,6 +207,27 @@
     const GWTF_PALETTE = ['#4e79a7', '#f28e2b', '#e15759', '#76b7b2', '#59a14f',
                            '#edc948', '#b07aa1', '#ff9da7', '#9c755f', '#bab0ac'];
 
+    // Shared by both Overview renderers (Line/Bar's canvas wrapper and
+    // the Graph view's own wrapper) -- fills the real remaining
+    // browser-window height below `el`, not a fixed pixel value that
+    // ignores how tall the actual window is. rect.top is relative to
+    // the *current scroll position*; adding scrollY back converts it
+    // to a scroll-independent distance from the top of the document,
+    // which is what actually determines the layout here -- getting
+    // this wrong once produced a real runaway-growth bug (scrolling to
+    // see clipped content shrank rect.top, which grew the next tick's
+    // height, requiring more scroll, compounding forever). Also
+    // accounts for OPNsense's own `position: fixed` page footer
+    // (`.page-foot`), which overlaps the bottom of the viewport
+    // regardless of scroll and isn't reflected in window.innerHeight.
+    function gwtfFillTabHeight(el) {
+        const documentTop = el.getBoundingClientRect().top + window.scrollY;
+        const pageFoot = document.querySelector('.page-foot');
+        const footerHeight = pageFoot ? pageFoot.getBoundingClientRect().height : 60;
+        const height = Math.max(320, window.innerHeight - documentTop - footerHeight - 16);
+        el.style.height = height + 'px';
+    }
+
     function renderLiveChart() {
         const groupBy = $("#live-group-by").val() || 'local_ip';
         const chartType = $("#live-chart-type").val() || 'line';
@@ -304,6 +325,8 @@
             }
         };
 
+        gwtfFillTabHeight(document.getElementById('live-chart-canvas-wrapper'));
+
         const existing = liveChartInstanceGWTF();
         if (!existing) {
             const ctx = document.getElementById('live-overview-canvas').getContext('2d');
@@ -315,6 +338,7 @@
             existing.options.scales.y.stacked = config.options.scales.y.stacked;
             existing.options.scales.x.stacked = config.options.scales.x.stacked;
             existing.update();
+            existing.resize();
         }
     }
 
@@ -545,32 +569,7 @@
             graphNodes = {};
         }
 
-        // The wrapper is sized to fill the real remaining browser-window
-        // height below it (via CSS flexbox, not manual pixel math for
-        // the svg vs. legend split -- the legend gets its natural size
-        // and the svg gets whatever's left, so the legend is never
-        // clipped). rect.top is relative to the *current scroll
-        // position*, which would make this shrink/grow every tick as
-        // the user scrolls -- adding scrollY back converts it to a
-        // stable, scroll-independent distance from the top of the
-        // document, which is what actually determines the layout here.
-        // Getting this wrong once produced a real runaway-growth bug:
-        // the legend got clipped, the user scrolled down to see it,
-        // which shrank rect.top, which grew the next tick's height,
-        // pushing the legend further down, requiring more scroll --
-        // compounding forever until the tabs themselves scrolled off
-        // the top of the page.
-        const documentTop = wrapper.getBoundingClientRect().top + window.scrollY;
-        // OPNsense's own page chrome has a `position: fixed` footer
-        // (`.page-foot`) that overlaps the bottom of the viewport
-        // regardless of scroll position -- window.innerHeight alone
-        // overstates how much of it is actually usable by that much.
-        // Measured directly rather than guessed, since its real height
-        // isn't something this plugin controls or should hardcode.
-        const pageFoot = document.querySelector('.page-foot');
-        const footerHeight = pageFoot ? pageFoot.getBoundingClientRect().height : 60;
-        const wrapperHeight = Math.max(320, window.innerHeight - documentTop - footerHeight - 16);
-        wrapper.style.height = wrapperHeight + 'px';
+        gwtfFillTabHeight(wrapper);
 
         // Let flexbox finish laying out the legend at its natural size
         // and the svg at whatever's left, then read the svg's own
@@ -837,7 +836,7 @@
                 <option value="peer_port">{{ lang._('Peer Port') }}</option>
             </select>
         </div>
-        <div id="live-chart-canvas-wrapper" style="height: 320px;">
+        <div id="live-chart-canvas-wrapper" style="min-height: 320px;">
             <canvas id="live-overview-canvas"></canvas>
         </div>
         <div id="live-graph-wrapper" style="display: none;"></div>
