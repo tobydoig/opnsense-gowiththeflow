@@ -17,6 +17,8 @@
     const TOP_N = 10;
     const GRAPH_FADE_MS = 4000;
     let graphNodes = {};                // "local_ip|peer_ip|peer_port" -> {el, lastSeen, fading}
+    let forceNodePositions = {};        // ip -> {x, y} -- persists across ticks so the force layout
+                                         // gently relaxes as data changes instead of jumping around
     let lastRows = null;                // most recent live/search rows, cached so switching
     let lastDeltasByGroup = null;       // to Graph mode can render immediately, not wait a tick
     let liveFilter = { local_ip: '', peer_ip: '', peer_port: '', host_ip: '' };  // server-side, via requestHandler
@@ -391,12 +393,83 @@
         return GRAPH_EDGE_BANDS[GRAPH_EDGE_BANDS.length - 1].color;
     }
 
-    // Experimental "try it and see" renderer -- a flat circular network
-    // graph: every unique host (local or peer) is a node placed evenly
-    // around a circle, one edge per (local host, peer, destination port)
-    // triple -- not collapsed by host+peer alone, since two different
-    // ports to the same peer are two genuinely different things to look
-    // at. Edge color encodes current throughput (light blue -> red); edge
+    // Force-directed layout (Fruchterman-Reingold-ish: all-pairs
+    // repulsion + spring-like attraction along edges + a mild pull
+    // toward center so the graph doesn't drift off-canvas), not a fixed
+    // ring -- real feedback was that a ring reads as "radial," not "a
+    // network." Positions persist in forceNodePositions across ticks and
+    // are only nudged a little each time (not recomputed from scratch),
+    // so the layout gently relaxes as edges/nodes come and go instead of
+    // jumping around every poll. O(n^2) per iteration from the repulsion
+    // pass is trivial at realistic host counts (a few ms even for a
+    // few hundred nodes) -- revisit only if that stops being true.
+    function gwtfRelaxForceLayout(nodeIps, edgePairs, width, height, iterations) {
+        const centerX = width / 2, centerY = height / 2;
+        const nodeIpSet = new Set(nodeIps);
+        Object.keys(forceNodePositions).forEach(function (ip) {
+            if (!nodeIpSet.has(ip)) { delete forceNodePositions[ip]; }
+        });
+        // Standard Fruchterman-Reingold heuristic for the "ideal" edge
+        // length given the available area and node count.
+        const k = Math.sqrt((width * height) / Math.max(nodeIps.length, 1));
+
+        nodeIps.forEach(function (ip) {
+            if (!forceNodePositions[ip]) {
+                const angle = Math.random() * 2 * Math.PI;
+                const r = Math.min(width, height) * 0.2 * Math.random();
+                forceNodePositions[ip] = { x: centerX + r * Math.cos(angle), y: centerY + r * Math.sin(angle) };
+            }
+        });
+
+        for (let iter = 0; iter < iterations; iter++) {
+            const disp = {};
+            nodeIps.forEach(function (ip) { disp[ip] = { x: 0, y: 0 }; });
+
+            for (let i = 0; i < nodeIps.length; i++) {
+                for (let j = i + 1; j < nodeIps.length; j++) {
+                    const a = nodeIps[i], b = nodeIps[j];
+                    const pa = forceNodePositions[a], pb = forceNodePositions[b];
+                    const dx = pa.x - pb.x, dy = pa.y - pb.y;
+                    const dist = Math.sqrt(dx * dx + dy * dy) || 0.01;
+                    const force = (k * k) / dist;
+                    const fx = (dx / dist) * force, fy = (dy / dist) * force;
+                    disp[a].x += fx; disp[a].y += fy;
+                    disp[b].x -= fx; disp[b].y -= fy;
+                }
+            }
+
+            edgePairs.forEach(function (pair) {
+                const pa = forceNodePositions[pair[0]], pb = forceNodePositions[pair[1]];
+                const dx = pa.x - pb.x, dy = pa.y - pb.y;
+                const dist = Math.sqrt(dx * dx + dy * dy) || 0.01;
+                const force = (dist * dist) / k;
+                const fx = (dx / dist) * force, fy = (dy / dist) * force;
+                disp[pair[0]].x -= fx; disp[pair[0]].y -= fy;
+                disp[pair[1]].x += fx; disp[pair[1]].y += fy;
+            });
+
+            const temp = Math.max(1, k * 0.15 * (1 - iter / iterations));
+            nodeIps.forEach(function (ip) {
+                const dx = disp[ip].x, dy = disp[ip].y;
+                const len = Math.sqrt(dx * dx + dy * dy) || 0.01;
+                const capped = Math.min(len, temp);
+                const pos = forceNodePositions[ip];
+                pos.x += (dx / len) * capped;
+                pos.y += (dy / len) * capped;
+                // Mild pull toward center -- keeps a lightly-connected
+                // graph from slowly drifting off-canvas over many ticks.
+                pos.x += (centerX - pos.x) * 0.01;
+                pos.y += (centerY - pos.y) * 0.01;
+            });
+        }
+    }
+
+    // Experimental "try it and see" renderer -- a force-directed network
+    // graph: every unique host (local or peer) is a node, one edge per
+    // (local host, peer, destination port) triple -- not collapsed by
+    // host+peer alone, since two different ports to the same peer are
+    // two genuinely different things to look at. Edge color encodes
+    // current throughput (light blue -> red); edge
     // opacity encodes how long since last_activity, so an idle-but-not-
     // yet-closed connection visibly fades even while it's technically
     // still "live" -- directly answering the "what does Last Seen even
@@ -446,18 +519,20 @@
         });
         const nodeIps = Array.from(nodeIpSet);
 
-        // The circle's radius is driven by how many nodes actually need
-        // to fit around it (enough arc length per node for its label to
-        // stay legible), not clamped to the wrapper's own visible size --
-        // with nothing capping how many hosts/edges can show now, a busy
-        // network should make this diagram bigger and scroll, not
-        // silently cram everyone into a fixed box.
-        const minArcSpacing = 26;
-        const circleRadius = Math.max(80, (minArcSpacing * nodeIps.length) / (2 * Math.PI));
-        const margin = 140;  // room for node labels sticking out past the circle
-        const size = Math.round(circleRadius * 2 + margin);
-        const width = Math.max(wrapper.clientWidth || 600, size);
-        const height = size;
+        // Fill whatever real vertical room the browser window actually
+        // has below this wrapper (not a fixed pixel height or a width-
+        // derived aspect ratio, which left most of a tall window empty
+        // and clipped the graph into a small box anyway) -- then, on top
+        // of that floor, grow further if there are enough nodes that
+        // even the full viewport isn't roomy enough (area needed for
+        // even density scales with node count, so linear dimensions
+        // scale with its square root), and let the wrapper scroll for
+        // whatever still doesn't fit.
+        const viewportHeight = Math.max(400, window.innerHeight - wrapper.getBoundingClientRect().top - 24);
+        const baseSize = 420;
+        const nodeDrivenSize = Math.round(baseSize * Math.sqrt(Math.max(nodeIps.length, 1) / 6));
+        const width = Math.max(wrapper.clientWidth || 600, nodeDrivenSize);
+        const height = Math.max(viewportHeight, Math.round(nodeDrivenSize * 0.65));
         const centerX = width / 2, centerY = height / 2;
 
         let legend = wrapper.querySelector('.gwtf-graph-legend');
@@ -489,11 +564,18 @@
         svg.setAttribute('height', height);
         svg.setAttribute('viewBox', '0 0 ' + width + ' ' + height);
 
-        const nodePos = {};
-        nodeIps.forEach(function (ip, i) {
-            const angle = (2 * Math.PI * i) / nodeIps.length - Math.PI / 2;
-            nodePos[ip] = { x: centerX + circleRadius * Math.cos(angle), y: centerY + circleRadius * Math.sin(angle), angle: angle };
+        // One attraction spring per distinct (host, peer) pair, not per
+        // edge -- several ports to the same peer pulling on the same
+        // pair of nodes N times over would just distort the layout
+        // without adding any real information the color/opacity/arrow
+        // per individual edge doesn't already carry.
+        const pairKeySet = new Set();
+        edgeKeys.forEach(function (k) {
+            pairKeySet.add([edges[k].localIp, edges[k].peerIp].sort().join('|'));
         });
+        const edgePairs = Array.from(pairKeySet).map(function (pk) { return pk.split('|'); });
+        gwtfRelaxForceLayout(nodeIps, edgePairs, width, height, 20);
+        const nodePos = forceNodePositions;
 
         // Multiple edges between the same two nodes (different
         // destination ports) fan out via increasing curvature instead of
@@ -608,7 +690,7 @@
             svg.appendChild(circle);
 
             const name = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-            const pointsRight = Math.cos(pos.angle) >= 0;
+            const pointsRight = pos.x >= centerX;
             name.setAttribute('x', pos.x + (pointsRight ? 1 : -1) * (GRAPH_NODE_R + 6));
             name.setAttribute('y', pos.y + 4);
             name.setAttribute('text-anchor', pointsRight ? 'start' : 'end');
@@ -671,7 +753,7 @@
 
 <style>
     #live-graph-wrapper {
-        overflow: auto; max-height: 560px; position: relative;
+        overflow: auto; position: relative;
     }
     .gwtf-graph-svg {
         display: block;

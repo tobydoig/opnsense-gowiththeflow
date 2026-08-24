@@ -820,6 +820,45 @@
   now) instead of cramming a busy network into a fixed box. `TOP_N`
   remains unchanged for the unrelated Line/Bar chart's per-tick group
   cap. Version bumped to **1.2.3**.
+- **1.2.4 -- Graph view rebuilt again as a real force-directed layout,
+  then a canvas-sizing fix once real-box data made the space problem
+  obvious.**
+  1. The user pointed at Highcharts' own network-graph example image
+     and asked for that look instead of the ring -- a genuine force-
+     directed layout (nodes repel each other, edges pull connected
+     nodes together like springs), not a fixed arrangement at all.
+     Implemented a compact Fruchterman-Reingold-style simulation by
+     hand (all-pairs repulsion + spring attraction along edges + a mild
+     pull toward center so a sparse graph doesn't drift off-canvas),
+     with node positions kept in a `forceNodePositions` map that
+     persists across polls -- each tick only runs ~20 relaxation
+     iterations starting from wherever nodes already are, so the layout
+     gently resettles as edges/nodes come and go instead of jumping to
+     a totally different arrangement every few seconds. O(n^2) per
+     iteration from the repulsion pass is trivial at realistic host
+     counts. One attraction spring per distinct (host, peer) *pair*,
+     not per edge -- several destination-port edges to the same peer
+     pulling on the same two nodes repeatedly would only distort the
+     layout without adding information the per-edge color/opacity/arrow
+     don't already carry. Node-label placement (which side of the node
+     to put the text on) switched from angle-around-a-ring to simply
+     "which side of the canvas center is this node currently on."
+  2. Real-box use (nostromo, not the VM -- confirmed by actual device
+     hostnames like `cam-garage`/`alexa-kitchen`/`iphone-mum` showing up
+     clustered exactly as a force-directed layout should) immediately
+     surfaced a real sizing bug: the canvas height was a fixed
+     `width * 0.65` aspect ratio and the wrapper had a flat `max-height:
+     560px` cap, so on a tall browser window most of the tab's actual
+     available space sat empty below a needlessly small, clipped graph.
+     Fixed by sizing the canvas to the real remaining viewport height
+     (`window.innerHeight` minus the wrapper's own offset from the top
+     of the page, floor 400px) first, then growing further on top of
+     that floor only if enough nodes are present that even the full
+     viewport isn't roomy enough -- letting the wrapper's own scrolling
+     pick up whatever still doesn't fit, rather than a fixed number
+     unrelated to the actual browser window.
+  117 tests passing (Python side untouched -- Volt/JS only both times).
+  Version bumped to **1.2.4**.
 - **Not yet started**: the staticOverrides grid editor, proper repo
   signing before this pkg-repo is relied on for anything that matters,
   and a possible future "scheduled traffic blocking" feature (the
