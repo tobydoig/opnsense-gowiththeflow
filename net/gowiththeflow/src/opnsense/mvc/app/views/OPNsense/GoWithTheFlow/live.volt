@@ -2,15 +2,22 @@
 <script>
     'use strict';
 
-    $( document ).ready(function() {
-        let previousSnapshot = new Map();  // row_id -> bytes_in+bytes_out
-        let chartHistory = [];             // [{time, groups: {key: bytesDelta}}]
-        let groupLabels = {};              // raw key -> display label (hostname where known)
-        const MAX_POINTS = 60;
-        const TOP_N = 10;
-        const GRAPH_FADE_MS = 4000;
-        let graphNodes = {};                // raw peer/host key -> {el, lastSeen}
+    // Shared with updateLiveOverview()/renderLiveChart()/renderLiveGraph()
+    // below, which are declared outside $(document).ready() -- they must
+    // live at this script's top level, not inside the ready() closure, or
+    // those functions can't see them at all (a real bug: this exact
+    // mistake shipped once already and only surfaced as a live
+    // `ReferenceError` in a real browser, since neither the Python test
+    // suite nor a syntax check would ever catch a closure-scoping issue).
+    let previousSnapshot = new Map();  // row_id -> bytes_in+bytes_out
+    let chartHistory = [];             // [{time, groups: {key: bytesDelta}}]
+    let groupLabels = {};              // raw key -> display label (hostname where known)
+    const MAX_POINTS = 60;
+    const TOP_N = 10;
+    const GRAPH_FADE_MS = 4000;
+    let graphNodes = {};                // raw peer/host key -> {el, lastSeen}
 
+    $( document ).ready(function() {
         $("#grid-live").UIBootgrid({
             search:'/api/gowiththeflow/live/search/',
             options: {
