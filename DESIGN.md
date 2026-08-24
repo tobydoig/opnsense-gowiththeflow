@@ -859,6 +859,30 @@
      unrelated to the actual browser window.
   117 tests passing (Python side untouched -- Volt/JS only both times).
   Version bumped to **1.2.4**.
+- **1.2.5 -- fixed a genuine runaway-growth bug in 1.2.4's sizing fix,
+  found immediately on real-box use.** The Graph panel's legend was
+  still landing off-screen, and scrolling down to see it made the panel
+  even taller on the next poll, pushing the legend further down again
+  -- compounding without bound until the tabs themselves scrolled off
+  the top of the page. Root cause: the height calc used
+  `getBoundingClientRect().top`, which is relative to the *current
+  scroll position* -- scrolling down to reveal the clipped legend
+  shrank that value, which grew the next tick's computed height, in an
+  unbounded loop. Fixed by adding `window.scrollY` back to convert it
+  into a scroll-independent distance from the top of the document (a
+  layout fact that doesn't change as the user scrolls, only if the
+  static content above the wrapper actually changes size). Also
+  switched the svg-vs-legend split from independent JS pixel math to
+  CSS flexbox (`#live-graph-wrapper` as a flex column, the legend
+  `flex: 0 0 auto`, the svg `flex: 1 1 auto`) so the legend always gets
+  its natural size and the svg gets whatever's left, rather than
+  requiring the two calculations to be kept in sync by hand. One more
+  real offset found after that: OPNsense's own page chrome has a
+  `position: fixed` footer (`.page-foot`) that overlaps the bottom of
+  the viewport regardless of scroll, which `window.innerHeight` alone
+  doesn't account for -- measured its real height directly
+  (`.getBoundingClientRect().height`) rather than guessing a constant.
+  Version bumped to **1.2.5**.
 - **Not yet started**: the staticOverrides grid editor, proper repo
   signing before this pkg-repo is relied on for anything that matters,
   and a possible future "scheduled traffic blocking" feature (the

@@ -519,22 +519,6 @@
         });
         const nodeIps = Array.from(nodeIpSet);
 
-        // Fill whatever real vertical room the browser window actually
-        // has below this wrapper (not a fixed pixel height or a width-
-        // derived aspect ratio, which left most of a tall window empty
-        // and clipped the graph into a small box anyway) -- then, on top
-        // of that floor, grow further if there are enough nodes that
-        // even the full viewport isn't roomy enough (area needed for
-        // even density scales with node count, so linear dimensions
-        // scale with its square root), and let the wrapper scroll for
-        // whatever still doesn't fit.
-        const viewportHeight = Math.max(400, window.innerHeight - wrapper.getBoundingClientRect().top - 24);
-        const baseSize = 420;
-        const nodeDrivenSize = Math.round(baseSize * Math.sqrt(Math.max(nodeIps.length, 1) / 6));
-        const width = Math.max(wrapper.clientWidth || 600, nodeDrivenSize);
-        const height = Math.max(viewportHeight, Math.round(nodeDrivenSize * 0.65));
-        const centerX = width / 2, centerY = height / 2;
-
         let legend = wrapper.querySelector('.gwtf-graph-legend');
         if (!legend) {
             legend = document.createElement('div');
@@ -560,8 +544,43 @@
             wrapper.insertBefore(svg, legend);
             graphNodes = {};
         }
-        svg.setAttribute('width', width);
-        svg.setAttribute('height', height);
+
+        // The wrapper is sized to fill the real remaining browser-window
+        // height below it (via CSS flexbox, not manual pixel math for
+        // the svg vs. legend split -- the legend gets its natural size
+        // and the svg gets whatever's left, so the legend is never
+        // clipped). rect.top is relative to the *current scroll
+        // position*, which would make this shrink/grow every tick as
+        // the user scrolls -- adding scrollY back converts it to a
+        // stable, scroll-independent distance from the top of the
+        // document, which is what actually determines the layout here.
+        // Getting this wrong once produced a real runaway-growth bug:
+        // the legend got clipped, the user scrolled down to see it,
+        // which shrank rect.top, which grew the next tick's height,
+        // pushing the legend further down, requiring more scroll --
+        // compounding forever until the tabs themselves scrolled off
+        // the top of the page.
+        const documentTop = wrapper.getBoundingClientRect().top + window.scrollY;
+        // OPNsense's own page chrome has a `position: fixed` footer
+        // (`.page-foot`) that overlaps the bottom of the viewport
+        // regardless of scroll position -- window.innerHeight alone
+        // overstates how much of it is actually usable by that much.
+        // Measured directly rather than guessed, since its real height
+        // isn't something this plugin controls or should hardcode.
+        const pageFoot = document.querySelector('.page-foot');
+        const footerHeight = pageFoot ? pageFoot.getBoundingClientRect().height : 60;
+        const wrapperHeight = Math.max(320, window.innerHeight - documentTop - footerHeight - 16);
+        wrapper.style.height = wrapperHeight + 'px';
+
+        // Let flexbox finish laying out the legend at its natural size
+        // and the svg at whatever's left, then read the svg's own
+        // resulting box back for the coordinate math below, rather than
+        // computing width/height independently in JS and hoping they
+        // match what CSS actually renders.
+        const svgRect = svg.getBoundingClientRect();
+        const width = Math.max(200, Math.round(svgRect.width) || wrapper.clientWidth || 600);
+        const height = Math.max(150, Math.round(svgRect.height) || 300);
+        const centerX = width / 2, centerY = height / 2;
         svg.setAttribute('viewBox', '0 0 ' + width + ' ' + height);
 
         // One attraction spring per distinct (host, peer) pair, not per
@@ -753,10 +772,10 @@
 
 <style>
     #live-graph-wrapper {
-        overflow: auto; position: relative;
+        display: flex; flex-direction: column; overflow: auto; position: relative;
     }
     .gwtf-graph-svg {
-        display: block;
+        display: block; width: 100%; flex: 1 1 auto; min-height: 0;
     }
     .gwtf-graph-edge-line {
         fill: none; stroke-width: 2;
@@ -771,7 +790,7 @@
         font-size: 10px; fill: currentColor; pointer-events: none;
     }
     .gwtf-graph-legend {
-        font-size: 11px; margin-top: 6px;
+        font-size: 11px; margin-top: 6px; flex: 0 0 auto;
     }
     .gwtf-graph-legend-swatch {
         display: inline-block; width: 10px; height: 10px; border-radius: 2px;
