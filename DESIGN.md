@@ -677,6 +677,52 @@
     default is wanted there too.
   - Version bumped to **1.2.0** (minor, given the schema rewrite and the
     genuinely new charting feature, not just a bugfix).
+- **1.2.1 -- real-box feedback from nostromo after upgrading to 1.2.0,
+  four issues found and fixed.**
+  1. **All search APIs 500'd after upgrading** (Live, History, Top
+     Talkers) even though the History Overview chart worked fine.
+     Root cause: `flows.db` wasn't deleted before the upgrade, so
+     `CREATE TABLE IF NOT EXISTS` left the *old*-schema tables in place
+     untouched; every query referencing the renamed `peer_*` columns
+     failed, while the Overview chart's `timeseriesAction()` happened to
+     only touch columns that existed under both schemas
+     (`bucket_start`/`local_ip`/`bytes_in`/`bytes_out`), which is exactly
+     why it alone kept working -- a useful diagnostic signal in hindsight.
+     Not a code bug -- fixed by actually doing the documented step
+     (`configctl gowiththeflow stop`, delete `flows.db`(+`-wal`/`-shm`),
+     `configctl gowiththeflow start`) -- but underlines that this step is
+     easy to forget in practice and has no automated guard.
+  2. **Live Overview's Line/Stacked-Bar chart re-scaled its x-axis on
+     every tick** instead of showing a fixed time window from the first
+     draw, because `chartHistory` started empty and grew one point per
+     poll until it reached `MAX_POINTS`. Fixed by seeding it with
+     `MAX_POINTS - 1` empty placeholder points (spaced backward from now
+     by the current refresh interval) the first time data arrives, so
+     the chart is full-width from tick one.
+  3. **A dominant host (the firewall's own admin-plane traffic) drowns
+     out every other line**, making real per-device activity look flat
+     by comparison -- an expected consequence of ranking by raw bytes,
+     not a bug, but genuinely awkward in practice. Added shift-click on
+     a legend entry to toggle that one line's visibility in place
+     (tracked in our own `hiddenGroupKeys` set rather than relying on
+     Chart.js's per-index legend state, since which keys land in the
+     top-10 "top" set can shift between ticks); a plain click keeps
+     jumping to the filtered Table tab, unchanged.
+  4. **The Graph view didn't read as a network graph at all** -- real
+     user reaction: "just shows a single line from a host to a remote
+     host." The shipped renderer was a vertical list of host/bar/peer
+     rows, not the bipartite node-link diagram the design actually
+     called for (left column = local hosts, right column = peers, edges
+     between them) -- an implementation shortcut that quietly diverged
+     from the approved plan rather than a deliberate simplification.
+     Rewritten as a real hand-drawn SVG node-link diagram matching the
+     original spec: local hosts and peers as positioned nodes, edges
+     sized by throughput, overflow beyond the top-10 pairs collapsed
+     into edges toward one shared "Other" peer node (previously silently
+     dropped), edges (not nodes, kept a deliberate simplification) fade
+     out over a few seconds when a pair disappears rather than vanishing
+     instantly.
+  No schema/Python changes -- Volt/JS only. Version bumped to **1.2.1**.
 - **Not yet started**: the staticOverrides grid editor, proper repo
   signing before this pkg-repo is relied on for anything that matters,
   and a possible future "scheduled traffic blocking" feature (the
