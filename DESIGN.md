@@ -997,6 +997,40 @@
   doesn't reliably take effect otherwise).
   117 tests passing (Python side untouched -- Volt only). Version
   bumped to **1.2.9**.
+- **1.2.10 -- real security investigation on nostromo confirmed the
+  bytes in/out pipeline is correct end-to-end, plus a real chart-color
+  stability bug found along the way.** User spotted two alarming
+  Live/Top-Peers numbers (a phone sending 485.9MB UDP to an unfamiliar
+  host on port 88 having received only 25.6MB; a device sending 6.9GB
+  to a Netflix Open Connect node having received only 60.5MB) and
+  suspected the byte-direction mapping was reversed. Verified it isn't,
+  with live evidence rather than just re-reading the code: ran a real
+  file download and a real UDP DNS query on the test VM, in both cases
+  confirming pf's raw `bytes_a:bytes_b` counters land correctly as
+  small `bytes_out`/large `bytes_in` through `classify_sessions()`, and
+  traced the field names unchanged (never swapped) through `db.py`,
+  `rollup.py` (the one swap site, `_canonicalize_local_peer()`, is
+  correctly gated to `peer_is_local=1` rows only), and
+  `ToptalkersController::peerAction()`'s genuine-peer branch. User
+  independently confirmed with `fast.com` that bytes in/out read
+  correctly for a real Netflix flow -- the son's phone really was
+  sending large amounts of data to an unfamiliar host, a genuine
+  security finding, not a plugin bug.
+  While investigating, confirmed and fixed a real, unrelated bug on
+  Live's Overview Line/Bar chart: a host's line color was assigned by
+  its array index in `topGroupKeysGWTF()`'s per-tick, throughput-sorted
+  ranking, so a continuously-active host's color would change whenever
+  the ranking reshuffled around it (e.g. a burst from another host
+  temporarily outranking it) -- contradicting the reasonable
+  expectation that a host keeps its color for as long as it's active.
+  Fixed with a persistent `groupColorSlots` map (raw key -> palette
+  index) reconciled every render against the tick's full key set (not
+  just the rendered top N -- a host temporarily demoted to "Other"
+  keeps its reserved slot and gets the same color back if it re-enters
+  the top N), freeing a slot only when a key has no activity left
+  anywhere in the window at all.
+  117 tests passing (Python side untouched -- Volt only). Version
+  bumped to **1.2.10**.
 - **Not yet started**: the staticOverrides grid editor, proper repo
   signing before this pkg-repo is relied on for anything that matters,
   and a possible future "scheduled traffic blocking" feature (the

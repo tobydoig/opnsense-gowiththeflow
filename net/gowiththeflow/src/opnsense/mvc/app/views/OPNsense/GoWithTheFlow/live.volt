@@ -16,6 +16,10 @@
     let liveChartRangeMinutes = 5;     // how much history the Line/Bar chart shows, user-configurable
     let liveChartTopN = 10;            // Line/Bar chart's line cap, user-configurable -- 0 means "all"
     let liveChartLogScale = false;     // log y-axis so a big spike doesn't flatten smaller signals
+    let groupColorSlots = new Map();   // raw key -> GWTF_PALETTE index, stable across re-ranking --
+                                         // freed only when a key has no activity anywhere in the
+                                         // window at all (not merely demoted out of the top N)
+    let usedColorSlots = new Set();
     const GRAPH_FADE_MS = 4000;
     let graphNodes = {};                // "local_ip|peer_ip|peer_port" -> {el, lastSeen, fading}
     let forceNodePositions = {};        // ip -> {x, y} -- persists across ticks so the force layout
@@ -358,6 +362,41 @@
     const GWTF_PALETTE = ['#4e79a7', '#f28e2b', '#e15759', '#76b7b2', '#59a14f',
                            '#edc948', '#b07aa1', '#ff9da7', '#9c755f', '#bab0ac'];
 
+    // Reconciles groupColorSlots/usedColorSlots against this tick's full
+    // key set (topGroupKeysGWTF's `all`, not just the rendered `top` --
+    // a key demoted to "Other" by a busier peer keeps its reserved slot
+    // and gets the same color back if it re-enters the top N later).
+    // Coloring by array index into a list that gets re-sorted by
+    // throughput every render (the original approach) made a host's
+    // color change whenever the ranking reshuffled, even while it never
+    // stopped being active -- this makes a color stick to its key until
+    // that key genuinely has no activity left anywhere in the window.
+    function gwtfAssignGroupColors(allKeys) {
+        const stillActive = new Set(allKeys);
+        groupColorSlots.forEach(function (idx, key) {
+            if (!stillActive.has(key)) {
+                usedColorSlots.delete(idx);
+                groupColorSlots.delete(key);
+            }
+        });
+        allKeys.forEach(function (key) {
+            if (groupColorSlots.has(key)) {
+                return;
+            }
+            let idx = 0;
+            while (usedColorSlots.has(idx)) {
+                idx++;
+            }
+            groupColorSlots.set(key, idx);
+            usedColorSlots.add(idx);
+        });
+    }
+
+    function gwtfColorForGroup(key) {
+        const idx = groupColorSlots.has(key) ? groupColorSlots.get(key) : 0;
+        return GWTF_PALETTE[idx % GWTF_PALETTE.length];
+    }
+
     // Shared by both Overview renderers (Line/Bar's canvas wrapper and
     // the Graph view's own wrapper) -- fills the real remaining
     // browser-window height below `el`, not a fixed pixel value that
@@ -388,17 +427,18 @@
         }
 
         const { top, all } = topGroupKeysGWTF(chartHistory);
+        gwtfAssignGroupColors(all);
         const otherKeys = all.filter(function (k) { return top.indexOf(k) === -1; });
         const labels = chartHistory.map(function (p) { return p.time.toLocaleTimeString(); });
 
-        const datasets = top.map(function (key, i) {
+        const datasets = top.map(function (key) {
             return {
                 label: groupLabels[key] || key,
                 rawKey: key,
                 hidden: hiddenGroupKeys.has(key),
                 data: chartHistory.map(function (p) { return p.groups[key] || 0; }),
-                borderColor: GWTF_PALETTE[i % GWTF_PALETTE.length],
-                backgroundColor: GWTF_PALETTE[i % GWTF_PALETTE.length],
+                borderColor: gwtfColorForGroup(key),
+                backgroundColor: gwtfColorForGroup(key),
                 fill: chartType === 'bar',
                 // 'monotone' smooths the line without letting it
                 // overshoot below/above neighboring points the way a
