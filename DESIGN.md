@@ -937,6 +937,34 @@
      applied to Live yet.
   117 tests passing (Python side untouched -- Volt/PHP only). Version
   bumped to **1.2.7**.
+- **1.2.8 -- smoothed both Overview charts, then a real accuracy bug
+  found underneath the "jaggy" complaint.** Switching Live's Line/Bar
+  chart from tension-based curves to Chart.js's `cubicInterpolationMode:
+  'monotone'` (smooths without letting the curve dip below or overshoot
+  past neighboring points -- matters since the y-axis floor is pinned
+  to 0) wasn't the real fix, per the user's own follow-up: the
+  underlying per-tick values themselves were bouncing between a real
+  throughput figure and a literal 0, not just rendered jaggedly.
+  Traced to `updateLiveOverview()`'s delta computation: a row not seen
+  on the previous poll always contributed 0 for that tick, even once
+  the chart had a real, already-established baseline. For a workload
+  that cycles through many short-lived connections -- confirmed with a
+  multi-stream speedtest.net run on a phone -- this produced a literal
+  throughput/0/throughput/0 pattern even though traffic never actually
+  stopped. Fixed by only zeroing new rows on the very first tick a
+  browser tab ever receives (previousSnapshot still empty -- these
+  could be connections that have been open for hours, so charging their
+  entire lifetime total to one tick would draw a meaningless spike);
+  any row newly appearing after that point counts its full current
+  total as this tick's delta, since it must have opened within roughly
+  this poll interval. Applied the same interpolation-mode change to
+  History's Overview chart too. One smaller residual gap not fixed:
+  a connection that *closes* between two polls still has no "current"
+  entry to diff against, so its own last partial interval is dropped --
+  would need a connections_raw lookup for whatever just closed to fix
+  properly; left as a known, smaller limitation for now.
+  117 tests passing (Python side untouched -- Volt only). Version
+  bumped to **1.2.8**.
 - **Not yet started**: the staticOverrides grid editor, proper repo
   signing before this pkg-repo is relied on for anything that matters,
   and a possible future "scheduled traffic blocking" feature (the
