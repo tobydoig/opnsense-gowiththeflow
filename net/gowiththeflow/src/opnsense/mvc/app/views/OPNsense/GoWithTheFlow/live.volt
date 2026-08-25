@@ -15,6 +15,7 @@
     let hiddenGroupKeys = new Set();   // raw keys shift-clicked out of the Line/Bar chart
     let liveChartRangeMinutes = 5;     // how much history the Line/Bar chart shows, user-configurable
     let liveChartTopN = 10;            // Line/Bar chart's line cap, user-configurable -- 0 means "all"
+    let liveChartLogScale = false;     // log y-axis so a big spike doesn't flatten smaller signals
     const GRAPH_FADE_MS = 4000;
     let graphNodes = {};                // "local_ip|peer_ip|peer_port" -> {el, lastSeen, fading}
     let forceNodePositions = {};        // ip -> {x, y} -- persists across ticks so the force layout
@@ -22,6 +23,20 @@
     let lastRows = null;                // most recent live/search rows, cached so switching
     let lastDeltasByGroup = null;       // to Graph mode can render immediately, not wait a tick
     let liveFilter = { local_ip: '', peer_ip: '', peer_port: '', host_ip: '' };  // server-side, via requestHandler
+    // gowiththeflowd.py's own POLL_INTERVAL_S -- live_sessions genuinely
+    // can't update faster than this no matter how often the browser
+    // asks. Refreshing faster than it doesn't produce higher-resolution
+    // data; it just re-reads byte-for-byte identical rows 1-2 extra
+    // times before the real update lands, and recording those as
+    // distinct ticks anyway produced a very visible artifact: a sharp
+    // spike-then-drop-to-zero shape confirmed on a real chart (a
+    // console and a tablet's traffic both showed this), because a real
+    // ~5s update's full worth of bytes landed on whichever narrow
+    // 2-second-wide x-axis slot it happened to arrive in, surrounded by
+    // slots that correctly computed delta=0 because nothing had
+    // actually changed yet.
+    const GWTF_DAEMON_POLL_INTERVAL_MS = 5000;
+    let lastRecordedTickAt = 0;
 
     $( document ).ready(function() {
         $("#grid-live").UIBootgrid({
@@ -84,6 +99,11 @@
                 $("#live-top-n").val(storedTopN).selectpicker('refresh');
                 liveChartTopN = parseInt(storedTopN, 10) || 0;
             }
+            let storedScale = window.localStorage.getItem('gowiththeflow.live.scale');
+            if (storedScale) {
+                $("#live-scale").val(storedScale).selectpicker('refresh');
+                liveChartLogScale = storedScale === 'log';
+            }
         }
 
         $("#interval").change(function () {
@@ -111,6 +131,14 @@
             liveChartTopN = parseInt($(this).val(), 10) || 0;
             if (window.localStorage) {
                 window.localStorage.setItem('gowiththeflow.live.topN', String(liveChartTopN));
+            }
+            renderLiveChart();
+        });
+
+        $("#live-scale").on("changed.bs.select", function () {
+            liveChartLogScale = $(this).val() === 'log';
+            if (window.localStorage) {
+                window.localStorage.setItem('gowiththeflow.live.scale', $(this).val());
             }
             renderLiveChart();
         });
@@ -196,7 +224,9 @@
     // Delta-per-tick, computed client-side from gwtfPollLiveOverview()'s
     // own poll -- pf's own byte counters are cumulative, so each tick's
     // contribution is this row's current total minus its own value last
-    // tick. A row not seen last tick is either (a) the very first data
+    // recorded tick (see the daemon-cadence gate above: not necessarily
+    // the *previous poll*, if that poll's data was byte-for-byte
+    // identical). A row not seen last recorded tick is either (a) the very first data
     // this browser tab has ever received -- previousSnapshot is still
     // empty, so these could be connections that have been open for
     // hours; charging their entire lifetime total to this one tick
@@ -216,6 +246,20 @@
     // need a connections_raw lookup for whatever just closed); the
     // Table tab and History are unaffected either way.
     function updateLiveOverview(rows) {
+        lastRows = rows;
+
+        // Coalesce polls that landed faster than the daemon's own
+        // update cadence into a no-op for the *chart's* purposes -- the
+        // Graph view (cumulative-bytes-based, not delta-based) is
+        // rendered unconditionally below regardless, since re-rendering
+        // it with byte-for-byte identical data is harmless.
+        const now = Date.now();
+        if (lastRecordedTickAt !== 0 && now - lastRecordedTickAt < GWTF_DAEMON_POLL_INTERVAL_MS - 250) {
+            renderLiveGraph(rows, lastDeltasByGroup || {});
+            return;
+        }
+        lastRecordedTickAt = now;
+
         const currentSnapshot = new Map();
         const deltasByGroup = {};
         const isFirstEverTick = previousSnapshot.size === 0;
@@ -238,10 +282,9 @@
         });
 
         previousSnapshot = currentSnapshot;
-        chartHistory.push({ time: new Date(), groups: deltasByGroup });
+        chartHistory.push({ time: new Date(now), groups: deltasByGroup });
         gwtfReconcileChartHistoryLength();
 
-        lastRows = rows;
         lastDeltasByGroup = deltasByGroup;
 
         renderLiveChart();
@@ -256,14 +299,21 @@
         return Number.isNaN(parsed) ? 2000 : parsed;
     }
 
+    // The chart can't genuinely resolve any finer than the daemon's own
+    // update cadence (see GWTF_DAEMON_POLL_INTERVAL_MS) no matter how
+    // fast the browser is told to refresh -- this is what the point-
+    // spacing math below should actually use, not the raw dropdown value.
+    function gwtfEffectiveChartIntervalMs() {
+        return Math.max(gwtfCurrentPollIntervalMs(), GWTF_DAEMON_POLL_INTERVAL_MS);
+    }
+
     // How many chartHistory points are needed to cover
-    // liveChartRangeMinutes of real time at the current poll interval --
+    // liveChartRangeMinutes of real time at the effective interval --
     // recomputed on demand rather than cached, since either input can
     // change independently (the range selector, or the interval
     // dropdown, which doubles as the chart's own tick width).
     function gwtfLiveMaxPoints() {
-        const intervalMs = Math.max(gwtfCurrentPollIntervalMs(), 250);
-        return Math.max(10, Math.ceil((liveChartRangeMinutes * 60000) / intervalMs));
+        return Math.max(10, Math.ceil((liveChartRangeMinutes * 60000) / gwtfEffectiveChartIntervalMs()));
     }
 
     // Keeps chartHistory at exactly gwtfLiveMaxPoints() long, padding
@@ -279,7 +329,7 @@
     // change so the resize is instant rather than waiting on the next poll.
     function gwtfReconcileChartHistoryLength() {
         const target = gwtfLiveMaxPoints();
-        const intervalMs = gwtfCurrentPollIntervalMs();
+        const intervalMs = gwtfEffectiveChartIntervalMs();
         while (chartHistory.length > target) {
             chartHistory.shift();
         }
@@ -388,7 +438,13 @@
                         // when every visible point is still 0 (e.g. right
                         // after load, before real deltas arrive), producing
                         // a nonsensical -1..1 axis instead of sitting at 0.
-                        min: 0,
+                        // Not applicable in log mode (0 has no logarithm --
+                        // Chart.js's own logarithmic scale picks a sensible
+                        // positive floor from the data instead); a 0-byte
+                        // point simply doesn't plot a dot on that scale,
+                        // same well-known tradeoff any log-axis chart has.
+                        type: liveChartLogScale ? 'logarithmic' : 'linear',
+                        min: liveChartLogScale ? undefined : 0,
                         ticks: { callback: function (v) { return formatBytesGWTF(v); } }
                     },
                     x: { stacked: chartType === 'bar' }
@@ -435,7 +491,19 @@
 
         gwtfFillTabHeight(document.getElementById('live-chart-canvas-wrapper'));
 
-        const existing = liveChartInstanceGWTF();
+        // Chart.js instantiates a concrete scale object per axis `type`
+        // at chart-creation time -- just mutating options.scales.y.type
+        // on an already-running chart doesn't reliably switch it between
+        // linear and logarithmic. Destroy and recreate when the axis
+        // kind actually changes; a plain data/stacked update (the common
+        // case, every poll tick) still just mutates in place.
+        let existing = liveChartInstanceGWTF();
+        if (existing && existing.options.scales.y.type !== config.options.scales.y.type) {
+            existing.destroy();
+            window.__gwtfLiveChart = null;
+            existing = null;
+        }
+
         if (!existing) {
             const ctx = document.getElementById('live-overview-canvas').getContext('2d');
             window.__gwtfLiveChart = new Chart(ctx, config);
@@ -957,6 +1025,11 @@
                     <option value="10" selected="selected">10</option>
                     <option value="20">20</option>
                     <option value="0">{{ lang._('All') }}</option>
+                </select>
+                <label style="font-weight: normal; margin: 0 4px 0 12px;">{{ lang._('Scale') }}</label>
+                <select class="selectpicker" id="live-scale" data-width="auto">
+                    <option value="linear" selected="selected">{{ lang._('Linear') }}</option>
+                    <option value="log">{{ lang._('Logarithmic') }}</option>
                 </select>
             </span>
         </div>

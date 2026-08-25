@@ -965,6 +965,38 @@
   properly; left as a known, smaller limitation for now.
   117 tests passing (Python side untouched -- Volt only). Version
   bumped to **1.2.8**.
+- **1.2.9 -- root-caused the real shape behind "still jaggy" (a
+  daemon/browser polling-rate mismatch), plus a log-scale toggle.**
+  A real screenshot from nostromo (2-second browser refresh) showed the
+  actual mechanism directly: two hosts' lines had sharp narrow
+  spike-then-drop-to-zero shapes rather than smooth bursts.
+  `gowiththeflowd.py` itself only polls pf every ~5 real seconds
+  (`POLL_INTERVAL_S`) -- refreshing the browser faster than that can't
+  produce genuinely higher-resolution data, it just re-reads
+  byte-for-byte identical `live_sessions` rows 1-2 extra times before
+  the real update lands. 1.2.7/1.2.8's delta fix correctly computed
+  delta=0 for those identical-data reads (accurate, not a bug) -- but
+  recording each of them as its own distinct chart point meant a real
+  ~5-second update's full worth of bytes landed on whatever narrow
+  2-second-wide x-axis slot it happened to arrive in, flanked by
+  correctly-zero neighbors, which is indistinguishable on a chart from
+  an actual sharp spike. Fixed by gating how often `updateLiveOverview`
+  records a new point (and runs the delta computation at all) to at
+  most once per `GWTF_DAEMON_POLL_INTERVAL_MS` (5000, matching the
+  daemon's own constant) regardless of the browser's own refresh
+  interval -- `gwtfLiveMaxPoints()`/`gwtfReconcileChartHistoryLength()`
+  use this same effective interval too, so the requested Range still
+  covers the right amount of *real* time. Table/Graph polling itself is
+  untouched -- only the Line/Bar chart's own point-recording rate
+  changed. Also added a Scale toggle (Linear/Logarithmic) next to Top N
+  so one dominant spike doesn't flatten every other host's line to
+  invisible -- Chart.js instantiates a concrete scale object per axis
+  `type` at chart-creation time, so switching between linear and log on
+  an already-running chart needed the instance destroyed and recreated
+  rather than just mutating `options.scales.y.type` in place (which
+  doesn't reliably take effect otherwise).
+  117 tests passing (Python side untouched -- Volt only). Version
+  bumped to **1.2.9**.
 - **Not yet started**: the staticOverrides grid editor, proper repo
   signing before this pkg-repo is relied on for anything that matters,
   and a possible future "scheduled traffic blocking" feature (the
