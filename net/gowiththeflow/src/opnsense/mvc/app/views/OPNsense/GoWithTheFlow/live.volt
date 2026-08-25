@@ -196,21 +196,41 @@
     // Delta-per-tick, computed client-side from gwtfPollLiveOverview()'s
     // own poll -- pf's own byte counters are cumulative, so each tick's
     // contribution is this row's current total minus its own value last
-    // tick (0 for a brand-new row -- a reasonable approximation for a
-    // just-opened connection). A connection that closes between two
-    // polls has no "current" entry to diff against, so its last partial
-    // interval is dropped from the chart -- accepted tradeoff for a
-    // live glance chart, not a metering system; the Table tab and
-    // History are unaffected.
+    // tick. A row not seen last tick is either (a) the very first data
+    // this browser tab has ever received -- previousSnapshot is still
+    // empty, so these could be connections that have been open for
+    // hours; charging their entire lifetime total to this one tick
+    // would draw a huge, meaningless spike, so they only establish a
+    // baseline (delta 0) -- or (b) a connection that opened *after* the
+    // chart was already running, which genuinely did open within
+    // roughly this poll interval, so its current total approximately
+    // *is* this tick's real contribution. Treating case (b) as 0 too
+    // (an earlier version did) systematically undercounted real bursts
+    // for any workload that cycles through many short-lived connections
+    // -- confirmed for real with a multi-stream speedtest.net run,
+    // which produced a "throughput, then 0, then throughput" pattern on
+    // the chart even though traffic never actually stopped. A
+    // connection that *closes* between two polls still has no "current"
+    // entry to diff against, so its own last partial interval is
+    // dropped -- a real, smaller residual gap this doesn't fix (would
+    // need a connections_raw lookup for whatever just closed); the
+    // Table tab and History are unaffected either way.
     function updateLiveOverview(rows) {
         const currentSnapshot = new Map();
         const deltasByGroup = {};
+        const isFirstEverTick = previousSnapshot.size === 0;
 
         rows.forEach(function (row) {
             const bytesTotal = (Number(row.bytes_in) || 0) + (Number(row.bytes_out) || 0);
             currentSnapshot.set(row.row_id, bytesTotal);
-            const prev = previousSnapshot.has(row.row_id) ? previousSnapshot.get(row.row_id) : bytesTotal;
-            const delta = Math.max(bytesTotal - prev, 0);
+            let delta;
+            if (previousSnapshot.has(row.row_id)) {
+                delta = Math.max(bytesTotal - previousSnapshot.get(row.row_id), 0);
+            } else if (isFirstEverTick) {
+                delta = 0;
+            } else {
+                delta = bytesTotal;
+            }
 
             const key = window.__gwtfGroupBy === 'peer_port' ? String(row.peer_port) : row.local_ip;
             deltasByGroup[key] = (deltasByGroup[key] || 0) + delta;
@@ -330,7 +350,14 @@
                 borderColor: GWTF_PALETTE[i % GWTF_PALETTE.length],
                 backgroundColor: GWTF_PALETTE[i % GWTF_PALETTE.length],
                 fill: chartType === 'bar',
-                tension: 0.2,
+                // 'monotone' smooths the line without letting it
+                // overshoot below/above neighboring points the way a
+                // plain tension-based Catmull-Rom curve can -- matters
+                // here since the y-axis is pinned to a hard floor of 0
+                // (a real dip-below-zero-looking artifact between two
+                // low points would be actively misleading for a byte
+                // count). tension is ignored in this mode; left off.
+                cubicInterpolationMode: 'monotone',
             };
         });
         if (otherKeys.length) {
@@ -343,7 +370,7 @@
                 borderColor: '#999999',
                 backgroundColor: '#999999',
                 fill: chartType === 'bar',
-                tension: 0.2,
+                cubicInterpolationMode: 'monotone',
             });
         }
 

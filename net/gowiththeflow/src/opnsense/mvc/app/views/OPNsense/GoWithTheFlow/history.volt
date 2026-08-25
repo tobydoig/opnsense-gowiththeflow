@@ -106,7 +106,11 @@
                     borderColor: ip === 'Other' ? '#999999' : GWTF_PALETTE[i % GWTF_PALETTE.length],
                     backgroundColor: ip === 'Other' ? '#999999' : GWTF_PALETTE[i % GWTF_PALETTE.length],
                     fill: selected_chart_type === 'bar',
-                    tension: 0.2,
+                    // 'monotone' smooths without letting the curve dip
+                    // below/overshoot past neighboring points -- matters
+                    // since the y-axis is pinned to a floor of 0. tension
+                    // is ignored in this mode.
+                    cubicInterpolationMode: 'monotone',
                 };
             });
 
