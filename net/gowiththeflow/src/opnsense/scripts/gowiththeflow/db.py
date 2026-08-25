@@ -120,6 +120,22 @@ CREATE INDEX IF NOT EXISTS idx_lhi_ip ON local_host_identity(ip);
 CREATE TABLE IF NOT EXISTS rollup_state (
   bucket_kind TEXT PRIMARY KEY, last_bucket_start INTEGER NOT NULL
 );
+
+-- Feeds the Live Overview chart directly, server-side -- computed once
+-- per poll (live_ticks.compute_tick_deltas(), called from
+-- gowiththeflowd.py) and pruned continuously to a short rolling window
+-- (see rollup.prune_live_ticks()), so every viewer reads the same
+-- recorded history instead of each browser tab independently diffing
+-- its own poll of live_sessions. Grouped by (local_ip, peer_port) --
+-- the two dimensions the chart's own grouping toggle needs -- not full
+-- session granularity; the Graph view still reads live_sessions/
+-- overview directly for per-edge detail, this table has no hostnames.
+CREATE TABLE IF NOT EXISTS live_ticks (
+  tick_time INTEGER NOT NULL,
+  local_ip TEXT NOT NULL, peer_port INTEGER NOT NULL,
+  delta_bytes_in INTEGER NOT NULL, delta_bytes_out INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_live_ticks_time ON live_ticks(tick_time);
 """
 
 
@@ -362,4 +378,24 @@ def record_diff(
             ),
         )
 
+    conn.commit()
+
+
+def record_live_ticks(conn: sqlite3.Connection, tick_time: int, rows: list["TickRow"]) -> None:
+    """Writes one poll cycle's worth of live_ticks.compute_tick_deltas()
+    output. A no-op on an empty list (nothing happened this tick worth
+    charting) rather than an empty executemany, though executemany
+    against an empty sequence is itself already a harmless no-op."""
+    if not rows:
+        return
+    conn.executemany(
+        """
+        INSERT INTO live_ticks (tick_time, local_ip, peer_port, delta_bytes_in, delta_bytes_out)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        [
+            (tick_time, row.local_ip, row.peer_port, row.delta_bytes_in, row.delta_bytes_out)
+            for row in rows
+        ],
+    )
     conn.commit()

@@ -1031,6 +1031,65 @@
   anywhere in the window at all.
   117 tests passing (Python side untouched -- Volt only). Version
   bumped to **1.2.10**.
+- **1.3.0 -- moved the Live Overview chart's data server-side
+  (`live_ticks`), removing per-tab redundant polling and the need to
+  approximate a backgrounded tab's missing history at all.** User asked
+  directly: "would it be crazy to track the live data server-side...
+  so multiple people aren't each polling the server" -- previously each
+  open browser tab independently diffed its own poll of
+  `/live/overview` and kept its own sliding-window buffer, so N open
+  tabs meant N redundant re-derivations of the same numbers, and a
+  reconnecting tab had no real history to recover (the Worker fix and
+  averaged-fill fallback from 1.2.9/1.2.10-adjacent work were both
+  covering for that gap, not fixing it). Now `gowiththeflowd.py`
+  computes each tick's per-`(local_ip, peer_port)` delta once, server-
+  side (`live_ticks.compute_tick_deltas()`, new pure module, 8 new
+  tests), writes it to a new bounded `live_ticks` table (pruned every
+  poll cycle, not just hourly, to ~35 minutes), and a new
+  `LiveController::seriesAction()` endpoint serves it incrementally via
+  a `since` watermark the Worker owns internally. A reconnecting/
+  backgrounded tab now just fetches the real ticks it missed -- the
+  gap-averaging logic from the previous entry is gone entirely, not
+  just improved.
+  A pre-implementation correctness review (this project's established
+  practice before a design like this gets coded) caught a real bug:
+  the original rule ("an `opened` snapshot's full cumulative bytes IS
+  this tick's delta") is only true for a session that genuinely just
+  opened, but `diff.opened` really means "not in the poller's previous
+  set" -- true for every open connection on a cold table too (fresh
+  install, or a schema-migration wipe), which would have charged an
+  hours-old connection's entire lifetime total to one 5-second tick.
+  Fixed by gating on pf's own reported `age_s`, mirroring the
+  equivalent client-side guard this replaces, just decided per-session
+  instead of table-wide. A second, pre-existing limitation (a session
+  closing and a different one opening on the identical 5-tuple within
+  one poll interval, producing a spurious clamped-to-zero delta) isn't
+  new here -- the client's own code already had the same clamp -- so
+  it's documented, not fixed.
+  User also offered a simplification adopted here: the chart's range is
+  now a fixed 30 minutes and its point spacing is fixed to the daemon's
+  real tick rate (`POLL_INTERVAL_S`, staying at 5s), rather than
+  approximated from the browser's own chosen poll rate -- removing the
+  entire class of "effective interval" quantization drift discussed
+  earlier (a 2s refresh landing on a 6s, not 5s, chart cadence). The
+  "Refresh every" dropdown still exists but now only controls Table
+  tab/Graph view freshness. Measured the real `pfctl -vvs state` +
+  parse cost on the test VM (4-10ms at ~20-30 open states) before
+  deciding whether `POLL_INTERVAL_S` should ever drop below 5s -- cheap
+  enough on this lightly-loaded VM, but that cost scales with open
+  connection count and hasn't been measured on a busier real network,
+  so `POLL_INTERVAL_S` stays at 5 for now; a separate, later decision.
+  Also deleted dead code found during the review: `renderLiveGraph()`'s
+  second parameter (`deltasByGroup`/`lastDeltasByGroup`) was never
+  actually read -- the Graph view colors/sizes edges from `/overview`'s
+  cumulative bytes directly, not per-tick deltas.
+  Small, separately-requested fix in the same release: the Live Table
+  tab now defaults to sorting by Last Activity descending (was Last
+  Seen, which bumps on every poll for every still-open session
+  regardless of real traffic, making "most recently active" harder to
+  spot at a glance).
+  125 tests passing (117 + 8 new for `live_ticks.py`). Version bumped
+  to **1.3.0**.
 - **Not yet started**: the staticOverrides grid editor, proper repo
   signing before this pkg-repo is relied on for anything that matters,
   and a possible future "scheduled traffic blocking" feature (the
@@ -1505,7 +1564,8 @@ controller's job is just: query SQLite, build that array, hand it off.
 | Method | Path | Params | Returns |
 |---|---|---|---|
 | POST | `/api/gowiththeflow/live/search/` | Bootgrid standard, + optional `local_ip`/`peer_ip`/`peer_port` (exact, ANDed) and `host_ip` (matches either side) | **DONE.** local/peer (`hostname (ip)`), `peer_is_local`, `category`, `state` (pf's own connection state), `last_activity` (1.2.2 -- only advances on real bytes/state change, unlike `last_seen`), proto, port, bytes in/out, live-computed duration. The filter params (1.2.2) back the Overview chart's click-through, which needs a real server-side filter since this grid is ajax-backed |
-| POST | `/api/gowiththeflow/live/overview` | none (no pagination at all) | **DONE (1.2.7).** Every currently open session, unpaginated -- `local_ip`/`peer_ip`/`peer_port`/`bytes_in`/`bytes_out`/`last_activity`/`local`/`peer`/`row_id` only. Backs the Overview chart/Graph, polled independently of the Table tab's own Bootgrid ajax call -- deriving the chart from that paginated response (default page size 50) meant a genuinely dominant host's traffic could be silently invisible if its rows weren't on the page the table happened to be showing, confirmed for real with a phone's speedtest.net traffic never appearing on the chart |
+| POST | `/api/gowiththeflow/live/overview` | none (no pagination at all) | **DONE (1.2.7).** Every currently open session, unpaginated -- `local_ip`/`peer_ip`/`peer_port`/`bytes_in`/`bytes_out`/`last_activity`/`local`/`peer`/`row_id` only. Backs the Graph view and the Table/hostname lookups, polled independently of the Table tab's own Bootgrid ajax call -- deriving data from that paginated response (default page size 50) meant a genuinely dominant host's traffic could be silently invisible if its rows weren't on the page the table happened to be showing, confirmed for real with a phone's speedtest.net traffic never appearing on the chart |
+| POST | `/api/gowiththeflow/live/series` | `since` (a `tick_time` watermark; 0 or omitted returns everything currently retained) | **DONE (1.3.0).** Flat list of `{tick_time, local_ip, peer_port, delta_bytes_in, delta_bytes_out}` from the new `live_ticks` table -- computed once, server-side, by `gowiththeflowd.py`/`live_ticks.compute_tick_deltas()` every poll cycle, pruned to a rolling ~35-minute window. Backs the Overview Line/Bar chart -- every open tab reads the same recorded history instead of each independently diffing its own poll of `overview`, and a reconnecting tab just fetches the real ticks it missed |
 | POST | `/api/gowiththeflow/history/search/` | + `days`, `local_host?` | **DONE.** rollup rows aggregated by (local_ip, peer_ip), granularity auto-picked by `days` vs. `DbApiControllerBase::HOURLY_RETENTION_DAYS` (8, matching the default `rollupHourlyRetentionDays` setting), plus a `local_hosts` map for the filter dropdown. `local_host` filter and bytes correctly account for `peer_is_local=1` pairs via a UNION ALL (see 1.2.0 Status entry) |
 | POST | `/api/gowiththeflow/history/timeseries` | `days`, `bucket=hour\|day`, `local_host?` | **DONE (1.2.0).** `{buckets, series: {ip: bytes[]}, local_hosts}`, top-10-by-total capped with an "Other" aggregate — backs History's Overview chart |
 | POST | `/api/gowiththeflow/toptalkers/local` | `days` | **DONE.** ranked local hosts by total bytes/connections (sortable by clicking either column — no separate `sort_by` param needed); a UNION ALL credits both members of an internal pair from their own point of view |

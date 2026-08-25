@@ -24,6 +24,7 @@ import correlator
 import db
 import dns_sniffer
 import hostcache
+import live_ticks
 import localhost_identity
 import manual_categories
 import ptr_resolver
@@ -37,6 +38,16 @@ LOCALHOST_REFRESH_INTERVAL_S = 5 * 60
 HOURLY_JOB_INTERVAL_S = 60 * 60
 DAILY_JOB_INTERVAL_S = 24 * 60 * 60
 PTR_TTL_S = 24 * 3600
+# Comfortably above the Live Overview chart's fixed 30-minute range --
+# pruned every poll cycle (not just hourly, see the prune_live_ticks
+# call below), so there's no large lag to buffer against.
+LIVE_TICK_RETENTION_S = 35 * 60
+# An `opened` pf state this young could plausibly have opened within
+# roughly the last poll interval, so its full cumulative bytes are
+# charged to this tick as a genuinely new contribution -- see
+# live_ticks.compute_tick_deltas()'s docstring for why an older one
+# instead only establishes a baseline.
+LIVE_TICK_NEW_SESSION_MAX_AGE_S = POLL_INTERVAL_S * 2
 CATEGORY_CACHE_DIR = "/var/db/gowiththeflow/categories"
 
 
@@ -114,7 +125,15 @@ def run(config: Config) -> None:
     db.init_schema(conn)
 
     poller = PfStatePoller(config.local_subnets)
-    poller.seed(db.load_live_sessions_as_snapshots(conn))
+    seed_snapshots = db.load_live_sessions_as_snapshots(conn)
+    poller.seed(seed_snapshots)
+    # Seeds live_ticks' own per-key baseline from the same snapshot --
+    # without this, a daemon *restart* (as opposed to a genuinely cold
+    # table) would re-trigger the "long-lived session newly entering
+    # tracking" age_s guard in compute_tick_deltas() for every
+    # already-open session, discarding real bytes it should have
+    # correctly diffed against.
+    tick_prev_bytes = {snap.key: (snap.bytes_in, snap.bytes_out) for snap in seed_snapshots}
     flow_hints = FlowHintCache()
     static_overrides = correlator.parse_static_overrides(config.static_overrides)
     ptr = ptr_resolver.PtrResolver(ptr_resolver.live_resolve_fn) if config.enable_ptr_fallback else None
@@ -181,6 +200,14 @@ def run(config: Config) -> None:
             conn, static_overrides, flow_hints, now_i, categorize_fn=category_holder.categorize
         )
         db.record_diff(conn, diff, now=now_i, resolve_hostname=resolver)
+
+        tick_rows, tick_prev_bytes = live_ticks.compute_tick_deltas(
+            diff, tick_prev_bytes, LIVE_TICK_NEW_SESSION_MAX_AGE_S
+        )
+        db.record_live_ticks(conn, now_i, tick_rows)
+        # Retention here is minutes, not days like the rollup tables --
+        # pruned every cycle so the table never balloons between prunes.
+        rollup.prune_live_ticks(conn, now_i, LIVE_TICK_RETENTION_S)
 
         if ptr is not None:
             # Any newly-opened session the resolver couldn't name gets a

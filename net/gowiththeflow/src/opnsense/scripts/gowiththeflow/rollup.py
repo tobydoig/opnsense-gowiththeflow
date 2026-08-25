@@ -333,6 +333,17 @@ def prune_daily(conn: sqlite3.Connection, now: int, daily_retention_days: int, t
     return cur.rowcount
 
 
+def prune_live_ticks(conn: sqlite3.Connection, now: int, retention_s: int, table: str = "live_ticks") -> int:
+    # Unlike the rollup tables above (retained for days, pruned hourly is
+    # plenty), live_ticks' retention target is minutes -- called every
+    # poll cycle, not just hourly, so it never balloons past its target
+    # between prunes. retention_s is plain seconds, not days.
+    cutoff = now - retention_s
+    cur = conn.execute(f"DELETE FROM {table} WHERE tick_time < ?", (cutoff,))
+    conn.commit()
+    return cur.rowcount
+
+
 def incremental_vacuum(conn: sqlite3.Connection, pages: int = 1000) -> None:
     conn.execute(f"PRAGMA incremental_vacuum({pages})")
     conn.commit()

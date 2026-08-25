@@ -138,4 +138,38 @@ class LiveController extends DbApiControllerBase
 
         return ['rows' => $records];
     }
+
+    /**
+     * Serves the Live Overview chart's per-tick throughput history --
+     * computed once, server-side, by live_ticks.compute_tick_deltas()
+     * (gowiththeflowd.py) into the live_ticks table, rather than each
+     * browser tab independently diffing its own poll of overviewAction()
+     * (the old design -- see DESIGN.md for why that meant N open tabs
+     * each redundantly re-derived the same numbers, and a reconnecting
+     * tab had no real history to recover after being backgrounded).
+     *
+     * `since` is a tick_time watermark -- 0 (or omitted) returns
+     * everything currently retained (live_ticks is itself continuously
+     * pruned to a short rolling window, so no additional cap is needed
+     * here), a real prior value returns only the new ticks since then.
+     */
+    public function seriesAction()
+    {
+        $since = (int)($this->request->getPost('since') ?: 0);
+        $records = [];
+        $db = $this->openDb();
+        if ($db !== null) {
+            $stmt = $db->prepare(
+                'SELECT tick_time, local_ip, peer_port, delta_bytes_in, delta_bytes_out
+                 FROM live_ticks WHERE tick_time > :since ORDER BY tick_time'
+            );
+            $stmt->bindValue(':since', $since, SQLITE3_INTEGER);
+            $result = $stmt->execute();
+            while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
+                $records[] = $row;
+            }
+        }
+
+        return ['ticks' => $records];
+    }
 }

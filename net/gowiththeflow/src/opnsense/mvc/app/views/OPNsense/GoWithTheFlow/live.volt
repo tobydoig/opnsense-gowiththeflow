@@ -9,11 +9,15 @@
     // mistake shipped once already and only surfaced as a live
     // `ReferenceError` in a real browser, since neither the Python test
     // suite nor a syntax check would ever catch a closure-scoping issue).
-    let previousSnapshot = new Map();  // row_id -> bytes_in+bytes_out
     let chartHistory = [];             // [{time, groups: {key: bytesDelta}}]
     let groupLabels = {};              // raw key -> display label (hostname where known)
     let hiddenGroupKeys = new Set();   // raw keys shift-clicked out of the Line/Bar chart
-    let liveChartRangeMinutes = 5;     // how much history the Line/Bar chart shows, user-configurable
+    // Fixed, not user-configurable -- the chart's range and point spacing
+    // are now both driven by the server's real tick history (live_ticks),
+    // not approximated from the browser's own chosen poll rate. The
+    // "Refresh every" dropdown still exists, but now only controls how
+    // often the Table tab/Graph view poll for freshness.
+    const LIVE_CHART_RANGE_MINUTES = 30;
     let liveChartTopN = 10;            // Line/Bar chart's line cap, user-configurable -- 0 means "all"
     let liveChartLogScale = false;     // log y-axis so a big spike doesn't flatten smaller signals
     let groupColorSlots = new Map();   // raw key -> GWTF_PALETTE index, stable across re-ranking --
@@ -24,23 +28,16 @@
     let graphNodes = {};                // "local_ip|peer_ip|peer_port" -> {el, lastSeen, fading}
     let forceNodePositions = {};        // ip -> {x, y} -- persists across ticks so the force layout
                                          // gently relaxes as data changes instead of jumping around
-    let lastRows = null;                // most recent live/search rows, cached so switching
-    let lastDeltasByGroup = null;       // to Graph mode can render immediately, not wait a tick
+    let lastRows = null;                // most recent live/overview rows, cached so switching
+                                         // to Graph mode can render immediately, not wait a tick
     let liveFilter = { local_ip: '', peer_ip: '', peer_port: '', host_ip: '' };  // server-side, via requestHandler
-    // gowiththeflowd.py's own POLL_INTERVAL_S -- live_sessions genuinely
-    // can't update faster than this no matter how often the browser
-    // asks. Refreshing faster than it doesn't produce higher-resolution
-    // data; it just re-reads byte-for-byte identical rows 1-2 extra
-    // times before the real update lands, and recording those as
-    // distinct ticks anyway produced a very visible artifact: a sharp
-    // spike-then-drop-to-zero shape confirmed on a real chart (a
-    // console and a tablet's traffic both showed this), because a real
-    // ~5s update's full worth of bytes landed on whichever narrow
-    // 2-second-wide x-axis slot it happened to arrive in, surrounded by
-    // slots that correctly computed delta=0 because nothing had
-    // actually changed yet.
+    let liveOverviewWorker = null;      // owns the Overview chart's poll loop -- see gwtfStartLiveOverviewWorker()
+    // gowiththeflowd.py's own POLL_INTERVAL_S -- live_ticks genuinely
+    // can't produce a new tick faster than this, and is also exactly the
+    // real spacing between the tick_time values live/series returns, so
+    // this is the chart's true, fixed point width -- not an approximation
+    // of the browser's own chosen poll rate the way it used to be.
     const GWTF_DAEMON_POLL_INTERVAL_MS = 5000;
-    let lastRecordedTickAt = 0;
 
     $( document ).ready(function() {
         $("#grid-live").UIBootgrid({
@@ -78,7 +75,7 @@
         // is actually built so it doesn't race the wrapper's own init.
         let liveTable = $("#grid-live").data('UIBootgrid').getTable();
         liveTable.on("tableBuilt", function () {
-            liveTable.setSort("last_seen", "desc");
+            liveTable.setSort("last_activity", "desc");
         });
 
         // Same convention as Reporting > Traffic's interval dropdown:
@@ -92,11 +89,6 @@
             let stored = window.localStorage.getItem(storageKey);
             if (stored) {
                 $("#interval").val(stored).selectpicker('refresh');
-            }
-            let storedRange = window.localStorage.getItem('gowiththeflow.live.rangeMinutes');
-            if (storedRange) {
-                $("#live-range").val(storedRange).selectpicker('refresh');
-                liveChartRangeMinutes = parseInt(storedRange, 10) || liveChartRangeMinutes;
             }
             let storedTopN = window.localStorage.getItem('gowiththeflow.live.topN');
             if (storedTopN !== null) {
@@ -114,21 +106,12 @@
             if (window.localStorage) {
                 window.localStorage.setItem(storageKey, $(this).val());
             }
-            // The interval is also the chart's tick width, so changing it
-            // changes how many points are needed for the same real-time
-            // range -- reconcile immediately rather than waiting for the
-            // buffer to slowly grow/shrink one poll at a time.
-            gwtfReconcileChartHistoryLength();
-            renderLiveChart();
-        });
-
-        $("#live-range").on("changed.bs.select", function () {
-            liveChartRangeMinutes = parseInt($(this).val(), 10) || 5;
-            if (window.localStorage) {
-                window.localStorage.setItem('gowiththeflow.live.rangeMinutes', String(liveChartRangeMinutes));
+            // Only affects how often the Table tab/Graph view refresh --
+            // the chart's own point spacing is fixed to the server's real
+            // tick rate regardless of this setting.
+            if (liveOverviewWorker) {
+                liveOverviewWorker.postMessage({ type: 'setInterval', intervalMs: gwtfCurrentPollIntervalMs() });
             }
-            gwtfReconcileChartHistoryLength();
-            renderLiveChart();
         });
 
         $("#live-top-n").on("changed.bs.select", function () {
@@ -147,44 +130,59 @@
             renderLiveChart();
         });
 
-        // Deliberately its own poll, not fed from the table's own
-        // responseHandler -- the table's response is one Bootgrid page
-        // (default 50 rows) of a result that can easily be larger on a
-        // busy network, and last_seen bumping on every still-open
-        // session every tick means which sessions land on that one page
-        // is essentially arbitrary. A dominant real host's traffic
-        // (confirmed with a phone running speedtest.net) could silently
-        // never appear on the chart/graph at all if its rows just
-        // weren't on the page the table happened to be showing.
-        gwtfPollLiveOverview();
+        // The chart's own poll runs inside a Worker (see
+        // LiveController::overviewWorkerAction()) rather than on this
+        // page's own setTimeout chain -- a backgrounded tab gets its own
+        // timers throttled by the browser (sometimes to a full stop),
+        // which is exactly what produced real gaps in the chart when the
+        // user switched away and back. A Worker isn't tied to a
+        // document's visibility state, so it keeps polling on schedule
+        // the whole time the tab is hidden. It's deliberately a separate
+        // poll from the Table tab's own Bootgrid ajax call -- the table's
+        // response is one Bootgrid page (default 50 rows) of a result
+        // that can easily be larger on a busy network, and last_seen
+        // bumping on every still-open session every tick means which
+        // sessions land on that one page is essentially arbitrary. A
+        // dominant real host's traffic (confirmed with a phone running
+        // speedtest.net) could silently never appear on the chart/graph
+        // at all if its rows just weren't on the page the table happened
+        // to be showing.
+        gwtfStartLiveOverviewWorker();
 
-        (function livePoller() {
+        (function tableReloadPoller() {
             const interval = gwtfCurrentPollIntervalMs();
             if (interval <= 0) {
                 // "Don't refresh" -- do nothing, but keep checking in case
                 // the user changes the dropdown again later.
-                setTimeout(livePoller, 2000);
+                setTimeout(tableReloadPoller, 2000);
                 return;
             }
             setTimeout(function () {
                 $("#grid-live").bootgrid('reload');
-                gwtfPollLiveOverview();
-                livePoller();
+                tableReloadPoller();
             }, interval);
         })();
 
         $("#live-group-by").on("changed.bs.select", function () {
             chartHistory = [];
-            previousSnapshot = new Map();
             hiddenGroupKeys = new Set();
             renderLiveChart();
+            // Forces the worker's next series fetch to return everything
+            // currently retained again (its own `since` watermark, not
+            // just this tab's local chartHistory, gated what came back) --
+            // without this, the chart would sit empty until new ticks
+            // slowly trickle in under the new grouping, instead of
+            // immediately repopulating with the real retained history.
+            if (liveOverviewWorker) {
+                liveOverviewWorker.postMessage({ type: 'resetSeries' });
+            }
         });
 
         $("#live-chart-type").on("changed.bs.select", function () {
             const chartType = $(this).val() || 'line';
             $("#live-chart-canvas-wrapper").toggle(chartType !== 'graph');
             $("#live-graph-wrapper").toggle(chartType === 'graph');
-            // Range/Top N only mean anything for Line/Bar -- Graph shows
+            // Top N/Scale only mean anything for Line/Bar -- Graph shows
             // every host/edge currently open, uncapped, unconditionally.
             $("#live-linebar-controls").toggle(chartType !== 'graph');
             renderLiveChart();
@@ -192,7 +190,7 @@
             // poll tick -- without this, switching to it shows nothing at
             // all until the next tick happens to land.
             if (chartType === 'graph' && lastRows) {
-                renderLiveGraph(lastRows, lastDeltasByGroup);
+                renderLiveGraph(lastRows);
             }
         });
 
@@ -208,138 +206,130 @@
         });
     });
 
-    // A dedicated poll against the unpaginated overview endpoint, kept
-    // deliberately separate from the Table tab's own Bootgrid ajax call
-    // (see the comment where this is scheduled) -- costs one extra
-    // request per tick, but a busy real network with more concurrent
-    // sessions than one Bootgrid page can miss a genuinely dominant
-    // host's traffic entirely otherwise, which is worse than the extra
-    // request.
-    function gwtfPollLiveOverview() {
-        $.ajax({
-            url: '/api/gowiththeflow/live/overview',
-            type: 'POST',
-            dataType: 'json'
-        }).done(function (response) {
-            updateLiveOverview(response.rows || []);
-        });
-    }
-
-    // Delta-per-tick, computed client-side from gwtfPollLiveOverview()'s
-    // own poll -- pf's own byte counters are cumulative, so each tick's
-    // contribution is this row's current total minus its own value last
-    // recorded tick (see the daemon-cadence gate above: not necessarily
-    // the *previous poll*, if that poll's data was byte-for-byte
-    // identical). A row not seen last recorded tick is either (a) the very first data
-    // this browser tab has ever received -- previousSnapshot is still
-    // empty, so these could be connections that have been open for
-    // hours; charging their entire lifetime total to this one tick
-    // would draw a huge, meaningless spike, so they only establish a
-    // baseline (delta 0) -- or (b) a connection that opened *after* the
-    // chart was already running, which genuinely did open within
-    // roughly this poll interval, so its current total approximately
-    // *is* this tick's real contribution. Treating case (b) as 0 too
-    // (an earlier version did) systematically undercounted real bursts
-    // for any workload that cycles through many short-lived connections
-    // -- confirmed for real with a multi-stream speedtest.net run,
-    // which produced a "throughput, then 0, then throughput" pattern on
-    // the chart even though traffic never actually stopped. A
-    // connection that *closes* between two polls still has no "current"
-    // entry to diff against, so its own last partial interval is
-    // dropped -- a real, smaller residual gap this doesn't fix (would
-    // need a connections_raw lookup for whatever just closed); the
-    // Table tab and History are unaffected either way.
-    function updateLiveOverview(rows) {
-        lastRows = rows;
-
-        // Coalesce polls that landed faster than the daemon's own
-        // update cadence into a no-op for the *chart's* purposes -- the
-        // Graph view (cumulative-bytes-based, not delta-based) is
-        // rendered unconditionally below regardless, since re-rendering
-        // it with byte-for-byte identical data is harmless.
-        const now = Date.now();
-        if (lastRecordedTickAt !== 0 && now - lastRecordedTickAt < GWTF_DAEMON_POLL_INTERVAL_MS - 250) {
-            renderLiveGraph(rows, lastDeltasByGroup || {});
+    // Starts the Worker that owns the Overview chart's poll loop (see
+    // LiveController::overviewWorkerAction() for why it's a Worker at all,
+    // and why that Worker is served from a real 'self' URL rather than a
+    // blob: URL built here). Falls back to a plain same-thread $.ajax poll
+    // if Workers aren't available at all -- subject to the same
+    // background-tab throttling this was built to avoid, but still better
+    // than the chart never updating.
+    function gwtfStartLiveOverviewWorker() {
+        if (typeof Worker === 'undefined') {
+            // Rare fallback (no Worker support at all) -- polls both
+            // endpoints itself on the page's own throttleable timer, and
+            // doesn't support the resetSeries fast-path on a grouping
+            // change (it'll still catch up, just gradually as new ticks
+            // arrive, rather than repopulating full history instantly).
+            let fallbackSeriesSince = 0;
+            (function fallbackPoll() {
+                $.ajax({
+                    url: '/api/gowiththeflow/live/overview', type: 'POST', dataType: 'json'
+                }).done(function (response) {
+                    updateLiveOverview(response.rows || []);
+                });
+                $.ajax({
+                    url: '/api/gowiththeflow/live/series', type: 'POST', dataType: 'json',
+                    data: { since: fallbackSeriesSince }
+                }).done(function (response) {
+                    const ticks = response.ticks || [];
+                    ticks.forEach(function (row) {
+                        fallbackSeriesSince = Math.max(fallbackSeriesSince, row.tick_time);
+                    });
+                    gwtfAppendSeriesTicks(ticks);
+                }).always(function () {
+                    setTimeout(fallbackPoll, gwtfCurrentPollIntervalMs());
+                });
+            })();
             return;
         }
-        lastRecordedTickAt = now;
-
-        const currentSnapshot = new Map();
-        const deltasByGroup = {};
-        const isFirstEverTick = previousSnapshot.size === 0;
-
-        rows.forEach(function (row) {
-            const bytesTotal = (Number(row.bytes_in) || 0) + (Number(row.bytes_out) || 0);
-            currentSnapshot.set(row.row_id, bytesTotal);
-            let delta;
-            if (previousSnapshot.has(row.row_id)) {
-                delta = Math.max(bytesTotal - previousSnapshot.get(row.row_id), 0);
-            } else if (isFirstEverTick) {
-                delta = 0;
-            } else {
-                delta = bytesTotal;
+        liveOverviewWorker = new Worker('/ui/gowiththeflow/live/overviewWorker');
+        liveOverviewWorker.onmessage = function (e) {
+            const msg = e.data || {};
+            if (msg.type === 'poll') {
+                updateLiveOverview(msg.rows || []);
+                gwtfAppendSeriesTicks(msg.ticks || []);
             }
+        };
+        liveOverviewWorker.postMessage({ type: 'setInterval', intervalMs: gwtfCurrentPollIntervalMs() });
+    }
 
+    // The current session snapshot (Table tab, Graph view) -- no longer
+    // computes the chart's deltas at all (see gwtfAppendSeriesTicks()),
+    // just caches the raw rows and keeps groupLabels (hostnames) fresh
+    // for whichever grouping is currently selected.
+    function updateLiveOverview(rows) {
+        lastRows = rows;
+        rows.forEach(function (row) {
             const key = window.__gwtfGroupBy === 'peer_port' ? String(row.peer_port) : row.local_ip;
-            deltasByGroup[key] = (deltasByGroup[key] || 0) + delta;
             groupLabels[key] = window.__gwtfGroupBy === 'peer_port' ? String(row.peer_port) : row.local;
         });
+        renderLiveGraph(rows);
+    }
 
-        previousSnapshot = currentSnapshot;
-        chartHistory.push({ time: new Date(now), groups: deltasByGroup });
+    // The chart's actual data source: live_ticks rows computed once,
+    // server-side (live_ticks.compute_tick_deltas() in gowiththeflowd.py),
+    // so every open tab/viewer reads the same recorded history instead of
+    // each independently diffing its own poll -- and a reconnecting tab
+    // just fetches the real ticks it missed instead of approximating a
+    // gap. `ticks` is a flat list (tick_time, local_ip, peer_port,
+    // delta_bytes_in, delta_bytes_out); bucketed here by tick_time into
+    // chartHistory's existing {time, groups} shape, summed by whichever
+    // of local_ip/peer_port is currently selected.
+    function gwtfAppendSeriesTicks(ticks) {
+        if (!ticks.length) {
+            return;
+        }
+        const buckets = new Map();
+        ticks.forEach(function (row) {
+            if (!buckets.has(row.tick_time)) {
+                buckets.set(row.tick_time, { time: new Date(row.tick_time * 1000), groups: {} });
+            }
+            const bucket = buckets.get(row.tick_time);
+            const key = window.__gwtfGroupBy === 'peer_port' ? String(row.peer_port) : row.local_ip;
+            const bytesTotal = (Number(row.delta_bytes_in) || 0) + (Number(row.delta_bytes_out) || 0);
+            bucket.groups[key] = (bucket.groups[key] || 0) + bytesTotal;
+        });
+        Array.from(buckets.keys()).sort(function (a, b) { return a - b; }).forEach(function (t) {
+            chartHistory.push(buckets.get(t));
+        });
         gwtfReconcileChartHistoryLength();
-
-        lastDeltasByGroup = deltasByGroup;
-
         renderLiveChart();
-        renderLiveGraph(rows, deltasByGroup);
     }
 
     // NOT `|| 2000` -- 0 ("Don't refresh") is falsy in JS, so that would
     // silently fall back to the default and never actually stop
-    // refreshing.
+    // refreshing. Only governs the Table tab/Graph view poll rate now --
+    // the chart's own cadence is fixed to GWTF_DAEMON_POLL_INTERVAL_MS.
     function gwtfCurrentPollIntervalMs() {
         const parsed = parseInt($("#interval").val(), 10);
         return Number.isNaN(parsed) ? 2000 : parsed;
     }
 
-    // The chart can't genuinely resolve any finer than the daemon's own
-    // update cadence (see GWTF_DAEMON_POLL_INTERVAL_MS) no matter how
-    // fast the browser is told to refresh -- this is what the point-
-    // spacing math below should actually use, not the raw dropdown value.
-    function gwtfEffectiveChartIntervalMs() {
-        return Math.max(gwtfCurrentPollIntervalMs(), GWTF_DAEMON_POLL_INTERVAL_MS);
-    }
+    // Fixed, not recomputed against a user-chosen interval -- the chart's
+    // range (LIVE_CHART_RANGE_MINUTES) and point spacing
+    // (GWTF_DAEMON_POLL_INTERVAL_MS, the server's real tick rate) are both
+    // constants now.
+    const GWTF_LIVE_MAX_POINTS = Math.ceil(
+        (LIVE_CHART_RANGE_MINUTES * 60000) / GWTF_DAEMON_POLL_INTERVAL_MS
+    );
 
-    // How many chartHistory points are needed to cover
-    // liveChartRangeMinutes of real time at the effective interval --
-    // recomputed on demand rather than cached, since either input can
-    // change independently (the range selector, or the interval
-    // dropdown, which doubles as the chart's own tick width).
-    function gwtfLiveMaxPoints() {
-        return Math.max(10, Math.ceil((liveChartRangeMinutes * 60000) / gwtfEffectiveChartIntervalMs()));
-    }
-
-    // Keeps chartHistory at exactly gwtfLiveMaxPoints() long, padding
+    // Keeps chartHistory at exactly GWTF_LIVE_MAX_POINTS long, padding
     // with empty placeholder points at the front (stepping backward in
     // time from whatever's already there, or from now if starting from
-    // empty) when it needs to grow, and trimming from the front when it
-    // needs to shrink. Without padding, the chart would start at 1
-    // point and slowly grow into the requested range instead of showing
-    // a fixed window from the very first draw; empty points contribute
-    // 0 to every dataset and are invisible to topGroupKeysGWTF's totals,
-    // so they never skew which groups count as "top". Called every tick
-    // (self-correcting, idempotent) and immediately on a range/interval
-    // change so the resize is instant rather than waiting on the next poll.
+    // empty) when the server hasn't been running long enough yet to have
+    // a full window of real history, and trimming from the front when
+    // there's more (the server retains a few minutes more than the
+    // display window, see LIVE_TICK_RETENTION_S in gowiththeflowd.py).
+    // Empty points contribute 0 to every dataset and are invisible to
+    // topGroupKeysGWTF's totals, so they never skew which groups count
+    // as "top".
     function gwtfReconcileChartHistoryLength() {
-        const target = gwtfLiveMaxPoints();
-        const intervalMs = gwtfEffectiveChartIntervalMs();
-        while (chartHistory.length > target) {
+        while (chartHistory.length > GWTF_LIVE_MAX_POINTS) {
             chartHistory.shift();
         }
-        while (chartHistory.length < target) {
+        while (chartHistory.length < GWTF_LIVE_MAX_POINTS) {
             const oldest = chartHistory[0];
-            const t = oldest ? oldest.time.getTime() - intervalMs : Date.now();
+            const t = oldest ? oldest.time.getTime() - GWTF_DAEMON_POLL_INTERVAL_MS : Date.now();
             chartHistory.unshift({ time: new Date(t), groups: {} });
         }
     }
@@ -722,7 +712,7 @@
     // own traffic is small next to everyone else's; sorted by bytes only
     // so the busiest edges get first pick of curve-offset slots, not to
     // decide what's shown at all.
-    function renderLiveGraph(rows, deltasByGroup) {
+    function renderLiveGraph(rows) {
         const wrapper = document.getElementById('live-graph-wrapper');
         if (!wrapper || $("#live-chart-type").val() !== 'graph') {
             return;
@@ -1052,13 +1042,6 @@
                 <option value="peer_port">{{ lang._('Peer Port') }}</option>
             </select>
             <span id="live-linebar-controls">
-                <label style="font-weight: normal; margin: 0 4px 0 12px;">{{ lang._('Range') }}</label>
-                <select class="selectpicker" id="live-range" data-width="auto">
-                    <option value="2">2 {{ lang._('minutes') }}</option>
-                    <option value="5" selected="selected">5 {{ lang._('minutes') }}</option>
-                    <option value="10">10 {{ lang._('minutes') }}</option>
-                    <option value="30">30 {{ lang._('minutes') }}</option>
-                </select>
                 <label style="font-weight: normal; margin: 0 4px 0 12px;">{{ lang._('Top N') }}</label>
                 <select class="selectpicker" id="live-top-n" data-width="auto">
                     <option value="5">5</option>
