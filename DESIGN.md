@@ -1090,6 +1090,49 @@
   spot at a glance).
   125 tests passing (117 + 8 new for `live_ticks.py`). Version bumped
   to **1.3.0**.
+- **1.3.1 -- fixed a real packaging bug: `live_ticks.py` was never
+  actually shipped in the 1.3.0 package.** `pkg-plist` is a manually
+  maintained file list, not auto-generated from the source tree, and it
+  never got a new line added for the new module -- so a genuinely fresh
+  `pkg upgrade` extracted every OTHER 1.3.0 file correctly but simply
+  never installed `live_ticks.py` at all. `gowiththeflowd.py`'s `import
+  live_ticks` then failed with `ModuleNotFoundError` on daemon startup,
+  which is a fatal, silent failure (Daemonize has no log file for a
+  startup exception -- nothing at all in `/var/log`) -- the daemon just
+  never started, `/live/series` 500'd with "Call to a member function
+  bindValue() on false" (SQLite's `prepare()` returns false rather than
+  throwing when the referenced table doesn't exist, since `live_ticks`
+  itself is only ever created by the daemon's own `init_schema()`, which
+  never ran), and -- worse than either error -- tracking had silently
+  stopped entirely on nostromo.
+  This shipped despite the test VM's own verification supposedly
+  confirming `live_ticks.py` matched the committed source post-upgrade
+  -- a real blind spot in the verification process itself, not just the
+  code: earlier in this same session, `live_ticks.py` had been manually
+  `scp`'d directly to the VM's installed path for a quick interactive
+  test, *before* the official `build-pkg.sh` → `pkg upgrade` → diff
+  cycle ever ran. Since `pkg` only manages files listed in `pkg-plist`,
+  the real upgrade transaction simply left that leftover file
+  untouched -- so the later `diff` against committed source reported a
+  clean match for entirely the wrong reason, masking the omission
+  instead of catching it. Root-caused live, working from nostromo's
+  actual symptoms (`/overview` fine and clearly showing real hostnames
+  across dozens of real devices, `/series` 500ing, `configctl ...
+  status` reporting not running, then a direct foreground run of
+  `gowiththeflowd.py` on nostromo surfacing the exact traceback) rather
+  than guessing -- there's no SSH access to nostromo in this project, so
+  every diagnostic step so far was a command handed to the user to run
+  and paste back.
+  Fixed: added the missing `pkg-plist` line, and diffed every git-
+  tracked file under `src/opnsense` against `pkg-plist` to confirm this
+  was the *only* omission (it was). For verification this time, the
+  installed `live_ticks.py` is deleted from the VM *before* the real
+  `pkg upgrade` test runs, specifically so a clean-state install is what
+  gets proven, not whatever residue happens to already be sitting on
+  disk from earlier interactive testing -- a discipline worth keeping
+  for any future new file, not just this one.
+  No code/logic changes -- 125 tests passing, unchanged. Version bumped
+  to **1.3.1**.
 - **Not yet started**: the staticOverrides grid editor, proper repo
   signing before this pkg-repo is relied on for anything that matters,
   and a possible future "scheduled traffic blocking" feature (the
