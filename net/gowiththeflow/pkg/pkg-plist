@@ -23,6 +23,7 @@ usr/local/opnsense/scripts/gowiththeflow/category_updater.py
 usr/local/opnsense/scripts/gowiththeflow/correlator.py
 usr/local/opnsense/scripts/gowiththeflow/db.py
 usr/local/opnsense/scripts/gowiththeflow/dns_sniffer.py
+usr/local/opnsense/scripts/gowiththeflow/dpi_classifier.py
 usr/local/opnsense/scripts/gowiththeflow/gowiththeflowd.py
 usr/local/opnsense/scripts/gowiththeflow/hostcache.py
 usr/local/opnsense/scripts/gowiththeflow/live_ticks.py

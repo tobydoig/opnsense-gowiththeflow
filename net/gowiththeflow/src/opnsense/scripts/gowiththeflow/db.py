@@ -28,6 +28,12 @@ CREATE TABLE IF NOT EXISTS live_sessions (
   peer_ip TEXT NOT NULL, peer_port INTEGER NOT NULL,
   peer_is_local INTEGER NOT NULL DEFAULT 0,
   peer_hostname TEXT, hostname_source TEXT, category TEXT,
+  -- Set by dpi_classifier.py's periodic batch nDPI classification, not
+  -- the live per-poll path everything else here uses -- see its module
+  -- docstring for why (ndpiReader's JSON output is batch-only, not a
+  -- live stream). NULL until a capture burst happens to classify this
+  -- session; may never populate for a short-lived one.
+  dpi_protocol TEXT,
   state TEXT,
   first_seen INTEGER NOT NULL, last_seen INTEGER NOT NULL,
   -- last_seen bumps on every poll a session is still present in pf's own
@@ -54,7 +60,7 @@ CREATE TABLE IF NOT EXISTS connections_raw (
   local_ip TEXT NOT NULL,
   peer_ip TEXT NOT NULL, peer_port INTEGER NOT NULL,
   peer_is_local INTEGER NOT NULL DEFAULT 0,
-  peer_hostname TEXT, hostname_source TEXT, category TEXT,
+  peer_hostname TEXT, hostname_source TEXT, category TEXT, dpi_protocol TEXT,
   state TEXT,
   started_at INTEGER NOT NULL, ended_at INTEGER NOT NULL, duration_s INTEGER NOT NULL,
   bytes_in INTEGER NOT NULL, bytes_out INTEGER NOT NULL,
@@ -81,7 +87,7 @@ CREATE TABLE IF NOT EXISTS rollup_hourly (
   bucket_start INTEGER NOT NULL, proto TEXT NOT NULL,
   local_ip TEXT NOT NULL, peer_ip TEXT NOT NULL,
   peer_is_local INTEGER NOT NULL DEFAULT 0,
-  peer_hostname TEXT, hostname_source TEXT, category TEXT,
+  peer_hostname TEXT, hostname_source TEXT, category TEXT, dpi_protocol TEXT,
   bytes_in INTEGER NOT NULL, bytes_out INTEGER NOT NULL,
   pkts_in INTEGER NOT NULL, pkts_out INTEGER NOT NULL, conn_count INTEGER NOT NULL,
   PRIMARY KEY (bucket_start, proto, local_ip, peer_ip)
@@ -95,7 +101,7 @@ CREATE TABLE IF NOT EXISTS rollup_daily (
   bucket_start INTEGER NOT NULL, proto TEXT NOT NULL,
   local_ip TEXT NOT NULL, peer_ip TEXT NOT NULL,
   peer_is_local INTEGER NOT NULL DEFAULT 0,
-  peer_hostname TEXT, hostname_source TEXT, category TEXT,
+  peer_hostname TEXT, hostname_source TEXT, category TEXT, dpi_protocol TEXT,
   bytes_in INTEGER NOT NULL, bytes_out INTEGER NOT NULL,
   pkts_in INTEGER NOT NULL, pkts_out INTEGER NOT NULL, conn_count INTEGER NOT NULL,
   PRIMARY KEY (bucket_start, proto, local_ip, peer_ip)
@@ -175,6 +181,16 @@ def init_schema(conn: sqlite3.Connection) -> None:
     for table in _CATEGORY_TABLES:
         try:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN category TEXT")
+            conn.commit()
+        except sqlite3.OperationalError as e:
+            if "duplicate column" not in str(e).lower():
+                raise
+
+    # Same pattern again for dpi_protocol -- added later still, same
+    # nullable/unconstrained shape as category, same four tables.
+    for table in _CATEGORY_TABLES:
+        try:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN dpi_protocol TEXT")
             conn.commit()
         except sqlite3.OperationalError as e:
             if "duplicate column" not in str(e).lower():
@@ -328,7 +344,8 @@ def record_diff(
     for snap in diff.closed:
         row = conn.execute(
             """
-            SELECT first_seen, last_seen, peer_is_local, peer_hostname, hostname_source, category
+            SELECT first_seen, last_seen, peer_is_local, peer_hostname, hostname_source,
+                   category, dpi_protocol
             FROM live_sessions
             WHERE proto=? AND local_ip=? AND local_port=? AND peer_ip=? AND peer_port=?
             """,
@@ -340,29 +357,31 @@ def record_diff(
         if row is None:
             # Never actually recorded as opened (e.g. daemon restarted
             # mid-session) -- fall back to the closed snapshot's own age;
-            # no prior hostname/category to carry forward either.
+            # no prior hostname/category/dpi_protocol to carry forward either.
             first_seen = now_i - snap.age_s
             ended_at = now_i
             peer_is_local = snap.peer_is_local
             hostname, source = None, None
             category = "Internal" if snap.peer_is_local else None
+            dpi_protocol = None
         else:
             first_seen, ended_at = row["first_seen"], row["last_seen"]
             peer_is_local = bool(row["peer_is_local"])
             hostname, source = row["peer_hostname"], row["hostname_source"]
             category = row["category"]
+            dpi_protocol = row["dpi_protocol"]
 
         conn.execute(
             """
             INSERT INTO connections_raw
                 (proto, local_ip, peer_ip, peer_port, peer_is_local,
-                 peer_hostname, hostname_source, category, state,
+                 peer_hostname, hostname_source, category, dpi_protocol, state,
                  started_at, ended_at, duration_s, bytes_in, bytes_out, pkts_in, pkts_out)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 snap.key.proto, snap.key.local_ip, snap.key.peer_ip, snap.key.peer_port,
-                int(peer_is_local), hostname, source, category, snap.state,
+                int(peer_is_local), hostname, source, category, dpi_protocol, snap.state,
                 first_seen, ended_at, max(ended_at - first_seen, 0),
                 snap.bytes_in, snap.bytes_out, snap.pkts_in, snap.pkts_out,
             ),
@@ -397,5 +416,30 @@ def record_live_ticks(conn: sqlite3.Connection, tick_time: int, rows: list["Tick
             (tick_time, row.local_ip, row.peer_port, row.delta_bytes_in, row.delta_bytes_out)
             for row in rows
         ],
+    )
+    conn.commit()
+
+
+def update_dpi_protocol(
+    conn: sqlite3.Connection,
+    proto: str,
+    local_ip: str,
+    local_port: int,
+    peer_ip: str,
+    peer_port: int,
+    dpi_protocol: str,
+) -> None:
+    """Best-effort: a batch nDPI classification can arrive up to a whole
+    capture-burst duration (tens of seconds) after the session it
+    describes was seen, so it may already have closed by the time this
+    runs -- the UPDATE then simply matches zero rows. Not worth also
+    patching connections_raw retroactively for that case, same "miss it,
+    move on" acceptance as the existing close-partial-interval gap."""
+    conn.execute(
+        """
+        UPDATE live_sessions SET dpi_protocol=?
+        WHERE proto=? AND local_ip=? AND local_port=? AND peer_ip=? AND peer_port=?
+        """,
+        (dpi_protocol, proto, local_ip, local_port, peer_ip, peer_port),
     )
     conn.commit()

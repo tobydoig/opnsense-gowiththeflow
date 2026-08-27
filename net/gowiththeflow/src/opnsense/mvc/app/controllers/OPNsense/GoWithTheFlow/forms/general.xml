@@ -86,6 +86,12 @@
         <help>Only consulted when DNS/SNI have nothing. Disable if you don't want extra reverse-DNS traffic leaving the box.</help>
     </field>
     <field>
+        <id>gowiththeflow.hostname.enableDpi</id>
+        <label>Enable DPI (protocol/app classification)</label>
+        <type>checkbox</type>
+        <help>Identifies protocols like QUIC independent of hostname/port, via periodic nDPI capture bursts rather than live per-connection tracking -- classification can lag by up to a minute and won't reach every short-lived connection. Heavier than DNS/SNI sniffing; off by default until its real cost on a busy network is measured.</help>
+    </field>
+    <field>
         <id>gowiththeflow.hostname.extraTlsPorts</id>
         <label>Extra TLS ports</label>
         <type>text</type>

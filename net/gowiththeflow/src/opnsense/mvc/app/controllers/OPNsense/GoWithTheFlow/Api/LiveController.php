@@ -30,7 +30,7 @@ class LiveController extends DbApiControllerBase
             // lookup local_ip already uses, rather than the stored (always
             // NULL in that case) column.
             $sql = 'SELECT ls.proto, ls.local_ip, ls.local_port, ls.peer_ip, ls.peer_port,
-                        ls.peer_is_local, ls.hostname_source, ls.category, ls.state,
+                        ls.peer_is_local, ls.hostname_source, ls.category, ls.dpi_protocol, ls.state,
                         ls.first_seen, ls.last_seen, ls.last_activity,
                         ls.bytes_in, ls.bytes_out, ls.pkts_in, ls.pkts_out,
                         lhi.hostname AS local_hostname,

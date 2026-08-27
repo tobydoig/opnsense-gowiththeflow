@@ -1133,6 +1133,76 @@
   for any future new file, not just this one.
   No code/logic changes -- 125 tests passing, unchanged. Version bumped
   to **1.3.1**.
+- **1.4.0 -- DPI protocol/app classification (roadmap item #4, the last
+  unbuilt piece of the original ZenArmor-inspired feature set), via
+  nDPI's `ndpiReader` in periodic batch bursts.** Motivation:
+  protocol/app identification independent of hostname/port (works for
+  non-standard ports and obscure protocols), QUIC/HTTP-3 awareness (a
+  real gap -- some unresolved port-443 entries the user had already
+  noticed in real traffic are likely QUIC, which the DNS/SNI sniffer
+  can't see at all), and some resilience to encrypted DNS (DoH), since
+  DPI doesn't depend on seeing the plaintext DNS query.
+  Feasibility research on the test VM found `ndpi` genuinely packaged
+  for this OPNsense/FreeBSD build (`ndpi-5.0.d20251224`, from the
+  OPNsense repo), shipping `ndpiReader` with a `-K json` output mode --
+  but confirmed directly (polled its output file every 5s during a live
+  25s capture, 0 lines at every checkpoint, all flows appearing only at
+  process exit; `-m` "split duration" tried too, same result) that this
+  output is **batch-only, not a live stream**, and there's no packaged
+  `nDPIsrvd` (nDPI's own streaming daemon) in this port. Presented the
+  resulting tradeoff directly: build a genuinely live classifier via
+  custom `libndpi.so` bindings (a much bigger, riskier undertaking --
+  nDPI's C API is a flow-struct/packet-feeding state machine, real
+  ctypes/FFI memory-safety risk inside the daemon process, no existing
+  pattern in this codebase to build from), or accept periodic batch
+  classification as a slower enrichment alongside the existing PTR
+  fallback. **User chose the batch approach.**
+  Built as `dpi_classifier.py` (new module, mirrors `dns_sniffer.py`/
+  `sni_sniffer.py`'s background-thread-with-callback shape): runs
+  60-second `ndpiReader` bursts back-to-back forever, parses each
+  burst's JSON-lines output (`parse_ndpi_output()`, pure and
+  independently tested against a real captured JSON line from this
+  session's own research plus synthetic edge cases -- 6 new tests),
+  reorients onto (local, peer) the same way `pf_state_poller.
+  classify_sessions()` does, and best-effort `UPDATE`s
+  `live_sessions.dpi_protocol` by 5-tuple (a new nullable column, same
+  unconstrained shape as `category`, added to all four tables via the
+  same `ALTER TABLE` migration pattern `category`/`last_activity`
+  already established). Carried through `connections_raw` (added to
+  both write paths -- the normal session-close path in
+  `db.record_diff()` and the long-lived-session hourly checkpoint in
+  `rollup.checkpoint_long_lived_sessions()`, both of which read
+  `live_sessions` and previously didn't select this new column at all)
+  and into the rollup tables with its **own independent "most recent
+  wins" rank**, deliberately not folded into the existing hostname/
+  category rank -- since `dpi_protocol` is populated by a completely
+  separate, differently-timed pathway, a row with a fresh classification
+  but no hostname (or vice versa) must not blank out whichever of the
+  two some other row in the same bucket already supplied.
+  Accepted, documented limitations (not silently worked around): DPI
+  lags real traffic by roughly one burst duration (not ~5s like
+  everything else in this plugin); a long-lived connection can take
+  several bursts, or never, to reach a confident classification, since
+  each burst starts detection from scratch with no memory of earlier
+  packets; a short-lived connection that closes between bursts may never
+  get classified at all. `enable_dpi` defaults **off** (unlike DNS/SNI
+  sniffing) pending real CPU/memory cost measurements on a busy network
+  -- this plugin's first opt-in-only capability.
+  Surfaced identically to how `category` already flows through the UI:
+  a `dpi_protocol`/"Protocol" column on Live's Table, History, and Top
+  Talkers' Top Peers grids, plus a new "By Protocol" tab in Top Talkers
+  (`ToptalkersController::protocolAction()`, a near-verbatim copy of
+  `categoryAction()`'s `GROUP BY` + `COALESCE(..., 'Unclassified')`
+  shape) -- the "how much of my traffic is QUIC vs TLS vs HTTP vs DNS"
+  view that's the actual motivating use case, independent of which
+  domain traffic is going to.
+  New hard package dependency on `ndpi` (net/ndpi), alongside the
+  existing `py313-scapy` one -- `enableDpi` can't do anything useful
+  without it installed, so it's pulled in automatically like scapy
+  already is, rather than needing a separate manual `pkg install ndpi`
+  step to make the toggle actually work.
+  131 tests passing (125 + 6 new for `dpi_classifier.py`). Version
+  bumped to **1.4.0**.
 - **Not yet started**: the staticOverrides grid editor, proper repo
   signing before this pkg-repo is relied on for anything that matters,
   and a possible future "scheduled traffic blocking" feature (the
@@ -1211,24 +1281,31 @@ below is deliberately narrower than "everything ZenArmor has":
    node-link "Graph" view built instead is the closest analog currently
    shipped; revisit true Sankey rendering later if the Graph view proves
    insufficient once category coverage improves.
-4. **DPI (nDPI or similar)** -- added to the backlog, explicitly scoped
-   after discussing the tradeoff: gives protocol/app identification
-   independent of hostname/port (works for non-standard ports, obscure
-   protocols) and QUIC/HTTP-3 awareness (a real current gap -- some of
-   the unresolved port-443 entries the user noticed are likely QUIC,
-   which the current sniffer doesn't parse at all), plus some resilience
-   to encrypted DNS (DoH) since it doesn't depend on seeing the DNS
-   query. Does **not** help with Encrypted Client Hello (ECH) -- SNI
-   hidden cryptographically, unreadable by any packet inspection;
-   defeating it needs active SSL/TLS interception (installing a trusted
-   root cert on every device, decrypting and re-encrypting everything),
-   a much bigger and more invasive undertaking than DPI itself, out of
-   scope. A materially heavier architecture than the passive-sniffing
-   design this project started with (new dependency, more CPU/memory) --
-   user is explicitly fine with the resource cost given their hardware
-   (16GB RAM, 4-core i7) and belief that requirements won't exceed
-   ZenArmor's own, but this needs its own scoping pass before starting,
-   not a quick add-on to the existing daemon.
+4. **DPI (nDPI or similar)** -- **built in 1.4.0 (see the Status entry
+   above) as periodic batch classification via `ndpiReader`, not the
+   genuinely live continuous classifier originally imagined here.**
+   Feasibility research found `ndpiReader`'s JSON output is batch-only
+   (confirmed directly against a real capture), and there's no packaged
+   `nDPIsrvd` (nDPI's own streaming daemon) in this FreeBSD port -- a
+   real continuous classifier would need custom `libndpi.so` bindings,
+   a materially bigger and riskier undertaking than the rest of this
+   plugin's passive-sniffing design. User chose the batch tradeoff
+   (lags by ~1 burst duration, no flow continuity across bursts) over
+   that heavier path. Gives protocol/app identification independent of
+   hostname/port (works for non-standard ports, obscure protocols) and
+   QUIC/HTTP-3 awareness (a real gap -- some of the unresolved port-443
+   entries the user noticed are likely QUIC, which the DNS/SNI sniffer
+   doesn't parse at all), plus some resilience to encrypted DNS (DoH)
+   since it doesn't depend on seeing the DNS query. Still does **not**
+   help with Encrypted Client Hello (ECH) -- SNI hidden cryptographically,
+   unreadable by any packet inspection; defeating it needs active
+   SSL/TLS interception (installing a trusted root cert on every device,
+   decrypting and re-encrypting everything), a much bigger and more
+   invasive undertaking than DPI itself, still out of scope. Ships
+   opt-in (`enable_dpi` defaults off) pending real resource-cost
+   measurements on a busy network -- the "16GB RAM, 4-core i7, fine with
+   the cost" belief this item was originally scoped under hasn't
+   actually been measured yet.
 
 ## Context
 
@@ -1613,6 +1690,7 @@ controller's job is just: query SQLite, build that array, hand it off.
 | POST | `/api/gowiththeflow/history/timeseries` | `days`, `bucket=hour\|day`, `local_host?` | **DONE (1.2.0).** `{buckets, series: {ip: bytes[]}, local_hosts}`, top-10-by-total capped with an "Other" aggregate — backs History's Overview chart |
 | POST | `/api/gowiththeflow/toptalkers/local` | `days` | **DONE.** ranked local hosts by total bytes/connections (sortable by clicking either column — no separate `sort_by` param needed); a UNION ALL credits both members of an internal pair from their own point of view |
 | POST | `/api/gowiththeflow/toptalkers/peer` | `days`, `local_host?` | **DONE** (renamed from `remote` in 1.2.0). ranked peers (internet or local); filtering by `local_host` correctly shows only that host's share of a shared-IP peer, not the combined total; a UNION ALL also surfaces the numerically-smaller member of an internal pair, which would otherwise never appear here at all |
+| POST | `/api/gowiththeflow/toptalkers/protocol` | `days` | **DONE (1.4.0).** ranked `dpi_protocol` values (nDPI classification, batch-enriched -- see 1.4.0 Status entry), `COALESCE`d to 'Unclassified'; near-verbatim copy of `categoryAction()`'s shape, just grouped by protocol instead of category |
 | GET/POST | `/api/gowiththeflow/service/{start,stop,restart,status,reconfigure}` | — | **DONE.** standard `ApiMutableServiceControllerBase` envelope |
 | GET/POST | `/api/gowiththeflow/settings/{get,set}` | note: `get` needs an actual GET; `set` needs fields nested under `gowiththeflow[...]` | **DONE.** standard `ApiMutableModelControllerBase` envelope |
 | POST | `/api/gowiththeflow/settings/clearData` | — | **DONE.** truncates `connections_raw`/`rollup_hourly`/`rollup_daily`/`live_sessions` (housekeeping action button) |

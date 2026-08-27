@@ -58,6 +58,9 @@
             <enablePtrFallback type="BooleanField">
                 <Default>1</Default>
             </enablePtrFallback>
+            <enableDpi type="BooleanField">
+                <Default>0</Default>
+            </enableDpi>
             <extraTlsPorts type="TextField">
                 <Required>N</Required>
                 <Mask>/^[0-9,\s]*$/</Mask>

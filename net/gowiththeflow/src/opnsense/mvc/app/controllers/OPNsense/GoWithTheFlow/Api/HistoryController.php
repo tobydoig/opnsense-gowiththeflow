@@ -38,6 +38,10 @@ class HistoryController extends DbApiControllerBase
                    WHERE r2.local_ip = r1.local_ip AND r2.peer_ip = r1.peer_ip
                      AND r2.bucket_start >= :cutoff AND r2.category IS NOT NULL
                    ORDER BY r2.bucket_start DESC LIMIT 1) AS category,
+                  (SELECT r2.dpi_protocol FROM $table r2
+                   WHERE r2.local_ip = r1.local_ip AND r2.peer_ip = r1.peer_ip
+                     AND r2.bucket_start >= :cutoff AND r2.dpi_protocol IS NOT NULL
+                   ORDER BY r2.bucket_start DESC LIMIT 1) AS dpi_protocol,
                   lhi.hostname AS local_hostname,
                   SUM(CASE WHEN :local_ip != '' AND r1.peer_is_local = 1 AND r1.peer_ip = :local_ip
                            THEN r1.bytes_out ELSE r1.bytes_in END) AS bytes_in,

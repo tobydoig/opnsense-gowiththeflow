@@ -1,8 +1,8 @@
-INSERT INTO rollup_hourly (bucket_start, proto, local_ip, peer_ip, peer_is_local, peer_hostname, hostname_source, bytes_in, bytes_out, pkts_in, pkts_out, conn_count) VALUES
-  (strftime('%s','now') - 3600, 'tcp', '10.0.0.9', '172.66.147.243', 0, 'example.com', 'dns', 40000, 3000, 30, 20, 3),
-  (strftime('%s','now') - 3600, 'tcp', '10.0.0.9', '142.251.154.4', 0, 'www.youtube.com', 'dns', 900000, 40000, 500, 300, 5),
-  (strftime('%s','now') - 1800, 'tcp', '10.0.0.42', '20.190.159.4', 0, 'login.microsoftonline.com', 'dns', 5000, 2000, 4, 3, 1),
-  (strftime('%s','now') - 1800, 'tcp', '10.0.0.42', '142.251.154.4', 0, 'www.youtube.com', 'dns', 20000, 1000, 15, 10, 2);
+INSERT INTO rollup_hourly (bucket_start, proto, local_ip, peer_ip, peer_is_local, peer_hostname, hostname_source, dpi_protocol, bytes_in, bytes_out, pkts_in, pkts_out, conn_count) VALUES
+  (strftime('%s','now') - 3600, 'tcp', '10.0.0.9', '172.66.147.243', 0, 'example.com', 'dns', NULL, 40000, 3000, 30, 20, 3),
+  (strftime('%s','now') - 3600, 'tcp', '10.0.0.9', '142.251.154.4', 0, 'www.youtube.com', 'dns', 'QUIC', 900000, 40000, 500, 300, 5),
+  (strftime('%s','now') - 1800, 'tcp', '10.0.0.42', '20.190.159.4', 0, 'login.microsoftonline.com', 'dns', NULL, 5000, 2000, 4, 3, 1),
+  (strftime('%s','now') - 1800, 'tcp', '10.0.0.42', '142.251.154.4', 0, 'www.youtube.com', 'dns', 'QUIC', 20000, 1000, 15, 10, 2);
 
 -- An internal (local<->local) pair, canonicalized local_ip < peer_ip
 -- numerically -- 10.0.0.9 (dev-laptop) is the smaller member, 10.0.0.20

@@ -232,6 +232,7 @@
                     <th data-column-id="local" data-type="string">{{ lang._('Local Host') }}</th>
                     <th data-column-id="peer" data-type="string">{{ lang._('Peer') }}</th>
                     <th data-column-id="category" data-type="string" data-width="10em">{{ lang._('Category') }}</th>
+                    <th data-column-id="dpi_protocol" data-type="string" data-width="8em">{{ lang._('Protocol') }}</th>
                     <th data-column-id="conn_count" data-type="numeric" data-width="8em">{{ lang._('Connections') }}</th>
                     <th data-column-id="bytes_in" data-type="numeric" data-formatter="bytesformatter">{{ lang._('Bytes In') }}</th>
                     <th data-column-id="bytes_out" data-type="numeric" data-formatter="bytesformatter">{{ lang._('Bytes Out') }}</th>

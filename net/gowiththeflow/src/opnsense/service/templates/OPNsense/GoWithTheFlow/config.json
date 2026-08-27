@@ -32,6 +32,7 @@
   "enable_dns_sniffing": {{ 1 if GoWithTheFlow.hostname.enableDnsSniffing == '1' else 0 }},
   "enable_sni_sniffing": {{ 1 if GoWithTheFlow.hostname.enableSniSniffing == '1' else 0 }},
   "enable_ptr_fallback": {{ 1 if GoWithTheFlow.hostname.enablePtrFallback == '1' else 0 }},
+  "enable_dpi": {{ 1 if GoWithTheFlow.hostname.enableDpi == '1' else 0 }},
   "raw_retention_days": {{ GoWithTheFlow.general.rawRetentionDays }},
   "rollup_hourly_retention_days": {{ GoWithTheFlow.general.rollupHourlyRetentionDays }},
   "rollup_daily_retention_days": {{ GoWithTheFlow.general.rollupDailyRetentionDays }},

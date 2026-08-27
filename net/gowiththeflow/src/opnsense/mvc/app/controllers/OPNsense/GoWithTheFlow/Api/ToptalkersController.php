@@ -91,6 +91,10 @@ class ToptalkersController extends DbApiControllerBase
                                AND r2.category IS NOT NULL
                              ORDER BY r2.bucket_start DESC LIMIT 1)
                   END AS category,
+                  (SELECT r2.dpi_protocol FROM $table r2
+                   WHERE r2.peer_ip = c.ip AND r2.bucket_start >= :cutoff
+                     AND r2.dpi_protocol IS NOT NULL
+                   ORDER BY r2.bucket_start DESC LIMIT 1) AS dpi_protocol,
                   SUM(c.bytes_in) AS bytes_in, SUM(c.bytes_out) AS bytes_out,
                   SUM(c.conn_count) AS conn_count,
                   COUNT(DISTINCT c.other_ip) AS unique_local_hosts
@@ -171,6 +175,48 @@ class ToptalkersController extends DbApiControllerBase
             $result = $stmt->execute();
             while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
                 $row['row_id'] = $row['category'];
+                $row['bytes_total'] = (int)$row['bytes_in'] + (int)$row['bytes_out'];
+                $records[] = $row;
+            }
+        }
+
+        return $this->searchRecordsetBase($records, null, 'bytes_total');
+    }
+
+    /**
+     * Near-identical to categoryAction() -- same shape, grouped by
+     * dpi_protocol instead of category. dpi_protocol is set by
+     * dpi_classifier.py's periodic batch nDPI capture (gowiththeflowd.py),
+     * a slower, best-effort enrichment separate from the live
+     * hostname/category resolution path -- most rows land in
+     * 'Unclassified' unless DPI is enabled in Settings and has had a
+     * chance to see the flow.
+     */
+    public function protocolAction()
+    {
+        $days = max(1, (int)($this->request->getPost('days') ?: 7));
+        $cutoff = time() - $days * 86400;
+        $table = $this->rollupTableForDays($days);
+
+        $records = [];
+        $db = $this->openDb();
+        if ($db !== null) {
+            $sql = "
+                SELECT
+                  COALESCE(r.dpi_protocol, :unclassified) AS dpi_protocol,
+                  SUM(r.bytes_in) AS bytes_in, SUM(r.bytes_out) AS bytes_out,
+                  SUM(r.conn_count) AS conn_count,
+                  COUNT(DISTINCT r.peer_ip) AS unique_peer_hosts
+                FROM $table r
+                WHERE r.bucket_start >= :cutoff
+                GROUP BY dpi_protocol
+            ";
+            $stmt = $db->prepare($sql);
+            $stmt->bindValue(':cutoff', $cutoff, SQLITE3_INTEGER);
+            $stmt->bindValue(':unclassified', 'Unclassified', SQLITE3_TEXT);
+            $result = $stmt->execute();
+            while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
+                $row['row_id'] = $row['dpi_protocol'];
                 $row['bytes_total'] = (int)$row['bytes_in'] + (int)$row['bytes_out'];
                 $records[] = $row;
             }

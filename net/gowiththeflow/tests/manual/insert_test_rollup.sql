@@ -5,8 +5,8 @@ INSERT INTO rollup_hourly (bucket_start, proto, local_ip, peer_ip, peer_is_local
 VALUES (strftime('%s','now') - 3600, 'tcp', '10.0.0.9', '172.66.147.243', 0, 'example.com', 'dns', 15000, 1200, 10, 8, 2);
 
 -- A different peer for the same local host.
-INSERT INTO rollup_hourly (bucket_start, proto, local_ip, peer_ip, peer_is_local, peer_hostname, hostname_source, bytes_in, bytes_out, pkts_in, pkts_out, conn_count)
-VALUES (strftime('%s','now') - 3600, 'tcp', '10.0.0.9', '142.251.154.4', 0, 'www.youtube.com', 'dns', 900000, 40000, 500, 300, 5);
+INSERT INTO rollup_hourly (bucket_start, proto, local_ip, peer_ip, peer_is_local, peer_hostname, hostname_source, dpi_protocol, bytes_in, bytes_out, pkts_in, pkts_out, conn_count)
+VALUES (strftime('%s','now') - 3600, 'tcp', '10.0.0.9', '142.251.154.4', 0, 'www.youtube.com', 'dns', 'QUIC', 900000, 40000, 500, 300, 5);
 
 -- A second local host entirely.
 INSERT INTO rollup_hourly (bucket_start, proto, local_ip, peer_ip, peer_is_local, peer_hostname, hostname_source, bytes_in, bytes_out, pkts_in, pkts_out, conn_count)

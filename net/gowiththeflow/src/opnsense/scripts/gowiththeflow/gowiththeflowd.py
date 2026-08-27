@@ -23,6 +23,7 @@ import category_updater
 import correlator
 import db
 import dns_sniffer
+import dpi_classifier
 import hostcache
 import live_ticks
 import localhost_identity
@@ -48,6 +49,12 @@ LIVE_TICK_RETENTION_S = 35 * 60
 # live_ticks.compute_tick_deltas()'s docstring for why an older one
 # instead only establishes a baseline.
 LIVE_TICK_NEW_SESSION_MAX_AGE_S = POLL_INTERVAL_S * 2
+# nDPI needs several packets of a flow to classify it, and ndpiReader's
+# JSON output is only written once the process itself exits (confirmed
+# directly -- see dpi_classifier.py's module docstring), so this is a
+# batch cadence, not a poll interval: how long each back-to-back capture
+# burst runs before its results become available.
+DPI_BURST_DURATION_S = 60
 CATEGORY_CACHE_DIR = "/var/db/gowiththeflow/categories"
 
 
@@ -88,6 +95,9 @@ class Config:
     enable_dns_sniffing: bool = True
     enable_sni_sniffing: bool = True
     enable_ptr_fallback: bool = True
+    # Unlike the sniffers above, real CPU cost on a busy network hasn't
+    # been measured yet -- default this one off, opt-in.
+    enable_dpi: bool = False
     raw_retention_days: int = 10
     rollup_hourly_retention_days: int = 8
     rollup_daily_retention_days: int = 32
@@ -114,6 +124,7 @@ class Config:
             enable_dns_sniffing=bool(data.get("enable_dns_sniffing", True)),
             enable_sni_sniffing=bool(data.get("enable_sni_sniffing", True)),
             enable_ptr_fallback=bool(data.get("enable_ptr_fallback", True)),
+            enable_dpi=bool(data.get("enable_dpi", False)),
             raw_retention_days=int(data.get("raw_retention_days", 10)),
             rollup_hourly_retention_days=int(data.get("rollup_hourly_retention_days", 8)),
             rollup_daily_retention_days=int(data.get("rollup_daily_retention_days", 32)),
@@ -148,6 +159,7 @@ def run(config: Config) -> None:
 
     dns_observations: queue.Queue = queue.Queue()
     sni_hints: queue.Queue = queue.Queue()
+    dpi_results: queue.Queue = queue.Queue()
 
     # scapy's sniff() raises StopIteration given an empty interface list
     # (real crash caught running this under rc.d with no interfaces
@@ -170,6 +182,12 @@ def run(config: Config) -> None:
             ),
             daemon=True,
         ).start()
+    if config.enable_dpi and config.capture_interfaces:
+        threading.Thread(
+            target=dpi_classifier.capture_loop,
+            args=(config.capture_interfaces, config.local_subnets, dpi_results.put, DPI_BURST_DURATION_S),
+            daemon=True,
+        ).start()
 
     last_localhost_refresh = 0.0
     last_hourly_job = 0.0
@@ -188,6 +206,17 @@ def run(config: Config) -> None:
             flow_hints.put(local_ip, local_port, remote_ip, remote_port, hostname, ts)
 
         flow_hints.purge_expired(now)
+
+        # dpi_results only gets new entries roughly once per
+        # DPI_BURST_DURATION_S (a batch cadence, not a live one -- see
+        # dpi_classifier.py) -- draining every poll cycle regardless is
+        # still correct and cheap, same as the other queues above.
+        while not dpi_results.empty():
+            rec = dpi_results.get_nowait()
+            db.update_dpi_protocol(
+                conn, rec.proto, rec.local_ip, rec.local_port,
+                rec.peer_ip, rec.peer_port, rec.dpi_protocol,
+            )
 
         # Absolute path, not just "pfctl" -- rc.d's PATH is minimal (this
         # is what caught localhost_identity.refresh()'s equivalent bug
