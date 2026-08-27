@@ -1203,6 +1203,52 @@
   step to make the toggle actually work.
   131 tests passing (125 + 6 new for `dpi_classifier.py`). Version
   bumped to **1.4.0**.
+- **1.4.1 -- fixed a real crash-on-first-burst bug in the DPI capture
+  thread, found live on nostromo, plus the observability gap that made
+  it nearly undiagnosable.** User enabled DPI on nostromo and the
+  Protocol column stayed empty. Ruled out, in order, with real evidence
+  at each step rather than guesswork: the daemon not restarting after
+  the Settings save (it had); `ndpiReader` itself (ran it manually with
+  the real interfaces and real traffic -- worked perfectly, correctly
+  classified TLS/QUIC/WireGuard/STUN/DNS flows); the `rctl`
+  cpu/memory caps (temporarily raised the memory limit to 1024MB,
+  no change); a stale pidfile left over from an unrelated prior crash
+  (found and cleared -- `ps aux` showed no process at all, but
+  `/var/run/gowiththeflow.pid` still had a dead PID in it, so `start`/
+  a manual foreground run both refused, thinking it was already
+  running). None of those were it.
+  The real bug: `parse_ndpi_output()` already guarded `src_ip`/
+  `dest_ip` against a missing key, but the `src_port`/`dst_port` lookups
+  a few lines below were bare, unguarded dict indexing -- a real
+  classified flow nDPI reports without ports at all (e.g. ICMP) raised
+  an uncaught `KeyError`, which propagated out of `capture_loop()`'s
+  original zero-error-handling `while True` and killed the whole
+  background thread permanently, silently, after its *first* successful
+  60-second burst. This explains every earlier-ruled-out symptom at
+  once: `ndpiReader` genuinely did run once (hence working fine when
+  tested manually, and hence `enable_dpi`/interfaces/rctl all checking
+  out clean), but every later check happened after the thread had
+  already died, so no second burst ever started.
+  Diagnosing this took an extra turn because `Daemonize` (the OPNsense
+  helper this project's rc.d script uses) unconditionally redirects
+  stdin/stdout/stderr to `/dev/null` -- so even running the daemon
+  directly in the foreground taught us nothing (it double-forks and the
+  foreground process exits almost instantly regardless of what happens
+  next, by design), and the crashed thread's traceback had nowhere to
+  go at all. Fixed the crash (extend the existing try/except to also
+  cover `src_port`/`dst_port`, skip a portless flow the same way
+  `pf_state_poller.classify_sessions()` already skips a portless pf
+  state) **and** the observability gap: `capture_loop()` now catches
+  broad exceptions per burst and logs via `syslog` (visible through
+  OPNsense's own log viewer) instead of dying silently, with a
+  burst-duration backoff so a persistent failure logs steadily rather
+  than flooding syslog in a tight crash loop; `run_capture_burst()`
+  also now logs a non-zero `ndpiReader` exit it previously discarded
+  entirely. `syslog` is POSIX-only, so the module does a defensive
+  `try/except ImportError` around it to stay importable in this
+  project's own (Windows) test environment.
+  132 tests passing (131 + 1 new, pinning the portless-flow case against
+  a synthetic ICMP-shaped record). Version bumped to **1.4.1**.
 - **Not yet started**: the staticOverrides grid editor, proper repo
   signing before this pkg-repo is relied on for anything that matters,
   and a possible future "scheduled traffic blocking" feature (the

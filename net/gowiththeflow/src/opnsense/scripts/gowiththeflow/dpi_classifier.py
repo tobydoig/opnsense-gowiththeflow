@@ -25,10 +25,21 @@ import ipaddress
 import json
 import subprocess
 import tempfile
+import time
 from dataclasses import dataclass
 from typing import Callable, Iterable
 
+try:
+    import syslog
+except ImportError:  # syslog is POSIX-only -- this module's own tests run on Windows
+    syslog = None
+
 NDPI_READER_PATH = "/usr/local/bin/ndpiReader"
+
+
+def _log_error(message: str) -> None:
+    if syslog is not None:
+        syslog.syslog(syslog.LOG_ERR, message)
 
 
 @dataclass(frozen=True)
@@ -62,10 +73,20 @@ def parse_ndpi_output(raw: bytes, local_subnets: list[str]) -> list[DpiClassific
         ndpi = rec.get("ndpi")
         if not ndpi or "proto" not in ndpi:
             continue
+        # Bare dict indexing here (not .get()) is deliberate -- a record
+        # missing any of these means it's not a connection this project
+        # can represent at all (e.g. ICMP has no ports), so it's skipped
+        # the same way pf_state_poller.classify_sessions() already skips
+        # a pf state with no port on either side. Confirmed for real: an
+        # unguarded version of this exact lookup crashed the capture
+        # thread in production on the first real flow lacking a port,
+        # silently killing DPI classification after one successful burst.
         try:
             src_ip = ipaddress.ip_address(rec["src_ip"])
             dst_ip = ipaddress.ip_address(rec["dest_ip"])
-        except (KeyError, ValueError):
+            src_port = int(rec["src_port"])
+            dst_port = int(rec["dst_port"])
+        except (KeyError, ValueError, TypeError):
             continue
         src_local = any(src_ip in n for n in networks)
         dst_local = any(dst_ip in n for n in networks)
@@ -73,11 +94,11 @@ def parse_ndpi_output(raw: bytes, local_subnets: list[str]) -> list[DpiClassific
             continue
         proto = str(rec.get("proto", "")).lower()
         if src_local:
-            local_ip, local_port = rec["src_ip"], int(rec["src_port"])
-            peer_ip, peer_port = rec["dest_ip"], int(rec["dst_port"])
+            local_ip, local_port = rec["src_ip"], src_port
+            peer_ip, peer_port = rec["dest_ip"], dst_port
         else:
-            local_ip, local_port = rec["dest_ip"], int(rec["dst_port"])
-            peer_ip, peer_port = rec["src_ip"], int(rec["src_port"])
+            local_ip, local_port = rec["dest_ip"], dst_port
+            peer_ip, peer_port = rec["src_ip"], src_port
         results.append(
             DpiClassification(
                 proto=proto,
@@ -95,9 +116,17 @@ def run_capture_burst(interfaces: Iterable[str], burst_duration_s: int) -> bytes
     """Runs one bounded ndpiReader capture and returns its raw JSON-lines
     output. A dedicated function (not inlined in capture_loop) so tests
     can exercise capture_loop's looping/threading shape without actually
-    shelling out."""
+    shelling out.
+
+    Logs (rather than silently ignoring) a non-zero exit -- this daemon
+    runs under OPNsense's Daemonize helper, which redirects stdin/stdout/
+    stderr to /dev/null unconditionally, so without an explicit log call
+    a failing ndpiReader invocation would be completely invisible (a real
+    gap found and fixed live against nostromo, where this exact silence
+    made a startup failure impossible to diagnose from the running
+    daemon)."""
     with tempfile.NamedTemporaryFile(suffix=".json") as out:
-        subprocess.run(
+        result = subprocess.run(
             [
                 NDPI_READER_PATH,
                 "-i", ",".join(interfaces),
@@ -109,6 +138,11 @@ def run_capture_burst(interfaces: Iterable[str], burst_duration_s: int) -> bytes
             capture_output=True,
             check=False,
         )
+        if result.returncode != 0:
+            _log_error(
+                "gowiththeflow: ndpiReader exited %d: %s"
+                % (result.returncode, result.stderr.decode("utf-8", errors="replace")[:500])
+            )
         return out.read()
 
 
@@ -122,8 +156,19 @@ def capture_loop(
     on_classification(...) once per classified flow from each completed
     burst. Never exits on its own -- matches dns_sniffer.sniff_loop/
     sni_sniffer.sniff_loop, both run as daemon threads that live for the
-    process lifetime."""
+    process lifetime.
+
+    Catches broad exceptions around each burst (rather than letting one
+    propagate and permanently kill this thread with zero trace -- see
+    run_capture_burst()'s docstring on why silent failure is worse here
+    than in most places) and backs off for a full burst duration before
+    retrying, so a persistent failure logs steadily rather than spinning
+    in a tight, syslog-flooding crash loop."""
     while True:
-        raw = run_capture_burst(interfaces, burst_duration_s)
-        for record in parse_ndpi_output(raw, local_subnets):
-            on_classification(record)
+        try:
+            raw = run_capture_burst(interfaces, burst_duration_s)
+            for record in parse_ndpi_output(raw, local_subnets):
+                on_classification(record)
+        except Exception as e:
+            _log_error("gowiththeflow: DPI capture burst failed: %r" % (e,))
+            time.sleep(burst_duration_s)

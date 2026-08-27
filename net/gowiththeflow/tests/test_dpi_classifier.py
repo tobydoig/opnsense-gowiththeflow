@@ -69,6 +69,22 @@ def test_line_with_no_ndpi_key_is_skipped_not_a_crash():
     assert results == []
 
 
+def test_flow_with_no_ports_is_skipped_not_a_crash():
+    # Real bug, confirmed live on nostromo: a real classified flow (e.g.
+    # ICMP) can lack src_port/dst_port entirely -- bare dict indexing on
+    # those keys crashed the whole capture thread in production after its
+    # very first successful burst, with no visible error at all (Daemonize
+    # discards stderr), silently killing DPI classification from then on.
+    line = json.dumps({
+        "src_ip": "192.168.1.50", "dest_ip": "93.184.216.34", "proto": "ICMP",
+        "ndpi": {"proto": "ICMP"},
+    })
+
+    results = parse_ndpi_output(line.encode(), LOCAL_SUBNETS)
+
+    assert results == []
+
+
 def test_multiple_lines_all_parsed():
     raw = (_line(dst_port=443) + "\n" + _line(dst_port=8443)).encode()
 
