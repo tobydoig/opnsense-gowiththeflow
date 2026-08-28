@@ -1249,6 +1249,59 @@
   project's own (Windows) test environment.
   132 tests passing (131 + 1 new, pinning the portless-flow case against
   a synthetic ICMP-shaped record). Version bumped to **1.4.1**.
+- **1.5.0 -- new "Top Talkers" tab on the Live page**, per-local-host
+  bytes in/out/total/connections both "since refresh" (the server's
+  real ~5s tick) and over the same 30-minute window as the Overview
+  chart; clicking a row filters the existing Table tab to that host
+  (`filterLiveTableByLocalHostGWTF()`, unconditionally by `local_ip` --
+  unlike `filterLiveTableByGroupGWTF()`, not affected by the chart's own
+  local_ip/peer_port grouping toggle).
+  Entirely client-side, reusing data the Worker already fetches -- no
+  new API endpoint. "Since refresh" is rebuilt fresh from whatever raw
+  `live/series` ticks just arrived (`sinceRefreshByHost`); the 30-minute
+  window sums a new `hostWindowHistory` (mirrors `chartHistory`'s
+  per-tick bucketing, but always keyed by `local_ip` regardless of the
+  chart's toggle, since Top Talkers needs a per-host breakdown
+  unconditionally). "Connections (30 min)" was originally scoped as
+  distinct peer ports (all `live_ticks` retains -- no `peer_ip`), then
+  changed to a genuine distinct-connection count per user feedback:
+  tracked via a self-pruning `local_ip -> Map<row_id, lastSeenMs>`
+  (`hostConnSeenTimes`) fed from `/live/overview`'s full 5-tuple
+  `row_id` each poll, ages out entries older than the window on every
+  update so a host that's gone quiet still empties out after 30 minutes
+  rather than staying stuck.
+  The new grid uses the `UIBootgrid` wrapper's local (non-ajax) data
+  mode (`ajax: false` -- confirmed by reading the wrapper source that
+  this switches Tabulator to local sort/filter/paginate) rather than a
+  server search endpoint, since the rows are entirely computed
+  client-side; pushed in via `setData()` on the same cadence as the
+  chart, instead of an ajax poll.
+  Getting the default sort (ascending by `window_bytes_total`, per
+  explicit user preference -- descending was the first request, then
+  reconsidered) right took three real, confirmed-live iterations, each
+  ruling out the previous theory with actual evidence rather than
+  guesswork: (1) suspected Tabulator's own sort *persistence*
+  (`tabulatorDefaults()` sets `persistence: {sort: true}` project-wide,
+  writing a user's last sort choice to `localStorage` and restoring it
+  on rebuild) -- disabled `sort` persistence for just this grid via the
+  wrapper's `tabulatorOptions` override (confirmed via source: `{
+  ...tabulatorDefaults(), ...compatOptions, ...tabulatorOptions }`, so a
+  caller's `tabulatorOptions` wins), which was a real, worth-keeping fix
+  but didn't fully resolve the symptom. (2) Switched to Tabulator's
+  declarative `initialSort` option instead of an imperative
+  `table.setSort(...)` call in a `tableBuilt` handler -- the imperative
+  version was proven dead on arrival: the user manually clicking the
+  header for the first time produced the normal from-nothing toggle
+  (ascending, then descending on a second click), meaning no sort
+  whatsoever had actually been in effect beforehand, not merely the
+  wrong direction. `initialSort` didn't fully stick either, once
+  `setData()` started replacing rows every tick. (3) Actual fix: force
+  `table.setSort(...)` explicitly exactly once, chained onto the first
+  real `setData()` call's own returned promise (so it can't race the
+  data actually landing) and gated behind a flag so it never re-fires
+  and fights a user's own later manual re-sort.
+  No Python changes -- 132 tests passing, unchanged. Version bumped to
+  **1.5.0**.
 - **Not yet started**: the staticOverrides grid editor, proper repo
   signing before this pkg-repo is relied on for anything that matters,
   and a possible future "scheduled traffic blocking" feature (the

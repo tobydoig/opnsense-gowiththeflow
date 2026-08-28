@@ -32,6 +32,25 @@
                                          // to Graph mode can render immediately, not wait a tick
     let liveFilter = { local_ip: '', peer_ip: '', peer_port: '', host_ip: '' };  // server-side, via requestHandler
     let liveOverviewWorker = null;      // owns the Overview chart's poll loop -- see gwtfStartLiveOverviewWorker()
+    let localHostLabels = {};           // local_ip -> display label, ALWAYS populated regardless of
+                                         // the chart's own local_ip/peer_port grouping toggle -- the
+                                         // Top Talkers tab is always grouped by local host
+    let sinceRefreshByHost = {};        // local_ip -> {bytesIn, bytesOut} from only the most recently
+                                         // arrived tick batch -- reset and rebuilt fresh every tick,
+                                         // not accumulated, for the Top Talkers tab's "since refresh" columns
+    let hostWindowHistory = [];         // [{time, hosts: {local_ip: {bytesIn, bytesOut}}}] -- mirrors
+                                         // chartHistory's per-tick bucketing but is ALWAYS keyed by
+                                         // local_ip (independent of the chart's own grouping toggle),
+                                         // for the Top Talkers tab's window (LIVE_CHART_RANGE_MINUTES) byte columns
+    let topTalkersDefaultSortApplied = false;  // see renderLiveTopTalkers() -- forced exactly once,
+                                         // after the first real setData(), then left alone so it
+                                         // doesn't keep fighting a user's own manual re-sort
+    let hostConnSeenTimes = {};         // local_ip -> Map<row_id, lastSeenMs> -- every *distinct*
+                                         // connection (by full 5-tuple row_id, not just port) seen
+                                         // open at any /overview poll in roughly the last
+                                         // LIVE_CHART_RANGE_MINUTES, self-pruned by wall-clock time in
+                                         // updateLiveOverview() so a host that's gone quiet still ages
+                                         // out after the window passes rather than staying stuck
     // gowiththeflowd.py's own POLL_INTERVAL_S -- live_ticks genuinely
     // can't produce a new tick faster than this, and is also exactly the
     // real spacing between the tick_time values live/series returns, so
@@ -66,6 +85,59 @@
             }
         });
         addCsvExportButtonGWTF('grid-live', 'gowiththeflow-live.csv');
+
+        // Local (non-ajax) mode -- this grid's data is entirely computed
+        // client-side from data the Worker already fetches (see
+        // renderLiveTopTalkers()), not from a server search endpoint, so
+        // there's no `search:` URL. `ajax: false` switches the wrapper's
+        // sort/filter/paginate to Tabulator's own local-data mode; rows
+        // are pushed in via setData() each tick instead of an ajax poll.
+        $("#grid-live-toptalkers").UIBootgrid({
+            options: {
+                ajax: false,
+                selection: false,
+                multiSelect: false,
+                formatters: {
+                    "bytesformatter": function (column, row) {
+                        return formatBytesGWTF(row[column.id]);
+                    }
+                }
+            },
+            // Tabulator's own persistence (wrapper default: `sort: true`)
+            // writes whatever sort a user clicks into localStorage and
+            // silently restores it on the next rebuild -- for a table
+            // that's rebuilt via setData() every ~5s rather than loaded
+            // once, that meant the header's sort-direction icon could
+            // keep showing the default ("desc") while a stale persisted
+            // sort quietly kept winning on the actual row order. Same
+            // defaults as the wrapper otherwise uses, just sort:false.
+            tabulatorOptions: {
+                persistence: {
+                    sort: false,
+                    filter: false,
+                    headerFilter: true,
+                    group: true,
+                    page: false,
+                    columns: true,
+                },
+                // Also forced explicitly once in renderLiveTopTalkers()
+                // after the first real setData() -- confirmed live that
+                // neither this alone nor an imperative table.setSort()
+                // called from a "tableBuilt" handler (when the table
+                // still has zero rows) reliably survives into the data
+                // that arrives later via the repeated setData() calls
+                // this table lives on. Kept anyway as the correct
+                // declarative baseline; the setData().then() call is the
+                // one actually relied on.
+                initialSort: [{ column: "window_bytes_total", dir: "asc" }],
+            }
+        });
+        addCsvExportButtonGWTF('grid-live-toptalkers', 'gowiththeflow-live-toptalkers.csv');
+        let topTalkersTable = $("#grid-live-toptalkers").data('UIBootgrid').getTable();
+        topTalkersTable.on("rowClick", function (e, row) {
+            const data = row.getData();
+            filterLiveTableByLocalHostGWTF(data.row_id, data.local);
+        });
 
         // The `data-sort="desc"` header attribute (also used, equally
         // ineffectively, on Top Talkers' bytes_total column) isn't actually
@@ -248,6 +320,11 @@
             if (msg.type === 'poll') {
                 updateLiveOverview(msg.rows || []);
                 gwtfAppendSeriesTicks(msg.ticks || []);
+                // Always re-rendered, even on a tick with no new series
+                // data -- currently-open connection counts (from `rows`)
+                // can change every poll regardless of whether a new
+                // live_ticks batch happened to arrive in the same cycle.
+                renderLiveTopTalkers();
             }
         };
         liveOverviewWorker.postMessage({ type: 'setInterval', intervalMs: gwtfCurrentPollIntervalMs() });
@@ -259,9 +336,32 @@
     // for whichever grouping is currently selected.
     function updateLiveOverview(rows) {
         lastRows = rows;
+        const nowMs = Date.now();
         rows.forEach(function (row) {
             const key = window.__gwtfGroupBy === 'peer_port' ? String(row.peer_port) : row.local_ip;
             groupLabels[key] = window.__gwtfGroupBy === 'peer_port' ? String(row.peer_port) : row.local;
+            localHostLabels[row.local_ip] = row.local;
+
+            if (!hostConnSeenTimes[row.local_ip]) {
+                hostConnSeenTimes[row.local_ip] = new Map();
+            }
+            hostConnSeenTimes[row.local_ip].set(row.row_id, nowMs);
+        });
+        // Prune every known host, not just ones in this tick's rows --
+        // otherwise a host with zero currently-open connections would
+        // never get re-visited here again and its old entries would
+        // never age out.
+        const cutoffMs = nowMs - LIVE_CHART_RANGE_MINUTES * 60000;
+        Object.keys(hostConnSeenTimes).forEach(function (ip) {
+            const seen = hostConnSeenTimes[ip];
+            seen.forEach(function (lastSeenMs, rowId) {
+                if (lastSeenMs < cutoffMs) {
+                    seen.delete(rowId);
+                }
+            });
+            if (seen.size === 0) {
+                delete hostConnSeenTimes[ip];
+            }
         });
         renderLiveGraph(rows);
     }
@@ -276,24 +376,134 @@
     // chartHistory's existing {time, groups} shape, summed by whichever
     // of local_ip/peer_port is currently selected.
     function gwtfAppendSeriesTicks(ticks) {
+        // Rebuilt fresh every call (not accumulated) -- this is exactly
+        // "since the last real update," which is all of whatever ticks
+        // just arrived, regardless of how many tick_times they span (a
+        // slow-polling browser catching up covers more than one).
+        sinceRefreshByHost = {};
+        ticks.forEach(function (row) {
+            const bytesIn = Number(row.delta_bytes_in) || 0;
+            const bytesOut = Number(row.delta_bytes_out) || 0;
+            if (!sinceRefreshByHost[row.local_ip]) {
+                sinceRefreshByHost[row.local_ip] = { bytesIn: 0, bytesOut: 0 };
+            }
+            sinceRefreshByHost[row.local_ip].bytesIn += bytesIn;
+            sinceRefreshByHost[row.local_ip].bytesOut += bytesOut;
+        });
+
         if (!ticks.length) {
             return;
         }
         const buckets = new Map();
+        const hostBuckets = new Map();
         ticks.forEach(function (row) {
             if (!buckets.has(row.tick_time)) {
                 buckets.set(row.tick_time, { time: new Date(row.tick_time * 1000), groups: {} });
+                hostBuckets.set(row.tick_time, { time: new Date(row.tick_time * 1000), hosts: {} });
             }
             const bucket = buckets.get(row.tick_time);
             const key = window.__gwtfGroupBy === 'peer_port' ? String(row.peer_port) : row.local_ip;
             const bytesTotal = (Number(row.delta_bytes_in) || 0) + (Number(row.delta_bytes_out) || 0);
             bucket.groups[key] = (bucket.groups[key] || 0) + bytesTotal;
+
+            // Always by local_ip -- independent of the chart's own
+            // grouping toggle above -- since Top Talkers needs a
+            // per-local-host breakdown regardless of what the chart is
+            // currently showing.
+            const hostBucket = hostBuckets.get(row.tick_time).hosts;
+            if (!hostBucket[row.local_ip]) {
+                hostBucket[row.local_ip] = { bytesIn: 0, bytesOut: 0 };
+            }
+            hostBucket[row.local_ip].bytesIn += Number(row.delta_bytes_in) || 0;
+            hostBucket[row.local_ip].bytesOut += Number(row.delta_bytes_out) || 0;
         });
-        Array.from(buckets.keys()).sort(function (a, b) { return a - b; }).forEach(function (t) {
+        const orderedTimes = Array.from(buckets.keys()).sort(function (a, b) { return a - b; });
+        orderedTimes.forEach(function (t) {
             chartHistory.push(buckets.get(t));
+            hostWindowHistory.push(hostBuckets.get(t));
         });
         gwtfReconcileChartHistoryLength();
+        gwtfReconcileHostWindowHistoryLength();
         renderLiveChart();
+    }
+
+    // Same trim-from-front shape as gwtfReconcileChartHistoryLength(), but
+    // no empty-placeholder padding -- hostWindowHistory is only ever
+    // summed over, never rendered as a fixed-width axis, so there's
+    // nothing for an empty placeholder bucket to usefully contribute.
+    function gwtfReconcileHostWindowHistoryLength() {
+        while (hostWindowHistory.length > GWTF_LIVE_MAX_POINTS) {
+            hostWindowHistory.shift();
+        }
+    }
+
+    // Every local host seen either in the current open-session snapshot
+    // (for "since refresh" conn counts) or anywhere in the retained
+    // window (for hosts that were busy but have since gone quiet) gets a
+    // row -- a host isn't dropped just because it has no open connections
+    // left at this exact instant.
+    function renderLiveTopTalkers() {
+        const wrapper = $("#grid-live-toptalkers").data('UIBootgrid');
+        if (!wrapper) {
+            return;
+        }
+        const hostIps = new Set();
+        (lastRows || []).forEach(function (row) { hostIps.add(row.local_ip); });
+        hostWindowHistory.forEach(function (bucket) {
+            Object.keys(bucket.hosts).forEach(function (ip) { hostIps.add(ip); });
+        });
+        Object.keys(hostConnSeenTimes).forEach(function (ip) { hostIps.add(ip); });
+
+        const rows = Array.from(hostIps).map(function (ip) {
+            const refresh = sinceRefreshByHost[ip] || { bytesIn: 0, bytesOut: 0 };
+            const connCount = (lastRows || []).filter(function (row) { return row.local_ip === ip; }).length;
+
+            let windowBytesIn = 0, windowBytesOut = 0;
+            hostWindowHistory.forEach(function (bucket) {
+                const h = bucket.hosts[ip];
+                if (h) {
+                    windowBytesIn += h.bytesIn;
+                    windowBytesOut += h.bytesOut;
+                }
+            });
+            const windowConnCount = hostConnSeenTimes[ip] ? hostConnSeenTimes[ip].size : 0;
+
+            return {
+                row_id: ip,
+                local: localHostLabels[ip] || ip,
+                refresh_bytes_in: refresh.bytesIn,
+                refresh_bytes_out: refresh.bytesOut,
+                refresh_bytes_total: refresh.bytesIn + refresh.bytesOut,
+                refresh_conn_count: connCount,
+                window_bytes_in: windowBytesIn,
+                window_bytes_out: windowBytesOut,
+                window_bytes_total: windowBytesIn + windowBytesOut,
+                window_conn_count: windowConnCount,
+            };
+        });
+
+        const setDataResult = wrapper.getTable().setData(rows);
+        // Forced exactly once, chained onto setData()'s own promise so it
+        // can't race the data actually landing (calling setSort() any
+        // earlier -- e.g. from a "tableBuilt" handler, or relying on
+        // initialSort alone -- was confirmed live to not reliably survive
+        // into data supplied by this table's repeated setData() calls).
+        // Gated on the flag rather than called every tick so it doesn't
+        // keep re-forcing itself over a user's own manual re-sort.
+        if (!topTalkersDefaultSortApplied && rows.length && setDataResult && setDataResult.then) {
+            topTalkersDefaultSortApplied = true;
+            setDataResult.then(function () {
+                wrapper.getTable().setSort("window_bytes_total", "asc");
+            });
+        }
+    }
+
+    // Unlike filterLiveTableByGroupGWTF() (which branches on the chart's
+    // own local_ip/peer_port grouping toggle), Top Talkers rows are
+    // always local hosts, unconditionally.
+    function filterLiveTableByLocalHostGWTF(localIp, label) {
+        $('a[href="#live-table"]').tab('show');
+        setLiveFilterGWTF({ local_ip: localIp }, label || localIp);
     }
 
     // NOT `|| 2000` -- 0 ("Don't refresh") is falsy in JS, so that would
@@ -1025,6 +1235,7 @@
 </div>
 <ul class="nav nav-tabs" data-tabs="tabs" id="livetabs">
     <li class="active"><a data-toggle="tab" href="#live-overview">{{ lang._('Overview') }}</a></li>
+    <li><a data-toggle="tab" href="#live-toptalkers">{{ lang._('Top Talkers') }}</a></li>
     <li><a data-toggle="tab" href="#live-table">{{ lang._('Table') }}</a></li>
 </ul>
 <div class="tab-content content-box col-xs-12 __mb">
@@ -1060,6 +1271,29 @@
             <canvas id="live-overview-canvas"></canvas>
         </div>
         <div id="live-graph-wrapper" style="display: none;"></div>
+    </div>
+    <div id="live-toptalkers" class="tab-pane fade in">
+        <p class="help-block">
+            {{ lang._('Click a host to see its connections in the Table tab. "Since refresh" reflects the server\'s real ~5-second tick; "window" covers the same 30-minute range as the Overview chart.') }}
+        </p>
+        <table id="grid-live-toptalkers" class="table table-condensed table-hover table-striped table-responsive">
+            <thead>
+                <tr>
+                    <th data-column-id="row_id" data-identifier="true" data-visible="false">id</th>
+                    <th data-column-id="local" data-type="string">{{ lang._('Local Host') }}</th>
+                    <th data-column-id="refresh_bytes_in" data-type="numeric" data-formatter="bytesformatter">{{ lang._('In (since refresh)') }}</th>
+                    <th data-column-id="refresh_bytes_out" data-type="numeric" data-formatter="bytesformatter">{{ lang._('Out (since refresh)') }}</th>
+                    <th data-column-id="refresh_bytes_total" data-type="numeric" data-formatter="bytesformatter">{{ lang._('Total (since refresh)') }}</th>
+                    <th data-column-id="refresh_conn_count" data-type="numeric" data-width="8em">{{ lang._('Open Conns') }}</th>
+                    <th data-column-id="window_bytes_in" data-type="numeric" data-formatter="bytesformatter">{{ lang._('In (30 min)') }}</th>
+                    <th data-column-id="window_bytes_out" data-type="numeric" data-formatter="bytesformatter">{{ lang._('Out (30 min)') }}</th>
+                    <th data-column-id="window_bytes_total" data-type="numeric" data-formatter="bytesformatter">{{ lang._('Total (30 min)') }}</th>
+                    <th data-column-id="window_conn_count" data-type="numeric" data-width="8em">{{ lang._('Connections (30 min)') }}</th>
+                </tr>
+            </thead>
+            <tbody>
+            </tbody>
+        </table>
     </div>
     <div id="live-table" class="tab-pane fade in">
         <table id="grid-live" class="table table-condensed table-hover table-striped table-responsive">
