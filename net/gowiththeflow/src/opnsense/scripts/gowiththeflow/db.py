@@ -96,6 +96,13 @@ CREATE INDEX IF NOT EXISTS idx_ru_h_local ON rollup_hourly(bucket_start, local_i
 CREATE INDEX IF NOT EXISTS idx_ru_h_peer ON rollup_hourly(bucket_start, peer_ip);
 CREATE INDEX IF NOT EXISTS idx_ru_h_local_peer_recency ON rollup_hourly(local_ip, peer_ip, bucket_start);
 CREATE INDEX IF NOT EXISTS idx_ru_h_peer_recency ON rollup_hourly(peer_ip, bucket_start);
+-- Same reasoning/shape as idx_ru_*_peer_recency -- ToptalkersController's
+-- uncategorizedAction() filters/sorts a correlated subquery by
+-- (peer_hostname, bucket_start) exactly, and had no index at all to
+-- support it (confirmed live on nostromo: ~2 minutes per page over
+-- ~2000 uncategorized hosts, low CPU load throughout -- an I/O-bound
+-- full-table-scan-per-group signature, not a CPU one).
+CREATE INDEX IF NOT EXISTS idx_ru_h_hostname_recency ON rollup_hourly(peer_hostname, bucket_start);
 
 CREATE TABLE IF NOT EXISTS rollup_daily (
   bucket_start INTEGER NOT NULL, proto TEXT NOT NULL,
@@ -110,6 +117,7 @@ CREATE INDEX IF NOT EXISTS idx_ru_d_local ON rollup_daily(bucket_start, local_ip
 CREATE INDEX IF NOT EXISTS idx_ru_d_peer ON rollup_daily(bucket_start, peer_ip);
 CREATE INDEX IF NOT EXISTS idx_ru_d_local_peer_recency ON rollup_daily(local_ip, peer_ip, bucket_start);
 CREATE INDEX IF NOT EXISTS idx_ru_d_peer_recency ON rollup_daily(peer_ip, bucket_start);
+CREATE INDEX IF NOT EXISTS idx_ru_d_hostname_recency ON rollup_daily(peer_hostname, bucket_start);
 
 CREATE TABLE IF NOT EXISTS ip_hostname_cache (
   ip TEXT PRIMARY KEY, hostname TEXT NOT NULL, source TEXT NOT NULL,

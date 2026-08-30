@@ -1,3 +1,17 @@
+<style>
+    /* OPNsense's own theme CSS has a `:hover` rule for Tabulator rows,
+       but it's gated on `.tabulator-selectable` (only added when a grid
+       has row selection enabled -- none of this plugin's grids do) AND
+       re-asserts the exact same background as the resting state either
+       way, so it has no visible effect regardless. A translucent overlay
+       (rather than a hardcoded color) highlights the hovered row without
+       needing to match this theme's exact background hex, and still
+       works if OPNsense is ever run under a lighter theme. */
+    .tabulator-row:hover:not(.tabulator-selected) {
+        background-color: rgba(255, 255, 255, 0.08);
+    }
+</style>
+
 <script>
     $( document ).ready(function() {
         let selected_days = "7";

@@ -1468,6 +1468,36 @@
   an uncaught rejection instead of self-healing silently.
   No Python changes -- 132 tests passing, unchanged. Version bumped to
   **1.5.5**.
+- **1.5.6 -- two independent fixes reported after 1.5.5 shipped.**
+  (1) Top Talkers > Uncategorized Hosts was taking ~2 minutes per page
+  on nostromo's real dataset (8033 hosts, 2282 uncategorized), with low
+  CPU load throughout -- an I/O-bound signature, not a compute-bound
+  one. `ToptalkersController::uncategorizedAction()`'s query filters/
+  sorts a correlated subquery by `(peer_hostname, bucket_start)` with no
+  index covering it at all, forcing a full table scan per distinct
+  hostname; the sibling `peerAction()` does the same kind of lookup
+  keyed on `peer_ip`, which *is* indexed (`idx_ru_d_peer_recency`),
+  which is why that one was never slow. Added
+  `idx_ru_d_hostname_recency`/`idx_ru_h_hostname_recency` on
+  `(peer_hostname, bucket_start)`, mirroring the existing peer index
+  exactly -- same fix shape as the original `idx_ru_*_peer_recency`
+  indexes' own "7.5s -> 0.089s" precedent. Verified with a synthetic
+  dataset matching nostromo's reported scale: 9.6s -> 0.078s for the
+  identical query, same row count returned. Plain `CREATE INDEX IF NOT
+  EXISTS` additions need no migration handling (unlike a new column) --
+  they take effect on the next daemon restart against an existing,
+  populated database.
+  (2) Row hover highlighting requested for the grids generally.
+  OPNsense's own theme CSS (`opnsense-bootgrid.css`) turned out to
+  already have a `:hover` rule for Tabulator rows, but it's gated on
+  `.tabulator-selectable` (only present when a grid has row selection
+  enabled -- none of this plugin's grids do) and even then re-asserts
+  the exact same background color as the row's resting state, so it's a
+  no-op regardless of selection. Added an explicit override (a
+  translucent white overlay rather than a hardcoded color, so it holds
+  up under any theme) to `live.volt`/`history.volt`/`toptalkers.volt`.
+  No Python test changes -- 132 tests passing, unchanged (schema-only
+  addition, no new logic to cover). Version bumped to **1.5.6**.
 - **Not yet started**: the staticOverrides grid editor, proper repo
   signing before this pkg-repo is relied on for anything that matters,
   and a possible future "scheduled traffic blocking" feature (the
