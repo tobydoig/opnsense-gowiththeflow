@@ -1498,6 +1498,37 @@
   up under any theme) to `live.volt`/`history.volt`/`toptalkers.volt`.
   No Python test changes -- 132 tests passing, unchanged (schema-only
   addition, no new logic to cover). Version bumped to **1.5.6**.
+- **1.5.7 -- first real pass at `manual_categories.py`'s `OVERRIDES`**,
+  which had sat empty since it was introduced -- populated from a real
+  nostromo export of the Top Talkers "Uncategorized Hosts" tab (2282
+  hostnames), exactly the workflow its own docstring describes. Grouped
+  into buckets safe to categorize by domain suffix alone (Network
+  Infrastructure -- DNS root/TLD/registry servers, third-party DNS
+  providers, Microsoft's Azure Traffic Manager `*-msedge.net`
+  nameservers, NTP; Smart Home/IoT -- TP-Link/Tapo, Wyze, Ring, Tuya,
+  Firewalla, Hue, Ecobee, Garmin, Synology, Samsung health/cloud;
+  Gaming -- Star Citizen, Photon, several mobile-game backends; Cloud
+  Infrastructure -- Sky's own ISP-embedded CDN cache nodes; Communication
+  -- WebRTC/STUN signalling; Peer-to-Peer -- well-known UK residential-
+  broadband reverse-DNS). Measured against a large sample of the real
+  export: 312 of 2140 sampled hosts (14.6%) now resolve.
+  Deliberately NOT attempted: reverse-DNS PTR hosts under a generic VPS
+  provider (`*.ip.linodeusercontent.com`, `datapacket.com`, ...) -- the
+  hosting provider says nothing about what's actually running there, so
+  a suffix rule would be a guess, not a fact, unlike the buckets above
+  where the suffix itself is a reliable single-purpose signal. Also
+  skipped as a first-pass scope decision (not because they're unsafe):
+  general retail/news/finance company domains -- some, like bbc.co.uk,
+  genuinely span more than one category (News, Streaming/iPlayer,
+  Music/Sounds) and would need real per-subdomain judgment rather than
+  one bulk rule.
+  Worth noting for whoever deploys this: categorization happens when a
+  hostname is first resolved, not as a backfill job -- this won't
+  retroactively shrink the Uncategorized count for already-stored
+  history, only for new traffic going forward (old uncategorized rows
+  age out via the existing retention windows).
+  New test (`test_real_overrides_spot_check`) spot-checks a handful of
+  the real entries. 133 tests passing. Version bumped to **1.5.7**.
 - **Not yet started**: the staticOverrides grid editor, proper repo
   signing before this pkg-repo is relied on for anything that matters,
   and a possible future "scheduled traffic blocking" feature (the
