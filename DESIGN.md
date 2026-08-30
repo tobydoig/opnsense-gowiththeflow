@@ -1371,6 +1371,33 @@
   traffic in a way the test VM never surfaced.
   No Python changes -- 132 tests passing, unchanged. Version bumped to
   **1.5.2**.
+- **1.5.3 -- a real Performance recording after 1.5.2 shipped showed the
+  1.5.2 fixes hadn't actually removed the dominant per-tick cost.** Both
+  call stacks bottomed out in the same place: `Row.js calcHeight() ->
+  calcMaxHeight() -> Cell.js getHeight() -> offsetHeight` -- Tabulator's
+  own dynamic row-height re-measurement, a forced synchronous layout
+  read, running twice per tick: once per row inside `updateOrAddData()`
+  (83 of a 112ms task), and again as a full-table sweep right after (32
+  of a 40ms follow-up task). This is Tabulator's own built-in
+  bookkeeping, unrelated to 1.5.2's changes -- it runs regardless of
+  whether a row's content actually changed. Confirmed via Tabulator's
+  own bundled source (`tabulator.min.js`) that setting a fixed
+  `rowHeight` option skips this measuring chain entirely (`this.height
+  = rowHeight` instead of measuring). Set to `28` -- computed, not
+  guessed, from this table's real rendered cell metrics (`opnsense-
+  bootgrid.css`/`tabulator.min.css`: 4px cell padding, 15px font-size,
+  1.2 line-height, 1px border).
+  Verifying this required first working around an unrelated hiccup: the
+  test VM had rebooted mid-session (explaining an earlier SSH outage)
+  and the daemon hadn't come back -- traced to a real, separate gap
+  (this plugin has no boot-time auto-start wiring at all; the daemon
+  only ever starts via the pkg post-install script's one-time `onestart`
+  or a manual `configctl` call, so a plain reboot with no package
+  operation -- exactly what nostromo will eventually see -- leaves it
+  stopped indefinitely). Deliberately not fixed as part of this release;
+  flagged for its own follow-up.
+  No Python changes -- 132 tests passing, unchanged. Version bumped to
+  **1.5.3**.
 - **Not yet started**: the staticOverrides grid editor, proper repo
   signing before this pkg-repo is relied on for anything that matters,
   and a possible future "scheduled traffic blocking" feature (the

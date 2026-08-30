@@ -138,6 +138,24 @@
                 // update-then-setSort() call every tick is the one
                 // actually relied on for every tick after that.
                 initialSort: [{ column: "window_bytes_total", dir: "asc" }],
+                // Confirmed via a real Performance recording (and by
+                // reading Tabulator's own bundled source): every single
+                // updateOrAddData() call, per row, was triggering a
+                // synchronous height re-measurement (Row.js calcHeight()
+                // -> calcMaxHeight() -> Cell.js getHeight() -> a forced
+                // `offsetHeight` read), plus a second full-table sweep of
+                // the same measurement right after -- together the
+                // dominant cost of every ~5s tick. Tabulator's own
+                // calcHeight() skips all of that entirely and just uses
+                // this value directly when `rowHeight` is set (`this.
+                // table.options.rowHeight ? this.height = rowHeight :
+                // (...expensive measuring...)`). 28px is computed, not
+                // guessed, from this table's actual real rendered cell
+                // metrics (`opnsense-bootgrid.css`/`tabulator.min.css`:
+                // 4px top+bottom cell padding, 15px font-size, 1.2
+                // line-height, 1px border) -- comfortably covers every
+                // column here since none of them wrap (nowrap/ellipsis).
+                rowHeight: 28,
             }
         });
         addCsvExportButtonGWTF('grid-live-toptalkers', 'gowiththeflow-live-toptalkers.csv');
