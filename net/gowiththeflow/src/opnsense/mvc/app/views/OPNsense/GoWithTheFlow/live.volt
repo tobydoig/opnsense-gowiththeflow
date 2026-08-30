@@ -42,9 +42,6 @@
                                          // chartHistory's per-tick bucketing but is ALWAYS keyed by
                                          // local_ip (independent of the chart's own grouping toggle),
                                          // for the Top Talkers tab's window (LIVE_CHART_RANGE_MINUTES) byte columns
-    let topTalkersDefaultSortApplied = false;  // see renderLiveTopTalkers() -- forced exactly once,
-                                         // after the first real setData(), then left alone so it
-                                         // doesn't keep fighting a user's own manual re-sort
     let hostConnSeenTimes = {};         // local_ip -> Map<row_id, lastSeenMs> -- every *distinct*
                                          // connection (by full 5-tuple row_id, not just port) seen
                                          // open at any /overview poll in roughly the last
@@ -120,15 +117,17 @@
                     page: false,
                     columns: true,
                 },
-                // Also forced explicitly once in renderLiveTopTalkers()
-                // after the first real setData() -- confirmed live that
+                // Also re-forced explicitly after every single setData()
+                // call in renderLiveTopTalkers() -- confirmed live that
                 // neither this alone nor an imperative table.setSort()
                 // called from a "tableBuilt" handler (when the table
-                // still has zero rows) reliably survives into the data
-                // that arrives later via the repeated setData() calls
-                // this table lives on. Kept anyway as the correct
-                // declarative baseline; the setData().then() call is the
-                // one actually relied on.
+                // still has zero rows) survives into the data that
+                // arrives via this table's repeated setData() calls, and
+                // that even forcing it once after the *first* setData()
+                // stops holding once a later tick's setData() lands.
+                // Kept anyway as the correct declarative baseline/initial
+                // state; the setData().then() call every tick is the one
+                // actually relied on for every tick after that.
                 initialSort: [{ column: "window_bytes_total", dir: "asc" }],
             }
         });
@@ -137,6 +136,30 @@
         topTalkersTable.on("rowClick", function (e, row) {
             const data = row.getData();
             filterLiveTableByLocalHostGWTF(data.row_id, data.local);
+        });
+        // `data-type="numeric"` only picks a cell *formatter* (see
+        // opnsense_bootgrid.js's _parseColumns()) -- it never sets a real
+        // Tabulator `sorter`, so a column left at Tabulator's own default
+        // sorts as a string. That was invisible on every other column
+        // here because they're only ever sorted by a real user header
+        // click, by which point Tabulator has genuine numeric data to
+        // auto-type against -- but window_bytes_total is also sorted
+        // programmatically (see renderLiveTopTalkers()) the moment the
+        // very first tick's data lands, and that raced Tabulator's own
+        // type auto-detection and locked in a string sorter (confirmed
+        // live: it sorted lexicographically, e.g. "38.7 MB" before
+        // "5.6 MB"). Force a real numeric sorter explicitly on every
+        // byte/count column here so none of them are left to guesswork.
+        topTalkersTable.on("tableBuilt", function () {
+            [
+                "refresh_bytes_in", "refresh_bytes_out", "refresh_bytes_total", "refresh_conn_count",
+                "window_bytes_in", "window_bytes_out", "window_bytes_total", "window_conn_count",
+            ].forEach(function (field) {
+                const col = topTalkersTable.getColumn(field);
+                if (col) {
+                    col.updateDefinition({ sorter: "number" });
+                }
+            });
         });
 
         // The `data-sort="desc"` header attribute (also used, equally
@@ -447,6 +470,7 @@
         if (!wrapper) {
             return;
         }
+        const table = wrapper.getTable();
         const hostIps = new Set();
         (lastRows || []).forEach(function (row) { hostIps.add(row.local_ip); });
         hostWindowHistory.forEach(function (bucket) {
@@ -482,18 +506,23 @@
             };
         });
 
-        const setDataResult = wrapper.getTable().setData(rows);
-        // Forced exactly once, chained onto setData()'s own promise so it
-        // can't race the data actually landing (calling setSort() any
-        // earlier -- e.g. from a "tableBuilt" handler, or relying on
-        // initialSort alone -- was confirmed live to not reliably survive
-        // into data supplied by this table's repeated setData() calls).
-        // Gated on the flag rather than called every tick so it doesn't
-        // keep re-forcing itself over a user's own manual re-sort.
-        if (!topTalkersDefaultSortApplied && rows.length && setDataResult && setDataResult.then) {
-            topTalkersDefaultSortApplied = true;
+        // Confirmed live: Tabulator does NOT keep re-applying an active
+        // sort across this table's repeated setData() calls (each tick
+        // replaces the whole row set) -- a sort forced once after the
+        // first setData(), or set only via initialSort, visibly "sticks"
+        // in the header icon but stops actually ordering rows as soon as
+        // the next tick's setData() lands. So the current sort is read
+        // back out *before* setData() and re-forced after every single
+        // tick, not just the first -- this also means a user's own
+        // manual re-sort survives (it becomes "current" and gets
+        // reapplied on the next tick), not just the asc-by-default one.
+        const activeSort = table.getSorters().length
+            ? table.getSorters().map(function (s) { return { column: s.field, dir: s.dir }; })
+            : [{ column: "window_bytes_total", dir: "asc" }];
+        const setDataResult = table.setData(rows);
+        if (setDataResult && setDataResult.then) {
             setDataResult.then(function () {
-                wrapper.getTable().setSort("window_bytes_total", "asc");
+                table.setSort(activeSort);
             });
         }
     }

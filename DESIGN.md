@@ -1302,6 +1302,36 @@
   and fights a user's own later manual re-sort.
   No Python changes -- 132 tests passing, unchanged. Version bumped to
   **1.5.0**.
+- **1.5.1 -- two more real, confirmed-live Top Talkers sort bugs, found
+  right after 1.5.0 shipped.** (1) The "exactly once, gated behind a
+  flag" fix from 1.5.0 turned out not to be enough on its own: forcing
+  `setSort()` once after the *first* `setData()` visibly stuck in the
+  header's sort icon but stopped actually ordering rows as soon as the
+  *next* tick's `setData()` replaced the row set -- Tabulator does not
+  keep re-applying an active sort across this table's repeated
+  `setData()` calls. Fixed by reading back the table's current sorters
+  (`table.getSorters()`) before every single `setData()`, falling back
+  to `window_bytes_total`/asc only if none is set, and re-forcing that
+  same sort after *every* tick, not just the first -- this also means a
+  user's own manual re-sort now survives ticks, since it becomes
+  "current" and gets carried forward, rather than only the one
+  hardcoded default ever being protected. (2) Once that was actually
+  sticking, the user immediately spotted a second, different bug: "Total
+  (30 min)" was sorting lexicographically ("38.7 MB" before "5.6 MB"),
+  not by value -- while the grid's other byte/count columns sorted
+  correctly. Root cause: `data-type="numeric"` only selects a cell
+  *formatter* in `opnsense_bootgrid.js`'s column parsing, never a real
+  Tabulator `sorter` -- every other column here is only ever sorted by a
+  genuine user header click, by which point Tabulator has real numeric
+  data to auto-type against, but `window_bytes_total` is also sorted
+  *programmatically*, and doing so the moment the very first tick's data
+  lands raced Tabulator's own type auto-detection and locked the column
+  into a string sorter. Fixed by explicitly forcing `sorter: "number"`
+  via `column.updateDefinition(...)` on every byte/count column in this
+  grid once the table builds, rather than leaving any of them to
+  auto-detection guesswork.
+  No Python changes -- 132 tests passing, unchanged. Version bumped to
+  **1.5.1**.
 - **Not yet started**: the staticOverrides grid editor, proper repo
   signing before this pkg-repo is relied on for anything that matters,
   and a possible future "scheduled traffic blocking" feature (the
