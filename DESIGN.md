@@ -1398,6 +1398,42 @@
   flagged for its own follow-up.
   No Python changes -- 132 tests passing, unchanged. Version bumped to
   **1.5.3**.
+- **1.5.4 -- Top Talkers follow-ups from real production (nostromo)
+  testing.** (1) Default sort flipped back to descending on
+  `window_bytes_total` (the 1.5.0 "ascending" preference reversed again
+  per direct user request). (2) The "since refresh" byte columns were
+  too volatile at a live 5s cadence -- a single quiet or spiky tick swung
+  the number with no sense of a sustained rate -- replaced with a
+  trailing 1-minute moving-window sum (`GWTF_TOPTALKERS_RATE_WINDOW_MS`),
+  computed by filtering `hostWindowHistory`'s existing real per-tick
+  bucket timestamps rather than tracking a separate buffer; fields
+  renamed `refresh_bytes_*` -> `min1_bytes_*` and headers to "(1 min)"
+  since the old names no longer described what they held. (3) A real
+  Performance recording on nostromo (45 real hosts) showed
+  `updateOrAddData()` doesn't skip a row whose values are unchanged --
+  confirmed by reading Tabulator's own bundled source that it runs the
+  full per-cell height/layout bookkeeping (`Cell.setHeight()`, an
+  unconditional `offsetHeight` read) on every row it's given regardless.
+  Fixed by diffing against a new `lastToptalkersRowValues` cache
+  ourselves and only pushing rows that actually changed -- a quiet host
+  costs nothing on a tick where nothing moved.
+  A user-supplied AI-generated (Gemini, via Chrome DevTools' "Ask AI")
+  second-opinion suggested further fixes; each was checked against this
+  project's real bundled Tabulator source rather than trusted at face
+  value. `blockRedraw()`/`restoreRedraw()` were confirmed real and
+  adopted -- wrapping the stale-host `deleteRow()` (now one array call
+  instead of one call per host, also confirmed via source) and
+  `updateOrAddData()` together so a tick with both produces exactly one
+  consolidated render pass. `renderVertical: "virtual"` was rejected:
+  the wrapper's own source deliberately defaults virtual DOM *off*
+  ("pages where we expect this will speed up rendering a lot, i.e. log
+  pages") and `scrollBarCheck()` (the AI's flagged hotspot) was confirmed
+  to run after every render regardless of virtual/basic mode -- not
+  virtual-DOM-specific, and not a fit for this table's small, bounded
+  row count. "Batch updates instead of row-by-row" was already true of
+  this code (one `updateOrAddData()` call per tick, not per message).
+  No Python changes -- 132 tests passing, unchanged. Version bumped to
+  **1.5.4**.
 - **Not yet started**: the staticOverrides grid editor, proper repo
   signing before this pkg-repo is relied on for anything that matters,
   and a possible future "scheduled traffic blocking" feature (the

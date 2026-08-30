@@ -18,6 +18,11 @@
     // "Refresh every" dropdown still exists, but now only controls how
     // often the Table tab/Graph view poll for freshness.
     const LIVE_CHART_RANGE_MINUTES = 30;
+    // Top Talkers' "1 min" byte columns -- a trailing moving window, not
+    // "since the last poll" (that was too volatile at a 5s cadence, per
+    // real user feedback: a single big/idle tick made the number swing
+    // wildly with no sense of a sustained rate).
+    const GWTF_TOPTALKERS_RATE_WINDOW_MS = 60000;
     let liveChartTopN = 10;            // Line/Bar chart's line cap, user-configurable -- 0 means "all"
     let liveChartLogScale = false;     // log y-axis so a big spike doesn't flatten smaller signals
     let groupColorSlots = new Map();   // raw key -> GWTF_PALETTE index, stable across re-ranking --
@@ -35,9 +40,6 @@
     let localHostLabels = {};           // local_ip -> display label, ALWAYS populated regardless of
                                          // the chart's own local_ip/peer_port grouping toggle -- the
                                          // Top Talkers tab is always grouped by local host
-    let sinceRefreshByHost = {};        // local_ip -> {bytesIn, bytesOut} from only the most recently
-                                         // arrived tick batch -- reset and rebuilt fresh every tick,
-                                         // not accumulated, for the Top Talkers tab's "since refresh" columns
     let hostWindowHistory = [];         // [{time, hosts: {local_ip: {bytesIn, bytesOut}}}] -- mirrors
                                          // chartHistory's per-tick bucketing but is ALWAYS keyed by
                                          // local_ip (independent of the chart's own grouping toggle),
@@ -48,6 +50,12 @@
                                          // LIVE_CHART_RANGE_MINUTES, self-pruned by wall-clock time in
                                          // updateLiveOverview() so a host that's gone quiet still ages
                                          // out after the window passes rather than staying stuck
+    let lastToptalkersRowValues = {};   // row_id -> last-pushed row object -- confirmed live (Performance
+                                         // panel, real production traffic) that Tabulator's own
+                                         // updateOrAddData() does NOT skip a row whose field values are
+                                         // unchanged; it still runs the full per-cell height/layout
+                                         // bookkeeping regardless. renderLiveTopTalkers() diffs against
+                                         // this cache itself and only pushes rows that actually changed.
     // gowiththeflowd.py's own POLL_INTERVAL_S -- live_ticks genuinely
     // can't produce a new tick faster than this, and is also exactly the
     // real spacing between the tick_time values live/series returns, so
@@ -137,7 +145,7 @@
                 // correct declarative baseline/initial state; the
                 // update-then-setSort() call every tick is the one
                 // actually relied on for every tick after that.
-                initialSort: [{ column: "window_bytes_total", dir: "asc" }],
+                initialSort: [{ column: "window_bytes_total", dir: "desc" }],
                 // Confirmed via a real Performance recording (and by
                 // reading Tabulator's own bundled source): every single
                 // updateOrAddData() call, per row, was triggering a
@@ -179,7 +187,7 @@
         // byte/count column here so none of them are left to guesswork.
         topTalkersTable.on("tableBuilt", function () {
             [
-                "refresh_bytes_in", "refresh_bytes_out", "refresh_bytes_total", "refresh_conn_count",
+                "min1_bytes_in", "min1_bytes_out", "min1_bytes_total", "refresh_conn_count",
                 "window_bytes_in", "window_bytes_out", "window_bytes_total", "window_conn_count",
             ].forEach(function (field) {
                 const col = topTalkersTable.getColumn(field);
@@ -442,21 +450,6 @@
     // chartHistory's existing {time, groups} shape, summed by whichever
     // of local_ip/peer_port is currently selected.
     function gwtfAppendSeriesTicks(ticks) {
-        // Rebuilt fresh every call (not accumulated) -- this is exactly
-        // "since the last real update," which is all of whatever ticks
-        // just arrived, regardless of how many tick_times they span (a
-        // slow-polling browser catching up covers more than one).
-        sinceRefreshByHost = {};
-        ticks.forEach(function (row) {
-            const bytesIn = Number(row.delta_bytes_in) || 0;
-            const bytesOut = Number(row.delta_bytes_out) || 0;
-            if (!sinceRefreshByHost[row.local_ip]) {
-                sinceRefreshByHost[row.local_ip] = { bytesIn: 0, bytesOut: 0 };
-            }
-            sinceRefreshByHost[row.local_ip].bytesIn += bytesIn;
-            sinceRefreshByHost[row.local_ip].bytesOut += bytesOut;
-        });
-
         if (!ticks.length) {
             return;
         }
@@ -504,10 +497,10 @@
     }
 
     // Every local host seen either in the current open-session snapshot
-    // (for "since refresh" conn counts) or anywhere in the retained
-    // window (for hosts that were busy but have since gone quiet) gets a
-    // row -- a host isn't dropped just because it has no open connections
-    // left at this exact instant.
+    // (for open-conn counts) or anywhere in the retained window (for
+    // hosts that were busy but have since gone quiet) gets a row -- a
+    // host isn't dropped just because it has no open connections left at
+    // this exact instant.
     function renderLiveTopTalkers() {
         const wrapper = $("#grid-live-toptalkers").data('UIBootgrid');
         if (!wrapper) {
@@ -538,8 +531,27 @@
             connCountByHost[row.local_ip] = (connCountByHost[row.local_ip] || 0) + 1;
         });
 
+        // "1 min" byte columns: a trailing moving window over
+        // hostWindowHistory's real per-tick bucket timestamps, not "sum
+        // of whatever ticks arrived since the last poll" -- that varied
+        // with the poll interval and made the number swing volatile tick
+        // to tick, per real user feedback. Reuses the same bucket history
+        // the 30-minute window columns already retain, just with a
+        // shorter look-back cutoff.
+        const oneMinCutoffMs = Date.now() - GWTF_TOPTALKERS_RATE_WINDOW_MS;
+        const oneMinBuckets = hostWindowHistory.filter(function (bucket) {
+            return bucket.time.getTime() >= oneMinCutoffMs;
+        });
+
         const rows = Array.from(hostIps).map(function (ip) {
-            const refresh = sinceRefreshByHost[ip] || { bytesIn: 0, bytesOut: 0 };
+            let min1BytesIn = 0, min1BytesOut = 0;
+            oneMinBuckets.forEach(function (bucket) {
+                const h = bucket.hosts[ip];
+                if (h) {
+                    min1BytesIn += h.bytesIn;
+                    min1BytesOut += h.bytesOut;
+                }
+            });
 
             let windowBytesIn = 0, windowBytesOut = 0;
             hostWindowHistory.forEach(function (bucket) {
@@ -554,9 +566,9 @@
             return {
                 row_id: ip,
                 local: localHostLabels[ip] || ip,
-                refresh_bytes_in: refresh.bytesIn,
-                refresh_bytes_out: refresh.bytesOut,
-                refresh_bytes_total: refresh.bytesIn + refresh.bytesOut,
+                min1_bytes_in: min1BytesIn,
+                min1_bytes_out: min1BytesOut,
+                min1_bytes_total: min1BytesIn + min1BytesOut,
                 refresh_conn_count: connCountByHost[ip] || 0,
                 window_bytes_in: windowBytesIn,
                 window_bytes_out: windowBytesOut,
@@ -565,32 +577,68 @@
             };
         });
 
-        // Confirmed live (browser Performance panel): a full table.setData()
-        // every ~5s tick -- even for hosts whose numbers hadn't changed at
-        // all -- was forcing a style recalc/layout pass across every row,
-        // and got measurably worse as more distinct hosts accumulated over
-        // a session (exactly the "gets slower after a few minutes"
-        // symptom). updateOrAddData() only touches rows whose fields
-        // actually changed instead of tearing down and rebuilding the
-        // whole table; it never removes rows on its own, so hosts that
-        // aged out of every source above are deleted explicitly.
+        // Confirmed live (browser Performance panel, real production
+        // traffic): Tabulator's own updateOrAddData() does NOT skip a row
+        // whose field values are unchanged -- every row it's given still
+        // runs the full per-cell height/layout bookkeeping (Row.js/
+        // Cell.js's own setCellHeight()/setHeight(), which reads
+        // offsetHeight unconditionally, confirmed by reading Tabulator's
+        // bundled source), regardless of whether anything actually
+        // changed. So the diff is done here instead: only rows that
+        // differ from what was last pushed are included at all -- a
+        // quiet host that hasn't moved this tick costs nothing.
+        const changedRows = [];
+        rows.forEach(function (row) {
+            const prev = lastToptalkersRowValues[row.row_id];
+            const changed = !prev || Object.keys(row).some(function (k) { return prev[k] !== row[k]; });
+            if (changed) {
+                changedRows.push(row);
+                lastToptalkersRowValues[row.row_id] = row;
+            }
+        });
+
+        // updateOrAddData() never removes rows on its own, so hosts that
+        // aged out of every source above are deleted explicitly (and
+        // dropped from the diff cache, so a host that reappears later
+        // isn't compared against stale numbers from its last visit).
+        // deleteRow() accepts an array -- one call for every stale host
+        // instead of one call per host, confirmed via Tabulator's own
+        // source (`deleteRow(e){...Array.isArray(e)||(e=[e])...}`).
         const currentIds = new Set(table.getData().map(function (r) { return r.row_id; }));
         const newIds = new Set(rows.map(function (r) { return r.row_id; }));
         const staleIds = Array.from(currentIds).filter(function (id) { return !newIds.has(id); });
-        staleIds.forEach(function (id) { table.deleteRow(id); });
 
-        // Same reasoning as before for re-forcing the sort every tick --
-        // Tabulator doesn't keep re-applying an active sort across data
-        // updates on its own. Read back whatever's current (or default to
-        // window_bytes_total/asc) so a user's own manual re-sort survives
-        // ticks too, not just the default.
-        const activeSort = table.getSorters().length
-            ? table.getSorters().map(function (s) { return { column: s.field, dir: s.dir }; })
-            : [{ column: "window_bytes_total", dir: "asc" }];
-        const updateResult = table.updateOrAddData(rows);
-        if (updateResult && updateResult.then) {
-            updateResult.then(function () {
-                table.setSort(activeSort);
+        // blockRedraw()/restoreRedraw() are real, documented Tabulator
+        // methods (confirmed in its bundled source) that defer the
+        // actual render pass until explicitly released -- without this,
+        // a tick with both stale hosts to remove AND hosts to update
+        // would trigger a separate redraw/recalc pass for each deleteRow
+        // call plus another for updateOrAddData, instead of exactly one
+        // pass covering everything this tick actually changed.
+        if (staleIds.length || changedRows.length) {
+            table.blockRedraw();
+            const pending = [];
+            if (staleIds.length) {
+                pending.push(table.deleteRow(staleIds));
+                staleIds.forEach(function (id) { delete lastToptalkersRowValues[id]; });
+            }
+            if (changedRows.length) {
+                pending.push(table.updateOrAddData(changedRows));
+            }
+            Promise.all(pending).then(function () {
+                table.restoreRedraw();
+                if (changedRows.length) {
+                    // Tabulator doesn't keep re-applying an active sort
+                    // across data updates on its own -- read back
+                    // whatever's current (or default to window_bytes_
+                    // total/desc) so a user's own manual re-sort
+                    // survives ticks too, not just the default. Only
+                    // needed when something actually changed this tick.
+                    const activeSort = table.getSorters().length
+                        ? table.getSorters().map(function (s) { return { column: s.field, dir: s.dir }; })
+                        : [{ column: "window_bytes_total", dir: "desc" }];
+                    table.setSort(activeSort);
+                }
             });
         }
     }
@@ -1389,16 +1437,16 @@
     </div>
     <div id="live-toptalkers" class="tab-pane fade in">
         <p class="help-block">
-            {{ lang._('Click a host to see its connections in the Table tab. "Since refresh" reflects the server\'s real ~5-second tick; "window" covers the same 30-minute range as the Overview chart.') }}
+            {{ lang._('Click a host to see its connections in the Table tab. "1 min" is a trailing moving window (not just the last refresh); "window" covers the same 30-minute range as the Overview chart.') }}
         </p>
         <table id="grid-live-toptalkers" class="table table-condensed table-hover table-striped table-responsive">
             <thead>
                 <tr>
                     <th data-column-id="row_id" data-identifier="true" data-visible="false">id</th>
                     <th data-column-id="local" data-type="string">{{ lang._('Local Host') }}</th>
-                    <th data-column-id="refresh_bytes_in" data-type="numeric" data-formatter="bytesformatter">{{ lang._('In (since refresh)') }}</th>
-                    <th data-column-id="refresh_bytes_out" data-type="numeric" data-formatter="bytesformatter">{{ lang._('Out (since refresh)') }}</th>
-                    <th data-column-id="refresh_bytes_total" data-type="numeric" data-formatter="bytesformatter">{{ lang._('Total (since refresh)') }}</th>
+                    <th data-column-id="min1_bytes_in" data-type="numeric" data-formatter="bytesformatter">{{ lang._('In (1 min)') }}</th>
+                    <th data-column-id="min1_bytes_out" data-type="numeric" data-formatter="bytesformatter">{{ lang._('Out (1 min)') }}</th>
+                    <th data-column-id="min1_bytes_total" data-type="numeric" data-formatter="bytesformatter">{{ lang._('Total (1 min)') }}</th>
                     <th data-column-id="refresh_conn_count" data-type="numeric" data-width="8em">{{ lang._('Open Conns') }}</th>
                     <th data-column-id="window_bytes_in" data-type="numeric" data-formatter="bytesformatter">{{ lang._('In (30 min)') }}</th>
                     <th data-column-id="window_bytes_out" data-type="numeric" data-formatter="bytesformatter">{{ lang._('Out (30 min)') }}</th>
