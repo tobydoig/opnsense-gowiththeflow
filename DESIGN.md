@@ -1332,6 +1332,45 @@
   auto-detection guesswork.
   No Python changes -- 132 tests passing, unchanged. Version bumped to
   **1.5.1**.
+- **1.5.2 -- client-side performance fix for the Live page, after the
+  user reported it getting noticeably slow (and, on nostromo under real
+  traffic, DevTools' own Performance panel choking on the recorded
+  trace) after leaving Live -> Top Talkers open for a few minutes.**
+  Chrome's own "Forced reflow"/"Recalculate Style" violations pointed at
+  three real, independent causes, all in `live.volt`'s ~5s poll handler:
+  (1) `renderLiveChart()`/`renderLiveGraph()` (the Overview tab's
+  chart/graph) ran their full Chart.js `.update()`/`.resize()` plus a
+  layout-reading helper (`gwtfFillTabHeight()`, two `getBoundingClientRect()`
+  calls + a style write) on *every* tick regardless of which tab was
+  actually on screen -- wasted work, invisible to the user, whenever
+  they were sitting on Top Talkers or Table instead. Both now skip via a
+  new `gwtfIsTabPaneActive()` check, with `shown.bs.tab` handlers on
+  Overview/Top Talkers forcing one immediate re-render from already-cached
+  data the moment either tab becomes visible again (mirroring the
+  existing Graph-view-switch pattern), so switching tabs never shows
+  data staler than the last ~5s tick. (2) Top Talkers itself replaced
+  its *entire* table via `table.setData(rows)` every tick, even for
+  hosts whose numbers hadn't changed at all -- forcing a full style
+  recalc/layout pass across every row, and scaling directly with
+  distinct-host count (explaining why nostromo's real traffic hit this
+  far harder than the quiet test VM). Switched to Tabulator's
+  `updateOrAddData()` (only touches changed rows) plus explicit
+  `deleteRow()` calls for hosts that aged out (which `updateOrAddData()`
+  never removes on its own). Making that switch surfaced a real latent
+  bug: this grid's `row_id` was never actually wired into Tabulator's
+  internal row index -- confirmed by reading the wrapper source
+  (`opnsense_bootgrid.js`) that the real index field is
+  `this.options.datakey`, silently defaulting to a nonexistent `uuid`
+  field, harmless under the old full-`setData()` approach (which never
+  needed a working index) but would have collided every row onto the
+  same undefined index under the new incremental one. Fixed by passing
+  `datakey: 'row_id'` explicitly at the grid's init. (3) The "Open
+  Conns" column recomputed a full re-filter of all open connections once
+  per host (O(hosts * connections)) instead of a single pass building a
+  per-host count map (O(hosts + connections)) -- also scales with real
+  traffic in a way the test VM never surfaced.
+  No Python changes -- 132 tests passing, unchanged. Version bumped to
+  **1.5.2**.
 - **Not yet started**: the staticOverrides grid editor, proper repo
   signing before this pkg-repo is relied on for anything that matters,
   and a possible future "scheduled traffic blocking" feature (the

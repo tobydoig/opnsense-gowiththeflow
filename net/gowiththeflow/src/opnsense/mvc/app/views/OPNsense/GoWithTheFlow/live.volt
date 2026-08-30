@@ -90,6 +90,15 @@
         // sort/filter/paginate to Tabulator's own local-data mode; rows
         // are pushed in via setData() each tick instead of an ajax poll.
         $("#grid-live-toptalkers").UIBootgrid({
+            // Required for renderLiveTopTalkers()'s updateOrAddData()/
+            // deleteRow() calls to actually match rows by host -- without
+            // this the wrapper's real Tabulator `index` silently defaults
+            // to a `uuid` field this data never has (confirmed by reading
+            // the wrapper source: `datakey` here becomes `this.options.
+            // datakey`, which becomes Tabulator's own `index` config), so
+            // every row would collide on the same undefined index instead
+            // of being matched/updated individually.
+            datakey: 'row_id',
             options: {
                 ajax: false,
                 selection: false,
@@ -117,16 +126,16 @@
                     page: false,
                     columns: true,
                 },
-                // Also re-forced explicitly after every single setData()
-                // call in renderLiveTopTalkers() -- confirmed live that
+                // Also re-forced explicitly after every single data
+                // update in renderLiveTopTalkers() -- confirmed live that
                 // neither this alone nor an imperative table.setSort()
                 // called from a "tableBuilt" handler (when the table
-                // still has zero rows) survives into the data that
-                // arrives via this table's repeated setData() calls, and
-                // that even forcing it once after the *first* setData()
-                // stops holding once a later tick's setData() lands.
-                // Kept anyway as the correct declarative baseline/initial
-                // state; the setData().then() call every tick is the one
+                // still has zero rows) survives into data arriving via
+                // this table's repeated per-tick updates, and that even
+                // forcing it once after the *first* update stops holding
+                // once a later tick's update lands. Kept anyway as the
+                // correct declarative baseline/initial state; the
+                // update-then-setSort() call every tick is the one
                 // actually relied on for every tick after that.
                 initialSort: [{ column: "window_bytes_total", dir: "asc" }],
             }
@@ -294,6 +303,22 @@
             // time -- an IntersectionObserver elsewhere already handles
             // redrawing it once visible, matching every other tabbed grid
             // in this plugin.
+        });
+
+        // Overview and Top Talkers both skip their own per-tick render
+        // while hidden (see gwtfIsTabPaneActive() and its call sites) --
+        // force one immediate render from whatever's already cached the
+        // moment either becomes visible again, so switching tabs doesn't
+        // show data that's stale by more than the last ~5s tick.
+        $('a[href="#live-overview"]').on('shown.bs.tab', function () {
+            renderLiveChart();
+            if ($("#live-chart-type").val() === 'graph' && lastRows) {
+                renderLiveGraph(lastRows);
+            }
+        });
+
+        $('a[href="#live-toptalkers"]').on('shown.bs.tab', function () {
+            renderLiveTopTalkers();
         });
 
         $("#live-filter-clear").on('click', function () {
@@ -470,6 +495,13 @@
         if (!wrapper) {
             return;
         }
+        // Skip entirely while this pane isn't on screen -- re-rendered
+        // immediately from the same always-current bookkeeping the
+        // moment the user switches to it (see the "shown.bs.tab" handler
+        // below), so nothing is lost, just deferred.
+        if (!gwtfIsTabPaneActive('live-toptalkers')) {
+            return;
+        }
         const table = wrapper.getTable();
         const hostIps = new Set();
         (lastRows || []).forEach(function (row) { hostIps.add(row.local_ip); });
@@ -478,9 +510,18 @@
         });
         Object.keys(hostConnSeenTimes).forEach(function (ip) { hostIps.add(ip); });
 
+        // One pass over lastRows building a per-host count, rather than
+        // re-filtering the whole list once per host (O(hosts + rows)
+        // instead of O(hosts * rows) -- with enough distinct hosts on a
+        // busy network this was a real, growing contributor to the
+        // "message handler took Nms" cost as more hosts accumulated).
+        const connCountByHost = {};
+        (lastRows || []).forEach(function (row) {
+            connCountByHost[row.local_ip] = (connCountByHost[row.local_ip] || 0) + 1;
+        });
+
         const rows = Array.from(hostIps).map(function (ip) {
             const refresh = sinceRefreshByHost[ip] || { bytesIn: 0, bytesOut: 0 };
-            const connCount = (lastRows || []).filter(function (row) { return row.local_ip === ip; }).length;
 
             let windowBytesIn = 0, windowBytesOut = 0;
             hostWindowHistory.forEach(function (bucket) {
@@ -498,7 +539,7 @@
                 refresh_bytes_in: refresh.bytesIn,
                 refresh_bytes_out: refresh.bytesOut,
                 refresh_bytes_total: refresh.bytesIn + refresh.bytesOut,
-                refresh_conn_count: connCount,
+                refresh_conn_count: connCountByHost[ip] || 0,
                 window_bytes_in: windowBytesIn,
                 window_bytes_out: windowBytesOut,
                 window_bytes_total: windowBytesIn + windowBytesOut,
@@ -506,22 +547,31 @@
             };
         });
 
-        // Confirmed live: Tabulator does NOT keep re-applying an active
-        // sort across this table's repeated setData() calls (each tick
-        // replaces the whole row set) -- a sort forced once after the
-        // first setData(), or set only via initialSort, visibly "sticks"
-        // in the header icon but stops actually ordering rows as soon as
-        // the next tick's setData() lands. So the current sort is read
-        // back out *before* setData() and re-forced after every single
-        // tick, not just the first -- this also means a user's own
-        // manual re-sort survives (it becomes "current" and gets
-        // reapplied on the next tick), not just the asc-by-default one.
+        // Confirmed live (browser Performance panel): a full table.setData()
+        // every ~5s tick -- even for hosts whose numbers hadn't changed at
+        // all -- was forcing a style recalc/layout pass across every row,
+        // and got measurably worse as more distinct hosts accumulated over
+        // a session (exactly the "gets slower after a few minutes"
+        // symptom). updateOrAddData() only touches rows whose fields
+        // actually changed instead of tearing down and rebuilding the
+        // whole table; it never removes rows on its own, so hosts that
+        // aged out of every source above are deleted explicitly.
+        const currentIds = new Set(table.getData().map(function (r) { return r.row_id; }));
+        const newIds = new Set(rows.map(function (r) { return r.row_id; }));
+        const staleIds = Array.from(currentIds).filter(function (id) { return !newIds.has(id); });
+        staleIds.forEach(function (id) { table.deleteRow(id); });
+
+        // Same reasoning as before for re-forcing the sort every tick --
+        // Tabulator doesn't keep re-applying an active sort across data
+        // updates on its own. Read back whatever's current (or default to
+        // window_bytes_total/asc) so a user's own manual re-sort survives
+        // ticks too, not just the default.
         const activeSort = table.getSorters().length
             ? table.getSorters().map(function (s) { return { column: s.field, dir: s.dir }; })
             : [{ column: "window_bytes_total", dir: "asc" }];
-        const setDataResult = table.setData(rows);
-        if (setDataResult && setDataResult.then) {
-            setDataResult.then(function () {
+        const updateResult = table.updateOrAddData(rows);
+        if (updateResult && updateResult.then) {
+            updateResult.then(function () {
                 table.setSort(activeSort);
             });
         }
@@ -647,11 +697,29 @@
         el.style.height = height + 'px';
     }
 
+    // Every ~5s poll tick used to fully re-render whichever of
+    // Overview/Top Talkers/Table tab-panes wasn't even the one on
+    // screen -- confirmed via the browser's own Performance panel that
+    // this was real, wasted style-recalc/layout work (Chart.js's own
+    // .update()/.resize(), plus gwtfFillTabHeight()'s layout reads)
+    // happening every tick regardless of which tab the user actually
+    // had open. Each render function below skips its own DOM work when
+    // its pane isn't active; the corresponding "shown.bs.tab" handlers
+    // force one immediate re-render from already-cached data on switch,
+    // so there's no staleness worse than the last tick's data.
+    function gwtfIsTabPaneActive(paneId) {
+        const el = document.getElementById(paneId);
+        return !!el && el.classList.contains('active');
+    }
+
     function renderLiveChart() {
         const groupBy = $("#live-group-by").val() || 'local_ip';
         const chartType = $("#live-chart-type").val() || 'line';
         window.__gwtfGroupBy = groupBy;
         if (chartType === 'graph') {
+            return;
+        }
+        if (!gwtfIsTabPaneActive('live-overview')) {
             return;
         }
 
@@ -953,7 +1021,7 @@
     // decide what's shown at all.
     function renderLiveGraph(rows) {
         const wrapper = document.getElementById('live-graph-wrapper');
-        if (!wrapper || $("#live-chart-type").val() !== 'graph') {
+        if (!wrapper || $("#live-chart-type").val() !== 'graph' || !gwtfIsTabPaneActive('live-overview')) {
             return;
         }
 
