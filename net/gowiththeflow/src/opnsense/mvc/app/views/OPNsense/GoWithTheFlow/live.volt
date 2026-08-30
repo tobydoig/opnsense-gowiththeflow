@@ -344,6 +344,37 @@
         });
 
         $('a[href="#live-toptalkers"]').on('shown.bs.tab', function () {
+            // Confirmed live on nostromo: this grid is constructed while
+            // its pane is still hidden (`display:none`, since Overview is
+            // the default active tab), and Tabulator lays out a hidden
+            // table against a zero-size container -- its own built-in
+            // IntersectionObserver (see opnsense_bootgrid.js) calls a
+            // plain `redraw()` once the pane becomes visible, but that
+            // wasn't enough to fully fix an already-degenerate header
+            // (seen as the header nearly collapsed to a few pixels on
+            // first view). `redraw(true)` forces Tabulator to fully
+            // recompute layout against the now-real dimensions, same as
+            // if the table had just been resized.
+            topTalkersTable.redraw(true);
+            // Same root cause as the header collapse: `initialSort`'s own
+            // effect on the header's sort-arrow icon didn't survive
+            // construction while hidden either, and renderLiveTopTalkers()
+            // only calls setSort() when there's actually data to push --
+            // if the tab is shown before the very first tick has delivered
+            // any rows yet, the arrow wouldn't otherwise appear until that
+            // tick lands (confirmed live: "arrow only appears after the
+            // next refresh"). Force it explicitly here too, wrapped
+            // defensively since a sort-reapply this early has already
+            // been seen to throw inside Tabulator's own Sort.js once
+            // (see the .catch() in renderLiveTopTalkers()).
+            try {
+                const activeSort = topTalkersTable.getSorters().length
+                    ? topTalkersTable.getSorters().map(function (s) { return { column: s.field, dir: s.dir }; })
+                    : [{ column: "window_bytes_total", dir: "desc" }];
+                topTalkersTable.setSort(activeSort);
+            } catch (e) {
+                console.warn('gowiththeflow: top talkers initial sort-icon set failed (self-heals next tick)', e);
+            }
             renderLiveTopTalkers();
         });
 
@@ -639,6 +670,16 @@
                         : [{ column: "window_bytes_total", dir: "desc" }];
                     table.setSort(activeSort);
                 }
+            }).catch(function (e) {
+                // Confirmed live on nostromo: restoreRedraw()'s own
+                // internal re-sort pass (Tabulator's Sort.js) can throw
+                // if this table's very first real redraw after becoming
+                // visible races Tabulator's own layout recovery (see the
+                // "shown.bs.tab" handler's redraw(true) call, which fixes
+                // the root cause) -- self-heals by the very next tick
+                // either way, so this is swallowed rather than left as
+                // an uncaught rejection in the console.
+                console.warn('gowiththeflow: top talkers redraw hiccup (self-heals next tick)', e);
             });
         }
     }

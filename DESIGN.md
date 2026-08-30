@@ -1434,6 +1434,40 @@
   this code (one `updateOrAddData()` call per tick, not per message).
   No Python changes -- 132 tests passing, unchanged. Version bumped to
   **1.5.4**.
+- **1.5.5 -- two Top Talkers layout bugs found live on nostromo right
+  after 1.5.4 shipped, both from the same root cause.** This grid is
+  constructed while its own tab-pane is still hidden (`display:none`,
+  since Overview is the default active tab) -- Tabulator lays out a
+  table against a zero-size container. (1) The header rendered nearly
+  collapsed (a few pixels of text) the first time the tab was shown
+  after a fresh page load; the wrapper's own built-in
+  `IntersectionObserver` (`opnsense_bootgrid.js`) already calls a plain
+  `redraw()` when a grid becomes visible, but that wasn't enough to
+  recover a header laid out against zero width. Fixed by calling
+  `table.redraw(true)` (confirmed via Tabulator's bundled source that
+  `force=true` fully recomputes both column and row layout) in the
+  `#live-toptalkers` tab's `shown.bs.tab` handler. (2) That same
+  hidden-at-construction state meant `initialSort`'s effect on the
+  header's sort-arrow icon didn't render either, and
+  `renderLiveTopTalkers()` only calls `setSort()` when there's actual
+  data to push -- switching to the tab before the very first tick had
+  delivered any rows left the arrow missing until that tick landed.
+  Fixed by forcing the sort explicitly in the same handler, wrapped
+  defensively (see below).
+  Chasing (1) surfaced a real, uncaught exception from 1.5.4's own
+  `blockRedraw()`/`restoreRedraw()` change: `restoreRedraw()`
+  internally re-applies the current sort as part of its own recovery,
+  which threw inside Tabulator's bundled `Sort.js` (`setColumnHeader()`,
+  `e.getElement(...).setAttribute is not a function`) specifically while
+  the header element was still in that half-initialized state --
+  confirmed via the real browser stack trace the user captured on
+  nostromo. Since the actual fix is (1) above (a properly laid-out
+  header no longer hits this), the `.catch()`/`try`-`catch` added around
+  both sort-forcing call sites is defense-in-depth, not the real fix --
+  it just keeps a residual Tabulator-internal hiccup from surfacing as
+  an uncaught rejection instead of self-healing silently.
+  No Python changes -- 132 tests passing, unchanged. Version bumped to
+  **1.5.5**.
 - **Not yet started**: the staticOverrides grid editor, proper repo
   signing before this pkg-repo is relied on for anything that matters,
   and a possible future "scheduled traffic blocking" feature (the
