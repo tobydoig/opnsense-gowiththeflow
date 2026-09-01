@@ -12,7 +12,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from scapy.layers.dns import DNS
+from scapy.layers.dns import DNS, dnstypes
+from scapy.layers.inet import IP
+from scapy.layers.inet6 import IPv6
 from scapy.packet import Packet
 
 MIN_TTL = 60
@@ -21,12 +23,46 @@ MAX_TTL = 24 * 3600
 _A = 1
 _AAAA = 28
 
+# RFC1035/2308 names, keyed by the raw numeric rcode -- deliberately not
+# scapy's own rcode field i2s table, which uses its own wording
+# ("name-error", "server-failure") rather than the conventional DNS
+# terms ("NXDOMAIN", "SERVFAIL") a user actually recognizes.
+_RCODE_NAMES = {
+    0: "NOERROR", 1: "FORMERR", 2: "SERVFAIL", 3: "NXDOMAIN",
+    4: "NOTIMP", 5: "REFUSED", 6: "YXDOMAIN", 7: "YXRRSET",
+    8: "NXRRSET", 9: "NOTAUTH", 10: "NOTZONE",
+}
+
+# How many individual answer records get folded into one QueryEvent's
+# `answers` string -- defends against a pathological large response
+# (a real ANY-type query, or a long CNAME chain) producing one
+# unreasonably wide value.
+_MAX_ANSWERS_SHOWN = 20
+
+
+def _rcode_name(rcode: int) -> str:
+    return _RCODE_NAMES.get(rcode, f"RCODE{rcode}")
+
+
+def _type_name(type_id: int) -> str:
+    return dnstypes.get(type_id) or f"TYPE{type_id}"
+
 
 @dataclass(frozen=True)
 class HostnameObservation:
     ip: str
     hostname: str
     ttl: int
+    seen_at: int
+
+
+@dataclass(frozen=True)
+class QueryEvent:
+    local_ip: str
+    query_name: str
+    query_type: str
+    rcode: str
+    answers: str | None
     seen_at: int
 
 
@@ -38,6 +74,20 @@ def _decode_name(name) -> str:
     if isinstance(name, bytes):
         name = name.decode("ascii", errors="replace")
     return name.rstrip(".")
+
+
+def _decode_rdata(rdata) -> str:
+    # Name-shaped rdata (CNAME/NS/PTR/...) comes back from scapy as
+    # bytes, same as a qname; a plain address (A/AAAA) already comes
+    # back as a str. Anything else (a record type this project has no
+    # specific handling for) falls back to a raw str() rather than
+    # crashing -- same defensiveness extract_observations() already
+    # applies to A/AAAA's own rdata.
+    if isinstance(rdata, bytes):
+        return _decode_name(rdata)
+    if isinstance(rdata, str):
+        return rdata
+    return str(rdata)
 
 
 def extract_observations(packet: Packet, seen_at: int) -> list[HostnameObservation]:
@@ -70,7 +120,65 @@ def extract_observations(packet: Packet, seen_at: int) -> list[HostnameObservati
     return observations
 
 
-def sniff_loop(interfaces: list[str], on_observation, bpf_filter: str = "udp port 53 or tcp port 53") -> None:
+def extract_query_events(packet: Packet, seen_at: int) -> QueryEvent | None:
+    """Extracts one QueryEvent per DNS response transaction -- unlike
+    extract_observations(), this is NOT filtered to successful (NOERROR)
+    A/AAAA-only responses: NXDOMAIN/SERVFAIL/etc. and every answer record
+    type (CNAME, TXT, ...) are captured too, since "what got queried and
+    what came back" is exactly what a query-log view needs to show,
+    including failures. Returns None for anything that isn't a DNS
+    response (queries, non-DNS packets) or that's missing an IP layer to
+    attribute to a local host.
+
+    local_ip is the packet's own destination address, not something
+    separately captured from the outbound query -- a DNS response is
+    addressed back to whoever asked, so this needs only the response
+    packet already being sniffed here, the same one
+    extract_observations() looks at."""
+    if DNS not in packet:
+        return None
+    dns = packet[DNS]
+    if dns.qr != 1 or not dns.qd:
+        return None
+
+    if IP in packet:
+        local_ip = packet[IP].dst
+    elif IPv6 in packet:
+        local_ip = packet[IPv6].dst
+    else:
+        return None
+
+    qd = dns.qd[0]
+    query_name = _decode_name(qd.qname)
+    query_type = _type_name(int(qd.qtype))
+
+    answer_strs = []
+    for i in range(dns.ancount):
+        rr = dns.an[i]
+        rtype = _type_name(int(rr.type))
+        answer_strs.append(f"{rtype}:{_decode_rdata(rr.rdata)}")
+    truncated = len(answer_strs) > _MAX_ANSWERS_SHOWN
+    shown = answer_strs[:_MAX_ANSWERS_SHOWN]
+    if truncated:
+        shown.append(f"+{len(answer_strs) - _MAX_ANSWERS_SHOWN} more")
+    answers = ",".join(shown) if shown else None
+
+    return QueryEvent(
+        local_ip=local_ip,
+        query_name=query_name,
+        query_type=query_type,
+        rcode=_rcode_name(int(dns.rcode)),
+        answers=answers,
+        seen_at=seen_at,
+    )
+
+
+def sniff_loop(
+    interfaces: list[str],
+    on_observation,
+    bpf_filter: str = "udp port 53 or tcp port 53",
+    on_query_event=None,
+) -> None:
     """Live capture entrypoint, wired up by gowiththeflowd.py. Not
     exercised by Stage A4's unit tests -- proven against real traffic in
     Phase B, once an actual OPNsense VM is involved.
@@ -89,7 +197,16 @@ def sniff_loop(interfaces: list[str], on_observation, bpf_filter: str = "udp por
 
     def _handle(pkt: Packet) -> None:
         eth = Ether(bytes(pkt))
-        for obs in extract_observations(eth, int(time.time())):
+        now_i = int(time.time())
+        for obs in extract_observations(eth, now_i):
             on_observation(obs)
+        # Same re-parsed packet feeds both extractors -- avoids a second
+        # sniff()/Ether() reparse just to also log the raw query/response,
+        # since on_query_event is optional (only set when
+        # enable_dns_query_log is on).
+        if on_query_event is not None:
+            event = extract_query_events(eth, now_i)
+            if event is not None:
+                on_query_event(event)
 
     sniff(iface=interfaces, filter=bpf_filter, prn=_handle, store=False)

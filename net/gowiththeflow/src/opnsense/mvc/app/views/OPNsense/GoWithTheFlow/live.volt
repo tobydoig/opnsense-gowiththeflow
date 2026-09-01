@@ -843,6 +843,11 @@
                 data: chartHistory.map(function (p) { return p.groups[key] || 0; }),
                 borderColor: gwtfColorForGroup(key),
                 backgroundColor: gwtfColorForGroup(key),
+                // Chart.js's own default (3) reads heavy with several
+                // lines overlapping -- thinner traces stay legible
+                // without one dominant host's line visually burying the
+                // smaller ones next to it.
+                borderWidth: 1.5,
                 fill: chartType === 'bar',
                 // 'monotone' smooths the line without letting it
                 // overshoot below/above neighboring points the way a
@@ -863,6 +868,7 @@
                 }),
                 borderColor: '#999999',
                 backgroundColor: '#999999',
+                borderWidth: 1.5,
                 fill: chartType === 'bar',
                 cubicInterpolationMode: 'monotone',
             });

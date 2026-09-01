@@ -33,9 +33,21 @@
   "enable_sni_sniffing": {{ 1 if GoWithTheFlow.hostname.enableSniSniffing == '1' else 0 }},
   "enable_ptr_fallback": {{ 1 if GoWithTheFlow.hostname.enablePtrFallback == '1' else 0 }},
   "enable_dpi": {{ 1 if GoWithTheFlow.hostname.enableDpi == '1' else 0 }},
+  {# Default-on, unlike the toggles above -- confirmed live that a field
+   # added to this model after the plugin was already configured on a
+   # box renders as an *empty* value here (not its declared XML
+   # <Default>) until the Settings form is saved once through the GUI;
+   # `configctl template reload`'s own rendering path doesn't hydrate a
+   # full BaseModel object the way a real page load does (confirmed
+   # directly: instantiating the model in PHP shows the correct default,
+   # this template's own rendering doesn't). So "not explicitly disabled"
+   # is treated as on, matching the other `or <default>` fallbacks below
+   # this file already relies on for exactly this gap. #}
+  "enable_dns_query_log": {{ 0 if GoWithTheFlow.hostname.enableDnsQueryLog == '0' else 1 }},
   "raw_retention_days": {{ GoWithTheFlow.general.rawRetentionDays }},
   "rollup_hourly_retention_days": {{ GoWithTheFlow.general.rollupHourlyRetentionDays }},
   "rollup_daily_retention_days": {{ GoWithTheFlow.general.rollupDailyRetentionDays }},
+  "dns_query_log_retention_days": {{ GoWithTheFlow.general.dnsQueryLogRetentionDays or 7 }},
   "cpu_limit_pct": {{ GoWithTheFlow.general.cpuLimitPct }},
   "mem_limit_mb": {{ GoWithTheFlow.general.memLimitMB }}
 }

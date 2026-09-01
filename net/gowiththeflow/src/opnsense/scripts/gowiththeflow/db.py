@@ -19,6 +19,7 @@ import sqlite3
 import time
 
 from pf_state_poller import DiffResult, StateKey, StateSnapshot
+from rollup import floor_to
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS live_sessions (
@@ -150,6 +151,33 @@ CREATE TABLE IF NOT EXISTS live_ticks (
   delta_bytes_in INTEGER NOT NULL, delta_bytes_out INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_live_ticks_time ON live_ticks(tick_time);
+
+-- Fed by dns_sniffer.py's extract_query_events() (a query/response
+-- transaction per row), via an hourly-bucketed upsert
+-- (record_dns_query_event()) rather than one row per query seen --
+-- DNS lookups happen far more often than actual connections (repeat/
+-- cached lookups, background app chatter), so row growth here is
+-- bounded by distinct (host, query, type) combinations per hour, not
+-- raw query frequency -- a device polling the same hostname every 30s
+-- all day produces one row with a growing `count`, not thousands of
+-- rows. Real write cost of this (an INSERT...ON CONFLICT per distinct
+-- combo per drain cycle, not a batched executemany) hasn't been
+-- measured on a real busy network yet -- same "real cost, unmeasured"
+-- caveat DPI shipped with.
+CREATE TABLE IF NOT EXISTS dns_query_log (
+  bucket_start INTEGER NOT NULL,
+  local_ip TEXT NOT NULL,
+  query_name TEXT NOT NULL,
+  query_type TEXT NOT NULL,
+  rcode TEXT NOT NULL,
+  answers TEXT,
+  count INTEGER NOT NULL DEFAULT 1,
+  first_seen INTEGER NOT NULL,
+  last_seen INTEGER NOT NULL,
+  PRIMARY KEY (bucket_start, local_ip, query_name, query_type)
+);
+CREATE INDEX IF NOT EXISTS idx_dns_query_log_time ON dns_query_log(bucket_start);
+CREATE INDEX IF NOT EXISTS idx_dns_query_log_local ON dns_query_log(local_ip, bucket_start);
 """
 
 
@@ -449,5 +477,39 @@ def update_dpi_protocol(
         WHERE proto=? AND local_ip=? AND local_port=? AND peer_ip=? AND peer_port=?
         """,
         (dpi_protocol, proto, local_ip, local_port, peer_ip, peer_port),
+    )
+    conn.commit()
+
+
+def record_dns_query_event(
+    conn: sqlite3.Connection, ev: "QueryEvent", bucket_size_s: int = 3600
+) -> None:
+    """Upserts one dns_sniffer.QueryEvent into dns_query_log, keyed by
+    (bucket_start, local_ip, query_name, query_type) -- a repeat of the
+    same lookup within the same hour bumps `count` and refreshes
+    `rcode`/`answers`/`last_seen` in place rather than inserting a new
+    row, same idiom record_diff() already uses for live_sessions. This
+    is what keeps this table's growth bounded by distinct (host, query,
+    type) combinations per hour rather than raw query frequency -- see
+    dns_query_log's own schema comment for why that distinction matters
+    here specifically."""
+    bucket_start = floor_to(ev.seen_at, bucket_size_s)
+    conn.execute(
+        """
+        INSERT INTO dns_query_log
+            (bucket_start, local_ip, query_name, query_type, rcode, answers,
+             count, first_seen, last_seen)
+        VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
+        ON CONFLICT(bucket_start, local_ip, query_name, query_type)
+        DO UPDATE SET
+            count = count + 1,
+            rcode = excluded.rcode,
+            answers = excluded.answers,
+            last_seen = excluded.last_seen
+        """,
+        (
+            bucket_start, ev.local_ip, ev.query_name, ev.query_type, ev.rcode, ev.answers,
+            ev.seen_at, ev.seen_at,
+        ),
     )
     conn.commit()

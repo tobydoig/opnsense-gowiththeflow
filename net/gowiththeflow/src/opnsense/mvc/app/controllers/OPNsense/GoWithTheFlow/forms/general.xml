@@ -45,6 +45,14 @@
         <advanced>true</advanced>
     </field>
     <field>
+        <id>gowiththeflow.general.dnsQueryLogRetentionDays</id>
+        <label>DNS query log retention (days)</label>
+        <type>text</type>
+        <hint>7</hint>
+        <advanced>true</advanced>
+        <help>How long DNS Queries page entries are kept. Shorter than raw connection retention by default -- this is a debugging/curiosity view, not core tracking data.</help>
+    </field>
+    <field>
         <id>gowiththeflow.general.cpuLimitPct</id>
         <label>CPU limit (%)</label>
         <type>text</type>
@@ -90,6 +98,12 @@
         <label>Enable DPI (protocol/app classification)</label>
         <type>checkbox</type>
         <help>Identifies protocols like QUIC independent of hostname/port, via periodic nDPI capture bursts rather than live per-connection tracking -- classification can lag by up to a minute and won't reach every short-lived connection. Heavier than DNS/SNI sniffing; off by default until its real cost on a busy network is measured.</help>
+    </field>
+    <field>
+        <id>gowiththeflow.hostname.enableDnsQueryLog</id>
+        <label>Enable DNS Queries page</label>
+        <type>checkbox</type>
+        <help>Logs what's actually being queried over DNS and what came back (including failures), shown on the DNS Queries page. Rides the same DNS sniffing already used for hostname resolution rather than a separate capture, so it adds no new capture cost -- the real unmeasured cost is database write volume on a busy network, though repeat lookups are deduplicated into an hourly count rather than logged one row per query.</help>
     </field>
     <field>
         <id>gowiththeflow.hostname.extraTlsPorts</id>

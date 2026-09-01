@@ -1,7 +1,7 @@
 <model>
     <mount>/GoWithTheFlow</mount>
     <description>GoWithTheFlow settings</description>
-    <version>1.0.0</version>
+    <version>1.1.0</version>
     <items>
         <general>
             <enabled type="BooleanField">
@@ -32,6 +32,12 @@
                 <Default>32</Default>
                 <Required>Y</Required>
             </rollupDailyRetentionDays>
+            <dnsQueryLogRetentionDays type="IntegerField">
+                <MinimumValue>1</MinimumValue>
+                <MaximumValue>365</MaximumValue>
+                <Default>7</Default>
+                <Required>Y</Required>
+            </dnsQueryLogRetentionDays>
             <cpuLimitPct type="IntegerField">
                 <MinimumValue>1</MinimumValue>
                 <MaximumValue>100</MaximumValue>
@@ -61,6 +67,9 @@
             <enableDpi type="BooleanField">
                 <Default>0</Default>
             </enableDpi>
+            <enableDnsQueryLog type="BooleanField">
+                <Default>1</Default>
+            </enableDnsQueryLog>
             <extraTlsPorts type="TextField">
                 <Required>N</Required>
                 <Mask>/^[0-9,\s]*$/</Mask>

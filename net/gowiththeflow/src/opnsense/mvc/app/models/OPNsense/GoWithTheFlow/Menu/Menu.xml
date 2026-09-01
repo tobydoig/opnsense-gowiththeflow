@@ -3,6 +3,7 @@
         <GoWithTheFlow VisibleName="Go With The Flow" cssClass="fa fa-exchange fa-fw">
             <Live order="10" url="/ui/gowiththeflow/live"/>
             <History order="20" url="/ui/gowiththeflow/history"/>
+            <DnsQueries VisibleName="DNS Queries" order="25" url="/ui/gowiththeflow/dnsqueries"/>
             <TopTalkers VisibleName="Top Talkers" order="30" url="/ui/gowiththeflow/toptalkers"/>
         </GoWithTheFlow>
     </Reporting>

@@ -1,6 +1,7 @@
 import os
 
 import db
+from dns_sniffer import QueryEvent
 from pf_state_poller import PfStatePoller
 
 FIXTURES_DIR = os.path.join(os.path.dirname(__file__), "fixtures")
@@ -348,3 +349,71 @@ def test_schema_init_is_idempotent(tmp_path):
     assert "internal_connections_raw" not in tables
     assert "internal_rollup_hourly" not in tables
     assert "internal_rollup_daily" not in tables
+
+
+def _query_event(**overrides):
+    fields = dict(
+        local_ip="192.168.1.50", query_name="example.com", query_type="A",
+        rcode="NOERROR", answers="A:93.184.216.34", seen_at=NOW1,
+    )
+    fields.update(overrides)
+    return QueryEvent(**fields)
+
+
+def test_record_dns_query_event_fresh_insert(tmp_path):
+    conn = _fresh_conn(tmp_path)
+    db.record_dns_query_event(conn, _query_event())
+    row = conn.execute("SELECT * FROM dns_query_log").fetchone()
+    assert row["local_ip"] == "192.168.1.50"
+    assert row["query_name"] == "example.com"
+    assert row["query_type"] == "A"
+    assert row["rcode"] == "NOERROR"
+    assert row["answers"] == "A:93.184.216.34"
+    assert row["count"] == 1
+    assert row["first_seen"] == NOW1
+    assert row["last_seen"] == NOW1
+
+
+def test_record_dns_query_event_same_bucket_repeat_increments_count(tmp_path):
+    conn = _fresh_conn(tmp_path)
+    db.record_dns_query_event(conn, _query_event(seen_at=NOW1))
+    # Still within the same (default 1-hour) bucket, and a different
+    # result this time (an NXDOMAIN where it used to succeed, say) --
+    # the upsert should bump count and refresh the mutable fields in
+    # place, not touch first_seen.
+    db.record_dns_query_event(conn, _query_event(
+        seen_at=NOW2, rcode="NXDOMAIN", answers=None,
+    ))
+    rows = conn.execute("SELECT * FROM dns_query_log").fetchall()
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["count"] == 2
+    assert row["rcode"] == "NXDOMAIN"
+    assert row["answers"] is None
+    assert row["first_seen"] == NOW1
+    assert row["last_seen"] == NOW2
+
+
+def test_record_dns_query_event_different_bucket_is_a_separate_row(tmp_path):
+    conn = _fresh_conn(tmp_path)
+    db.record_dns_query_event(conn, _query_event(seen_at=NOW1), bucket_size_s=3600)
+    db.record_dns_query_event(conn, _query_event(seen_at=NOW1 + 3600), bucket_size_s=3600)
+    rows = conn.execute("SELECT count FROM dns_query_log ORDER BY bucket_start").fetchall()
+    assert [r["count"] for r in rows] == [1, 1]
+
+
+def test_record_dns_query_event_different_query_name_or_type_is_a_separate_row(tmp_path):
+    conn = _fresh_conn(tmp_path)
+    db.record_dns_query_event(conn, _query_event(query_name="example.com", query_type="A"))
+    db.record_dns_query_event(conn, _query_event(query_name="example.com", query_type="AAAA"))
+    db.record_dns_query_event(conn, _query_event(query_name="other.com", query_type="A"))
+    rows = conn.execute("SELECT query_name, query_type FROM dns_query_log").fetchall()
+    assert len(rows) == 3
+
+
+def test_record_dns_query_event_different_local_host_is_a_separate_row(tmp_path):
+    conn = _fresh_conn(tmp_path)
+    db.record_dns_query_event(conn, _query_event(local_ip="192.168.1.50"))
+    db.record_dns_query_event(conn, _query_event(local_ip="192.168.1.51"))
+    rows = conn.execute("SELECT local_ip FROM dns_query_log").fetchall()
+    assert {r["local_ip"] for r in rows} == {"192.168.1.50", "192.168.1.51"}

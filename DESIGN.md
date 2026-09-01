@@ -1529,6 +1529,89 @@
   age out via the existing retention windows).
   New test (`test_real_overrides_spot_check`) spot-checks a handful of
   the real entries. 133 tests passing. Version bumped to **1.5.7**.
+- **1.5.8 -- new "DNS Queries" page**: what's actually being queried
+  over DNS and what came back, including failed lookups (NXDOMAIN/
+  SERVFAIL/etc.) and every answer record type (CNAME, TXT, ...), not
+  just the A/AAAA-only hostname cache `dns_sniffer.py` already built.
+  Its own standalone `Reporting` page (not a Top Talkers tab, decided
+  with the user) -- every existing Top Talkers/History table is a
+  `GROUP BY`/`SUM` byte-ranking aggregate; this is a raw activity log
+  with no byte counts at all. `enable_dns_query_log` defaults **on**
+  (unlike DPI) since it rides the already-running DNS sniffer thread
+  rather than adding new capture cost.
+  New `dns_sniffer.extract_query_events()` reuses the same re-parsed
+  packet `extract_observations()` already dissects (one `sniff_loop()`
+  callback feeds both). Written to a new `dns_query_log` table via an
+  **hourly-bucketed upsert**, not one row per query -- DNS lookups
+  happen far more often than actual connections, so row growth is
+  bounded by distinct (host, query, type) combinations per hour, not
+  raw query frequency (confirmed live: a real repeat lookup collapsed
+  into one row with `count` incrementing, exactly as designed).
+  `rollup.prune_daily()`'s existing `table=` param reuses unmodified for
+  retention (`dns_query_log_retention_days`, default 7) -- no new rollup
+  job needed. `ToptalkersController`'s pattern of fully materializing
+  results into a PHP array before paging (no SQL push-down anywhere in
+  this codebase) meant this needed an explicit hard row cap
+  (`Api/DnsqueriesController::MAX_ROWS = 2000`) that no prior grid in
+  this plugin has needed, since this is the first one backed by a table
+  that isn't aggregation-bounded.
+  **Real bug found and fixed during VM verification, not specific to
+  this feature**: a brand-new Settings field added to an
+  *already-configured* plugin instance rendered as empty (or its
+  falsy-default value, regardless of the XML schema's declared
+  `<Default>`) via `configctl template reload`, until the Settings form
+  is saved once through the real GUI -- confirmed directly by
+  instantiating the model in standalone PHP (`new \OPNsense\
+  GoWithTheFlow\GoWithTheFlow()`), which *did* show the correct default,
+  proving the gap is in `configctl template reload`'s own rendering path
+  not hydrating a full model object, not in the model/schema layer
+  itself. This exact same latent gap already existed for
+  `enableDnsSniffing`/`enableSniSniffing`/`enablePtrFallback` (all
+  declared default-on) -- it was invisible there only because their
+  config.xml nodes have existed since this plugin's very first schema
+  version, and never went uncreated on a real box the way a *newly
+  added* field does. Fixed for `enable_dns_query_log`/
+  `dns_query_log_retention_days` specifically by making the Jinja
+  template itself defensive (`{{ 0 if ... == '0' else 1 }}` and
+  `{{ ... or 7 }}`), the same defensive-fallback pattern this template
+  already relied on elsewhere (`captureInterfaces or ''`, etc.) for
+  exactly this reason -- not fixed for the three pre-existing fields,
+  since they've never actually hit it in practice; worth remembering as
+  the correct pattern for *any* future new Settings field on this
+  project, regardless of its default.
+  New tests: `extract_query_events()` (9 cases: success, NXDOMAIN,
+  SERVFAIL, non-A query types, mixed-type answer chains, truncation of a
+  pathological answer count, queries-not-responses, non-DNS packets,
+  IPv6) and `record_dns_query_event()` (5 cases: fresh insert, same-
+  bucket repeat increments count, different bucket/query/type/host are
+  separate rows). 147 tests passing.
+  Verified against real capture on the test VM: real NOERROR and a
+  forced real NXDOMAIN both captured correctly with the right rcode;
+  toggling `enable_dns_query_log` off confirmed to stop new rows while
+  `ip_hostname_cache` kept updating in real time (proving the DNS
+  sniffer thread itself is unaffected); the exact controller SQL run
+  directly against the live database returned correct, real-shaped rows
+  (including a real `nostromo.internal` NXDOMAIN worth investigating
+  separately). Page/menu/grid rendering itself wasn't visually confirmed
+  in a real browser as part of this pass.
+  **Real bug found by the user on first look at real data, fixed same
+  day**: the same (host, query, type) recurring across many hours showed
+  up as one row per hour bucket -- correct per the storage design (dedup
+  is only ever within one hour, deliberately, to keep write volume
+  bounded), but looked exactly like duplicates over a multi-day `days`
+  window (confirmed live: `accounts.google.com` from one host appeared
+  as 6 separate rows across 6 hours, each already correctly deduped
+  within its own hour). Fixed at the display layer, not storage:
+  `Api/DnsqueriesController::searchAction()` now aggregates across every
+  bucket in the selected window (`GROUP BY local_ip, query_name,
+  query_type`, `SUM(count)`, `MAX(last_seen)`), collapsing back to one
+  row per (host, query, type) -- relying on SQLite's specific guarantee
+  that non-aggregated columns in a query containing `MAX()` come from
+  the same row that produced the max value, so the displayed
+  `rcode`/`answers` are genuinely the most recent, not an arbitrary
+  bucket's. Confirmed live: the 6-row `accounts.google.com` case (counts
+  1/6/6/6/6/3) collapsed to one row with `count: 28` and the correct
+  latest answer.
 - **Not yet started**: the staticOverrides grid editor, proper repo
   signing before this pkg-repo is relied on for anything that matters,
   and a possible future "scheduled traffic blocking" feature (the

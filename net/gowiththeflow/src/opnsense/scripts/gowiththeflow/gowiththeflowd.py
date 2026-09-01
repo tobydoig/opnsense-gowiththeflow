@@ -98,9 +98,16 @@ class Config:
     # Unlike the sniffers above, real CPU cost on a busy network hasn't
     # been measured yet -- default this one off, opt-in.
     enable_dpi: bool = False
+    # Unlike enable_dpi, this rides the already-running DNS sniffer
+    # thread rather than adding new capture cost -- the unmeasured part
+    # here is DB write volume (see dns_query_log's own schema comment),
+    # mitigated by an hourly-bucketed upsert rather than a raw log, so
+    # this defaults on.
+    enable_dns_query_log: bool = True
     raw_retention_days: int = 10
     rollup_hourly_retention_days: int = 8
     rollup_daily_retention_days: int = 32
+    dns_query_log_retention_days: int = 7
 
     @classmethod
     def load(cls, path: str) -> "Config":
@@ -125,9 +132,11 @@ class Config:
             enable_sni_sniffing=bool(data.get("enable_sni_sniffing", True)),
             enable_ptr_fallback=bool(data.get("enable_ptr_fallback", True)),
             enable_dpi=bool(data.get("enable_dpi", False)),
+            enable_dns_query_log=bool(data.get("enable_dns_query_log", True)),
             raw_retention_days=int(data.get("raw_retention_days", 10)),
             rollup_hourly_retention_days=int(data.get("rollup_hourly_retention_days", 8)),
             rollup_daily_retention_days=int(data.get("rollup_daily_retention_days", 32)),
+            dns_query_log_retention_days=int(data.get("dns_query_log_retention_days", 7)),
         )
 
 
@@ -158,6 +167,7 @@ def run(config: Config) -> None:
     _refresh_categories_in_background(category_holder)
 
     dns_observations: queue.Queue = queue.Queue()
+    dns_query_events: queue.Queue = queue.Queue()
     sni_hints: queue.Queue = queue.Queue()
     dpi_results: queue.Queue = queue.Queue()
 
@@ -167,9 +177,16 @@ def run(config: Config) -> None:
     # before Settings has ever been saved) -- so both sniffers additionally
     # require at least one configured interface, not just their own toggle.
     if config.enable_dns_sniffing and config.capture_interfaces:
+        # Meaningless without the DNS sniffer thread itself running --
+        # on_query_event is just an extra callback fed from the same
+        # packets that thread is already dissecting, not a separate
+        # capture path. Passed as None (a no-op inside sniff_loop) rather
+        # than skipping the thread entirely when the toggle is off.
+        on_query_event = dns_query_events.put if config.enable_dns_query_log else None
         threading.Thread(
             target=dns_sniffer.sniff_loop,
             args=(config.capture_interfaces, dns_observations.put),
+            kwargs={"on_query_event": on_query_event},
             daemon=True,
         ).start()
     if config.enable_sni_sniffing and config.capture_interfaces:
@@ -200,6 +217,9 @@ def run(config: Config) -> None:
         while not dns_observations.empty():
             obs = dns_observations.get_nowait()
             hostcache.upsert_hostname(conn, obs.ip, obs.hostname, "dns", obs.ttl, now_i)
+
+        while not dns_query_events.empty():
+            db.record_dns_query_event(conn, dns_query_events.get_nowait())
 
         while not sni_hints.empty():
             local_ip, local_port, remote_ip, remote_port, hostname, ts = sni_hints.get_nowait()
@@ -270,6 +290,11 @@ def run(config: Config) -> None:
             rollup.rollup_daily(conn, now_i)
             rollup.prune_hourly(conn, now_i, config.rollup_hourly_retention_days)
             rollup.prune_daily(conn, now_i, config.rollup_daily_retention_days)
+            # dns_query_log has no rollup step of its own (see its schema
+            # comment) -- prune_daily()'s own `table=` param already
+            # generalizes to it unmodified, since it just does a plain
+            # DELETE ... WHERE bucket_start < ? regardless of table.
+            rollup.prune_daily(conn, now_i, config.dns_query_log_retention_days, table="dns_query_log")
             rollup.incremental_vacuum(conn)
             _refresh_categories_in_background(category_holder)
             last_daily_job = now
