@@ -38,7 +38,8 @@ class LiveController extends DbApiControllerBase
                              THEN (SELECT hostname FROM local_host_identity WHERE ip = ls.peer_ip
                                    ORDER BY updated_at DESC LIMIT 1)
                              ELSE ls.peer_hostname
-                        END AS peer_hostname
+                        END AS peer_hostname,
+                        (SELECT 1 FROM blocked_hosts bh WHERE bh.local_ip = ls.local_ip) AS blocked
                  FROM live_sessions ls
                  LEFT JOIN local_host_identity lhi ON lhi.ip = ls.local_ip
                  WHERE 1=1';

@@ -1,1 +1,2 @@
 config.json:/var/etc/gowiththeflow.json
+rc.conf.d:/etc/rc.conf.d/gowiththeflow

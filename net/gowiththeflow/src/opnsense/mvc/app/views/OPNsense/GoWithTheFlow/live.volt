@@ -62,10 +62,97 @@
     // this is the chart's true, fixed point width -- not an approximation
     // of the browser's own chosen poll rate the way it used to be.
     const GWTF_DAEMON_POLL_INTERVAL_MS = 5000;
+    let gwtfBlockedIps = new Set();      // local_ip -> currently blocked, refreshed via
+                                         // refreshBlockedSetGWTF() -- read by
+                                         // renderLiveTopTalkers() to feed each row's own
+                                         // `blocked` field (the Table tab's rows get theirs
+                                         // straight from LiveController.php's own query instead)
+
+    // Shared between #grid-live-toptalkers and #grid-live -- both need the
+    // exact same block/unblock icon behavior. `filter` (a real, documented
+    // UIBootgrid command property -- confirmed by reading
+    // opnsense_bootgrid.js's own commands formatter) is what makes only
+    // one of the two ever render for a given row; `method`'s `cell` param
+    // gives `cell.getData()` regardless of which grid's row shape called
+    // it, since both carry a `local_ip` field (Table tab: straight from
+    // LiveController.php's SQL; Top Talkers: added below in
+    // renderLiveTopTalkers()).
+    const GWTF_BLOCK_COMMANDS = {
+        gwtfblock: {
+            title: "{{ lang._('Block this device') }}",
+            classname: 'fa fa-ban fa-fw',
+            sequence: 1,
+            filter: function (cell) { return !cell.getData().blocked; },
+            method: function (event, cell) {
+                const d = cell.getData();
+                const label = d.local || d.local_ip;
+                stdDialogConfirm(
+                    "{{ lang._('Confirm block') }}",
+                    "{{ lang._('Block all traffic to and from') }} " + label + "? " +
+                        "{{ lang._('Its currently open connections will be dropped immediately.') }}",
+                    "{{ lang._('Block') }}", "{{ lang._('Cancel') }}",
+                    function () {
+                        ajaxCall('/api/gowiththeflow/blocked/block', { local_ip: d.local_ip }, function (data) {
+                            if (data && data.status !== 'ok') {
+                                stdDialogInform(
+                                    "{{ lang._('Block failed') }}",
+                                    (data && data.error) || "{{ lang._('Unknown error') }}",
+                                    "{{ lang._('Close') }}", undefined, 'danger'
+                                );
+                            }
+                            refreshBlockedSetGWTF();
+                        });
+                    },
+                    'danger'
+                );
+            }
+        },
+        gwtfunblock: {
+            title: "{{ lang._('Unblock this device') }}",
+            classname: 'fa fa-ban fa-fw text-danger',
+            sequence: 1,
+            filter: function (cell) { return !!cell.getData().blocked; },
+            method: function (event, cell) {
+                const d = cell.getData();
+                const label = d.local || d.local_ip;
+                stdDialogConfirm(
+                    "{{ lang._('Confirm unblock') }}",
+                    "{{ lang._('Restore traffic to and from') }} " + label + "?",
+                    "{{ lang._('Unblock') }}", "{{ lang._('Cancel') }}",
+                    function () {
+                        ajaxCall('/api/gowiththeflow/blocked/unblock', { local_ip: d.local_ip }, function (data) {
+                            if (data && data.status !== 'ok') {
+                                stdDialogInform(
+                                    "{{ lang._('Unblock failed') }}",
+                                    (data && data.error) || "{{ lang._('Unknown error') }}",
+                                    "{{ lang._('Close') }}", undefined, 'danger'
+                                );
+                            }
+                            refreshBlockedSetGWTF();
+                        });
+                    },
+                    'warning'
+                );
+            }
+        }
+    };
+
+    // GETs the current blocked-host set once and applies it to both
+    // grids -- called on ready and after every block/unblock so the
+    // icon flips immediately rather than waiting for the next ~5s tick
+    // (Top Talkers) or a manual reload (Table).
+    function refreshBlockedSetGWTF() {
+        ajaxGet('/api/gowiththeflow/blocked/list', {}, function (data) {
+            gwtfBlockedIps = new Set((data && data.blocked) || []);
+            $("#grid-live").bootgrid('reload');
+            renderLiveTopTalkers();
+        });
+    }
 
     $( document ).ready(function() {
         $("#grid-live").UIBootgrid({
             search:'/api/gowiththeflow/live/search/',
+            commands: GWTF_BLOCK_COMMANDS,
             options: {
                 selection: false,
                 multiSelect: false,
@@ -107,6 +194,7 @@
             // every row would collide on the same undefined index instead
             // of being matched/updated individually.
             datakey: 'row_id',
+            commands: GWTF_BLOCK_COMMANDS,
             options: {
                 ajax: false,
                 selection: false,
@@ -167,6 +255,12 @@
             }
         });
         addCsvExportButtonGWTF('grid-live-toptalkers', 'gowiththeflow-live-toptalkers.csv');
+        // Populates gwtfBlockedIps for the very first renderLiveTopTalkers()
+        // tick -- #grid-live's own initial ajax load already carries its
+        // `blocked` field straight from LiveController.php, so this is only
+        // strictly needed for Top Talkers, but it re-reloads #grid-live too
+        // for free.
+        refreshBlockedSetGWTF();
         let topTalkersTable = $("#grid-live-toptalkers").data('UIBootgrid').getTable();
         topTalkersTable.on("rowClick", function (e, row) {
             const data = row.getData();
@@ -597,6 +691,8 @@
             return {
                 row_id: ip,
                 local: localHostLabels[ip] || ip,
+                local_ip: ip,
+                blocked: gwtfBlockedIps.has(ip) ? 1 : 0,
                 min1_bytes_in: min1BytesIn,
                 min1_bytes_out: min1BytesOut,
                 min1_bytes_total: min1BytesIn + min1BytesOut,
@@ -1435,6 +1531,13 @@
     .tabulator-row:hover:not(.tabulator-selected) {
         background-color: rgba(255, 255, 255, 0.08);
     }
+    /* The block icon (command-gwtfblock) only appears on hover -- the
+       unblock icon (command-gwtfunblock) is deliberately excluded from
+       this rule, since "this host is blocked" is state a user needs to
+       see without hunting for it. */
+    .tabulator-row:not(:hover) .command-gwtfblock {
+        visibility: hidden;
+    }
 </style>
 
 <div class="content-box col-xs-12 __mb" style="display: flex; align-items: center; justify-content: space-between; padding-bottom: 6px;">
@@ -1500,6 +1603,7 @@
         <table id="grid-live-toptalkers" class="table table-condensed table-hover table-striped table-responsive">
             <thead>
                 <tr>
+                    <th data-column-id="commands" data-width="3em" data-searchable="false" data-sortable="false" data-formatter="commands"></th>
                     <th data-column-id="row_id" data-identifier="true" data-visible="false">id</th>
                     <th data-column-id="local" data-type="string">{{ lang._('Local Host') }}</th>
                     <th data-column-id="min1_bytes_in" data-type="numeric" data-formatter="bytesformatter">{{ lang._('In (1 min)') }}</th>
@@ -1520,6 +1624,7 @@
         <table id="grid-live" class="table table-condensed table-hover table-striped table-responsive">
             <thead>
                 <tr>
+                    <th data-column-id="commands" data-width="3em" data-searchable="false" data-sortable="false" data-formatter="commands"></th>
                     <th data-column-id="row_id" data-identifier="true" data-visible="false">id</th>
                     <th data-column-id="local" data-type="string">{{ lang._('Local Host') }}</th>
                     <th data-column-id="peer" data-type="string">{{ lang._('Peer') }}</th>

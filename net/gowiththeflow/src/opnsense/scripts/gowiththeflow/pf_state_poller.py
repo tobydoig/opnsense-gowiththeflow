@@ -2,10 +2,10 @@
 open/update/close events for connection tracking.
 
 pf reports two packet/byte counters per state, corresponding to traffic in
-the state's original (matching) direction and its reverse. For a
-LAN-initiated outbound state this is assumed to map directly to
-(local->peer, peer->local) -- confirmed against real pfctl output on
-an OPNsense 26.7 test VM during Phase B.
+the printed src's own direction and the printed dst's, **relative to the
+arrow** -- see classify_sessions()'s docstring for how a real NAT'd
+connection proved this isn't simply positional (bytes_a always = src's
+own traffic) the way this module originally assumed.
 
 The real output format (confirmed against that VM, and meaningfully
 different from this module's original Phase A assumptions) is:
@@ -110,6 +110,11 @@ def _parse_header_line(line: str) -> dict | None:
         "proto": proto,
         "src_ip": src_ip, "src_port": src_port,
         "dst_ip": dst_ip, "dst_port": dst_port,
+        # See classify_sessions()'s docstring -- confirmed on a real NAT'd
+        # connection that this flips which of the two "N:N" counters
+        # belongs to which printed address, independent of which literal
+        # token got parsed as "src" above.
+        "reversed": tokens[arrow_idx] == "<-",
     }
     if arrow_idx + 2 < len(tokens):
         result["state"] = tokens[arrow_idx + 2]
@@ -195,7 +200,25 @@ def classify_sessions(
     whichever side pf called src, uncanonicalized -- see rollup.py's
     hourly rollup for where that gets canonicalized for pair-ranking
     purposes), and `peer_is_local` records whether the OTHER side is also
-    local so callers know not to attempt hostname resolution for it."""
+    local so callers know not to attempt hostname resolution for it.
+
+    **The "N:N" byte/pkt pair is NOT simply (src's own traffic, dst's own
+    traffic) in printed-token order** -- confirmed on a real NAT'd
+    connection (a phone downloading a large file through a router-style
+    OPNsense box) where the SAME state, printed from its two different
+    per-interface views, showed printed src/dst swapped between the two
+    lines (`91.189.91.107:443 <- 192.168.200.213:35178` vs.
+    `... 192.168.200.213:35178 -> 91.189.91.107:443`) while the two
+    counters stayed byte-for-byte identical across both -- i.e. the pair
+    is fixed to a real direction independent of which token got printed
+    as "src". Which counter is which is recoverable from the arrow
+    (`_parse_header_line()`'s `reversed`, True for `<-`): for `->`,
+    bytes_a is the printed src's own traffic and bytes_b the printed
+    dst's; for `<-` it's the other way round. Getting this wrong silently
+    swaps bytes_in/bytes_out for exactly the states this reorientation
+    was already needed for (the "else" branch below) -- confirmed live
+    for the case above (a `<-` line with peer printed as src): before this
+    fix, a 1.4GB download showed as 1.4GB "out" and 17MB "in"."""
     networks = [ipaddress.ip_network(s) for s in local_subnets]
     snapshots = []
     for rec in records:
@@ -207,16 +230,22 @@ def classify_sessions(
         dst_local = any(dst_ip in n for n in networks)
         if not src_local and not dst_local:
             continue
+        if rec.get("reversed"):
+            src_own_bytes, dst_own_bytes = int(rec["bytes_b"]), int(rec["bytes_a"])
+            src_own_pkts, dst_own_pkts = int(rec["pkts_b"]), int(rec["pkts_a"])
+        else:
+            src_own_bytes, dst_own_bytes = int(rec["bytes_a"]), int(rec["bytes_b"])
+            src_own_pkts, dst_own_pkts = int(rec["pkts_a"]), int(rec["pkts_b"])
         if src_local:
             local_ip, local_port = rec["src_ip"], int(rec["src_port"])
             peer_ip, peer_port = rec["dst_ip"], int(rec["dst_port"])
-            bytes_out, bytes_in = int(rec["bytes_a"]), int(rec["bytes_b"])
-            pkts_out, pkts_in = int(rec["pkts_a"]), int(rec["pkts_b"])
+            bytes_out, bytes_in = src_own_bytes, dst_own_bytes
+            pkts_out, pkts_in = src_own_pkts, dst_own_pkts
         else:
             local_ip, local_port = rec["dst_ip"], int(rec["dst_port"])
             peer_ip, peer_port = rec["src_ip"], int(rec["src_port"])
-            bytes_in, bytes_out = int(rec["bytes_a"]), int(rec["bytes_b"])
-            pkts_in, pkts_out = int(rec["pkts_a"]), int(rec["pkts_b"])
+            bytes_out, bytes_in = dst_own_bytes, src_own_bytes
+            pkts_out, pkts_in = dst_own_pkts, src_own_pkts
         key = StateKey(rec["proto"], local_ip, local_port, peer_ip, peer_port)
         snapshots.append(
             StateSnapshot(

@@ -178,6 +178,32 @@ CREATE TABLE IF NOT EXISTS dns_query_log (
 );
 CREATE INDEX IF NOT EXISTS idx_dns_query_log_time ON dns_query_log(bucket_start);
 CREATE INDEX IF NOT EXISTS idx_dns_query_log_local ON dns_query_log(local_ip, bucket_start);
+
+-- Source of truth for what's blocked; the pf table (gowiththeflow_blocked)
+-- and its on-disk backing file are always derived FROM this
+-- (blocklist.sync_pf() rewrites both from a full read of this table),
+-- never the other way round, so any drift self-heals instead of
+-- accumulating. Keyed by IP, not MAC like local_host_identity, because
+-- an IP is what pf actually filters on and what every other table/UI
+-- here is keyed by. The first table in this schema written by a user
+-- action rather than the daemon's own poll loop -- writes come from
+-- block_host.py under configd (see blocklist.py), not from PHP, the
+-- same "PHP reads, Python writes" split this project already follows
+-- everywhere else.
+CREATE TABLE IF NOT EXISTS blocked_hosts (
+  local_ip TEXT PRIMARY KEY,
+  -- hostname/mac are snapshotted at block time rather than joined live
+  -- from local_host_identity, for the same reason connections_raw
+  -- snapshots peer_hostname: local_host_identity.ip is a *current*
+  -- DHCP-derived mapping that can be reassigned, so a live join would
+  -- relabel an old block with whichever device now holds that IP.
+  hostname TEXT,
+  mac TEXT,
+  blocked_at INTEGER NOT NULL,
+  blocked_by TEXT,
+  reason TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_blocked_hosts_at ON blocked_hosts(blocked_at);
 """
 
 

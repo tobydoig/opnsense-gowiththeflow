@@ -30,6 +30,7 @@ mkdir -p \
     "${STAGE}/usr/local/opnsense/service/templates/OPNsense" \
     "${STAGE}/usr/local/opnsense/service/conf/actions.d" \
     "${STAGE}/usr/local/etc/rc.d" \
+    "${STAGE}/usr/local/etc/inc/plugins.inc.d" \
     "${STAGE}/usr/local/opnsense/version"
 
 cp -R "${SRC}/opnsense/mvc/app/controllers/OPNsense/GoWithTheFlow" \
@@ -46,6 +47,8 @@ cp "${SRC}/opnsense/service/conf/actions.d/actions_gowiththeflow.conf" \
     "${STAGE}/usr/local/opnsense/service/conf/actions.d/"
 cp "${SRC}/etc/rc.d/gowiththeflow" \
     "${STAGE}/usr/local/etc/rc.d/"
+cp "${SRC}/etc/inc/plugins.inc.d/gowiththeflow.inc" \
+    "${STAGE}/usr/local/etc/inc/plugins.inc.d/"
 
 # never ship a stale bytecode cache picked up from a local dev run
 find "$STAGE" -name __pycache__ -exec rm -rf {} + 2>/dev/null || true

@@ -1,4 +1,6 @@
+usr/local/etc/inc/plugins.inc.d/gowiththeflow.inc
 usr/local/etc/rc.d/gowiththeflow
+usr/local/opnsense/mvc/app/controllers/OPNsense/GoWithTheFlow/Api/BlockedController.php
 usr/local/opnsense/mvc/app/controllers/OPNsense/GoWithTheFlow/Api/DbApiControllerBase.php
 usr/local/opnsense/mvc/app/controllers/OPNsense/GoWithTheFlow/Api/DnsqueriesController.php
 usr/local/opnsense/mvc/app/controllers/OPNsense/GoWithTheFlow/Api/HistoryController.php
@@ -21,6 +23,8 @@ usr/local/opnsense/mvc/app/views/OPNsense/GoWithTheFlow/history.volt
 usr/local/opnsense/mvc/app/views/OPNsense/GoWithTheFlow/live.volt
 usr/local/opnsense/mvc/app/views/OPNsense/GoWithTheFlow/settings.volt
 usr/local/opnsense/mvc/app/views/OPNsense/GoWithTheFlow/toptalkers.volt
+usr/local/opnsense/scripts/gowiththeflow/block_host.py
+usr/local/opnsense/scripts/gowiththeflow/blocklist.py
 usr/local/opnsense/scripts/gowiththeflow/categories.py
 usr/local/opnsense/scripts/gowiththeflow/category_updater.py
 usr/local/opnsense/scripts/gowiththeflow/correlator.py
@@ -39,6 +43,7 @@ usr/local/opnsense/scripts/gowiththeflow/sni_sniffer.py
 usr/local/opnsense/service/conf/actions.d/actions_gowiththeflow.conf
 usr/local/opnsense/service/templates/OPNsense/GoWithTheFlow/+TARGETS
 usr/local/opnsense/service/templates/OPNsense/GoWithTheFlow/config.json
+usr/local/opnsense/service/templates/OPNsense/GoWithTheFlow/rc.conf.d
 usr/local/opnsense/version/gowiththeflow
 @dir usr/local/opnsense/mvc/app/controllers/OPNsense/GoWithTheFlow/Api
 @dir usr/local/opnsense/mvc/app/controllers/OPNsense/GoWithTheFlow/forms

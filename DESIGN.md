@@ -1612,6 +1612,126 @@
   bucket's. Confirmed live: the 6-row `accounts.google.com` case (counts
   1/6/6/6/6/3) collapsed to one row with `count: 28` and the correct
   latest answer.
+- **1.6.0 -- "block a host"**: a per-row block icon on Live's Top Talkers
+  and Table tabs that stops all traffic to/from that row's local device
+  (both directions, existing connections killed immediately, not just new
+  ones), plus a new History > Blocked tab to view/unblock. This is the
+  original motivating real-world case from the "Not yet started" note
+  below (catching a kid's gaming device active late at night) -- a
+  manual, permanent-until-unblocked action, deliberately distinct from
+  the still-unbuilt scheduled/time-of-day version of that idea.
+  Decided with the user: the block is deliberately **total** -- the rule
+  sits *above* OPNsense's own anti-lockout allow rule, so a blocked host
+  loses access to the firewall's own GUI/SSH too (blocking your own
+  current browsing IP, or the firewall's own addresses, is refused
+  outright); and a blocked host still gets DHCP lease renewals, so it
+  stays pinned to the blocked IP instead of lapsing onto a new,
+  unblocked one.
+  Mechanism resolved by reading `OPNsense\Firewall\Plugin.php` in full
+  and the live compiled ruleset (`/tmp/rules.debug` has zero `anchor`
+  call points anywhere, ruling out an independently `pfctl`-loaded
+  anchor -- it would never actually be evaluated): a new
+  `etc/inc/plugins.inc.d/gowiththeflow.inc` defining
+  `gowiththeflow_firewall($fw)`, using `Plugin::registerTable()` +
+  `registerFilterRule()` -- the same native shape core's own "overload
+  table" feature (`virusprot`/`sshlockout`) already proves works in this
+  OPNsense version. The table is `file`-backed
+  (`/var/db/gowiththeflow/blocked_hosts.tbl`, one IP per line, atomic
+  writes), not a bare `persist` table, so a block is live from the very
+  first ruleset load at boot and immune to `update_tables.py`'s
+  Alias-replay wipe on an unrelated Firewall > Apply (confirmed: that
+  replay logic only ever touches tables derived from
+  `OPNsense\Firewall\Alias`). Confirmed live: the compiled rules matched
+  exactly, and a real filter reload did not wipe a test block.
+  New `blocklist.py` (pure pf/DB primitives) + `block_host.py` (CLI,
+  three new configd actions: `block`/`unblock`/`sync_blocked`) --
+  `pfctl -t gowiththeflow_blocked -T replace` to sync the table,
+  `pfctl -k` (two passes, source and destination) to kill existing
+  states. New `blocked_hosts` SQLite table (source of truth; the pf
+  table/file are always derived from it, so drift self-heals) and
+  `Api/BlockedController.php` (PHP only ever reads via `openDb()` and
+  mutates through `configdpRun()`, same split as everywhere else in this
+  project).
+  **Real bug found and fixed**: `OPNsense\Core\Backend::configdpRun()`
+  returns an *empty string*, not the script's real stdout, when the
+  underlying configd-invoked process exits non-zero -- confirmed by
+  instantiating `Backend` directly in a standalone PHP test script and
+  calling it against a deliberately-failing case. This would have
+  silently discarded the one error detail (e.g. "refusing to block one
+  of the firewall's own addresses") a user actually needs to see, so
+  `block_host.py` now always exits 0, encoding success/failure only in
+  its JSON `status` field.
+  New `test_blocklist.py` (35 tests: IP normalization incl. Python's
+  `ipaddress` deliberately rejecting ambiguous leading-zero octets,
+  own-address parsing against a real captured `ifconfig -a` fixture,
+  table-file rendering/atomicity, DB CRUD, `pfctl`/state-kill argv).
+  188 tests passing.
+  **Real bug found on a genuine cold reboot of the test VM (not caught by
+  any prior verification, since every earlier check either used
+  `onestart` directly or `pkg install`'s own `post-install`, both of
+  which bypass it): `gowiththeflowd.py` never actually auto-started at
+  boot.** Its rc.d script is gated by the standard FreeBSD
+  `gowiththeflow_enable` rc.conf variable, but this plugin only ever
+  templated its own `config.json` (the daemon's runtime config), never a
+  `rc.conf.d` file to populate that gate from the Settings "enabled"
+  checkbox -- confirmed by checking a real installed reference plugin
+  (`os-netflow`'s own `service/templates/OPNsense/Netflow/rc.conf.d`,
+  rendering `netflow_enable`) uses exactly this mechanism, and that
+  `/etc/rc.conf.d/gowiththeflow` didn't exist at all after a fresh boot.
+  Fixed with a new `service/templates/OPNsense/GoWithTheFlow/rc.conf.d`
+  template (`gowiththeflow_enable` from `GoWithTheFlow.general.enabled`)
+  registered in `+TARGETS`. Verified with an actual `shutdown -r now` on
+  the test VM, not just a template-reload check: the daemon was running,
+  unprompted, 33 seconds after boot.
+  **Second real bug, found while trying to test an actual block**: a
+  local host's own subnet broadcast address (e.g. `10.0.0.255` for
+  `10.0.0.0/24`) can genuinely show up as a session's `local_ip` --
+  broadcast traffic gets classified the same as any other local<->local
+  pf state (see `pf_state_poller.classify_sessions()`) -- so it appeared
+  as a seemingly-real "host" in Top Talkers, blockable like any other.
+  It isn't a device; blocking it would be meaningless at best. Added
+  `blocklist.is_subnet_edge_address()` (checks a subnet's network/
+  broadcast address, skipping /31 and /32 which have neither per RFC
+  3021) and wired it into `block_host.py`'s existing own-address refusal
+  path. Compounding this, both refusals (the firewall's own address and
+  this new one) were failing **silently** in the UI -- `live.volt`'s
+  block/unblock handlers never checked the response `status`, so a
+  refusal produced no visible feedback at all, which is what actually
+  made this confusing to test. Fixed in both `live.volt` and
+  `history.volt` to show a `stdDialogInform` error with the real reason
+  on any non-`ok` response.
+- **1.6.1 -- real bug: bytes in/out swapped for some sessions, found by
+  the user on nostromo** (a phone downloading a 5.6GB Ubuntu ISO showed
+  ~1GB "out" and 12.6MB "in" -- backwards). Root-caused with real data
+  the user captured directly (`pfctl -s states -vv`, two blocks for the
+  same NAT'd connection from its two per-interface views): pf's "N:N"
+  byte/pkt pair is fixed to a real direction, but which of the two
+  numbers is "the printed src's own traffic" flips with the arrow
+  (`<-` vs `->`) -- confirmed because the same state, viewed from two
+  interfaces, printed src and dst *swapped* between the two lines while
+  the counters stayed byte-for-byte identical across both. `_parse_
+  header_line()` discarded the arrow entirely, so `classify_sessions()`
+  always assumed bytes_a was the printed src's own traffic regardless --
+  correct for a `->` line (the shape every prior test happened to use),
+  silently backwards for a `<-` one. Fixed by capturing the arrow and
+  reorienting bytes/pkts onto (printed-src-own, printed-dst-own) before
+  the existing local/peer split, which left the already-correct `->`
+  case unchanged (verified: no existing test needed to change) and fixed
+  the `<-` case. New regression test uses the user's real captured
+  numbers directly (288279:1064917 pkts, 16881282:1437521618 bytes --
+  the packet-size math alone is a strong tell: ~59 bytes/pkt for the
+  small side matches bare TCP ACKs, ~1350 bytes/pkt for the large side
+  matches full data segments). 189 tests passing.
+  A related, secondary gap noticed but deliberately NOT fixed here (out
+  of scope for this bug, needs its own dedicated test coverage): the
+  *other* per-interface view of a NAT'd state -- the one showing the
+  translated address plus the original in parentheses, e.g. `192.168.0.2
+  :62831 (192.168.200.213:35178) -> ...` -- fails to parse at all
+  (`_split_addr_port()` chokes on the parenthesized token), so that
+  view is silently dropped rather than misread. Harmless today only
+  because the *other* view of the same state still parses and now
+  computes correctly; worth fixing properly later so a state that ONLY
+  ever appears in that form isn't invisible outright.
 - **Not yet started**: the staticOverrides grid editor, proper repo
   signing before this pkg-repo is relied on for anything that matters,
   and a possible future "scheduled traffic blocking" feature (the

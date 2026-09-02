@@ -75,6 +75,35 @@ def test_classify_sessions_orients_bytes_by_local_side():
     assert udp_snap.bytes_in == 256
 
 
+def test_classify_sessions_handles_a_reversed_arrow_with_peer_printed_as_src():
+    # Real capture from a user's box (nostromo): a phone downloading a
+    # 5.6GB ISO from a mirror, reported with bytes_in/bytes_out swapped
+    # in the UI. The raw pfctl line for the LAN-side view of this NAT'd
+    # connection prints the *peer* as src and the local host as dst, with
+    # a "<-" arrow -- confirmed against a second, WAN-side view of the
+    # exact same state (identical pkts/bytes) that this local host really
+    # sent the small number (288279 pkts / 16881282 bytes, ACK-sized at
+    # ~59 bytes/pkt) and received the large one (1064917 pkts /
+    # 1437521618 bytes, full-segment-sized at ~1350 bytes/pkt).
+    text = (
+        "all tcp 91.189.91.107:443 <- 192.168.1.50:35178       ESTABLISHED:ESTABLISHED\n"
+        "   age 00:04:43, expires in 24:00:00, 288279:1064917 pkts, "
+        "16881282:1437521618 bytes, rule 84\n"
+    )
+    records = parse_pfctl_state_text(text)
+    assert records[0]["reversed"] is True
+
+    snapshots = classify_sessions(records, LOCAL_SUBNETS)
+    assert len(snapshots) == 1
+    snap = snapshots[0]
+    assert snap.key.local_ip == "192.168.1.50"
+    assert snap.key.peer_ip == "91.189.91.107"
+    assert snap.bytes_out == 16881282
+    assert snap.bytes_in == 1437521618
+    assert snap.pkts_out == 288279
+    assert snap.pkts_in == 1064917
+
+
 def test_classify_sessions_carries_pf_state_through_to_the_snapshot():
     text = (
         "tcp 192.168.1.10:1234 -> 93.184.216.34:443       FIN_WAIT_2:CLOSE_WAIT\n"
