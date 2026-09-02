@@ -1732,6 +1732,24 @@
   because the *other* view of the same state still parses and now
   computes correctly; worth fixing properly later so a state that ONLY
   ever appears in that form isn't invisible outright.
+- **1.6.2 -- hardened `compute_tick_deltas()` against a stale/re-meaning
+  seeded baseline**, the general form of the artifact seen while
+  verifying 1.6.1 on nostromo (a download still open across the upgrade
+  restart briefly showed matching, inflated in/out totals). Real gap:
+  `tick_prev_bytes`'s per-session baseline was populated identically
+  whether it came from a normal tick five seconds ago or from whatever
+  `live_sessions` happened to hold whenever the daemon last started --
+  seconds or hours stale, or (as 1.6.1 proved) not even meaning the same
+  thing if a labeling bug was fixed in between. Diffing against it
+  either way meant any restart mid-transfer could dump an arbitrary
+  amount of already-counted-or-mislabeled history into one tick. Fixed
+  by tagging a seeded entry as such; its first `updated` tick now
+  establishes a fresh baseline with a 0,0 delta instead of diffing
+  against a baseline this run never actually measured, at the cost of
+  under-counting at most one ~poll-interval's worth of throughput right
+  after a restart -- a clearly better failure mode. Two new tests
+  (seeded-baseline-establishes-without-a-delta, then diffs normally on
+  the next tick). 191 tests passing.
 - **Not yet started**: the staticOverrides grid editor, proper repo
   signing before this pkg-repo is relied on for anything that matters,
   and a possible future "scheduled traffic blocking" feature (the

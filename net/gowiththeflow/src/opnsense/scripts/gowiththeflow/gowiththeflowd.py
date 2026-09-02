@@ -152,8 +152,12 @@ def run(config: Config) -> None:
     # table) would re-trigger the "long-lived session newly entering
     # tracking" age_s guard in compute_tick_deltas() for every
     # already-open session, discarding real bytes it should have
-    # correctly diffed against.
-    tick_prev_bytes = {snap.key: (snap.bytes_in, snap.bytes_out) for snap in seed_snapshots}
+    # correctly diffed against. The `True` marks these as *seeded*
+    # (last written to the DB by a possibly-much-earlier process, not
+    # actually observed this run) -- see compute_tick_deltas()'s
+    # docstring for why that's diffed against differently than a normal
+    # tick-to-tick baseline.
+    tick_prev_bytes = {snap.key: (snap.bytes_in, snap.bytes_out, True) for snap in seed_snapshots}
     flow_hints = FlowHintCache()
     static_overrides = correlator.parse_static_overrides(config.static_overrides)
     ptr = ptr_resolver.PtrResolver(ptr_resolver.live_resolve_fn) if config.enable_ptr_fallback else None

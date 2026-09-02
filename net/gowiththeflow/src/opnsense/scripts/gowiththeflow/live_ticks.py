@@ -23,9 +23,9 @@ class TickRow:
 
 def compute_tick_deltas(
     diff: DiffResult,
-    prev_bytes: dict[StateKey, tuple[int, int]],
+    prev_bytes: dict[StateKey, tuple[int, int, bool]],
     new_session_max_age_s: int,
-) -> tuple[list[TickRow], dict[StateKey, tuple[int, int]]]:
+) -> tuple[list[TickRow], dict[StateKey, tuple[int, int, bool]]]:
     """Returns (this tick's rows, the prev_bytes to pass into the *next*
     call) -- the caller threads prev_bytes through across poll cycles.
 
@@ -46,6 +46,24 @@ def compute_tick_deltas(
     reading to diff against (pf no longer reports a closed state at
     all) -- the same accepted "final partial interval on close is
     dropped" limitation the client-side code already documented.
+
+    `prev_bytes`' third element marks whether that baseline was actually
+    *observed* on a prior tick (False) or merely *seeded* at daemon
+    startup from whatever live_sessions last happened to hold (True) --
+    real bug, found live: a long-lived session's seeded baseline can be
+    stale (the daemon may have been down a while) or, worse, no longer
+    even mean the same thing (this exact gap is what turned a one-time
+    fix to which field was bytes_in vs bytes_out into a multi-gigabyte
+    phantom spike for any transfer still open across the upgrade's
+    restart -- the seeded "old" value was correct under the old
+    semantics, meaningless diffed against the new one). A session's
+    *first* update tick after being seeded therefore establishes a fresh
+    baseline only (delta 0,0) rather than diffing against a baseline
+    this run never actually measured; every tick after that is a normal,
+    trustworthy diff. Costs at most one ~poll-interval's worth of
+    undercounted throughput right after a restart -- far better than a
+    spike of however much traffic happened while the daemon was down (or
+    however much history predates a fix like the one above).
 
     Not handled (pre-existing, not introduced here): StateKey has no pf
     state id/creatorid, so a session that closes and a *different*
@@ -72,14 +90,17 @@ def compute_tick_deltas(
         else:
             delta_in, delta_out = 0, 0
         _add(snap.key.local_ip, snap.key.peer_port, delta_in, delta_out)
-        updated_prev[snap.key] = (snap.bytes_in, snap.bytes_out)
+        updated_prev[snap.key] = (snap.bytes_in, snap.bytes_out, False)
 
     for snap in diff.updated:
-        old_in, old_out = updated_prev.get(snap.key, (0, 0))
-        delta_in = max(snap.bytes_in - old_in, 0)
-        delta_out = max(snap.bytes_out - old_out, 0)
+        old_in, old_out, seeded = updated_prev.get(snap.key, (0, 0, False))
+        if seeded:
+            delta_in, delta_out = 0, 0
+        else:
+            delta_in = max(snap.bytes_in - old_in, 0)
+            delta_out = max(snap.bytes_out - old_out, 0)
         _add(snap.key.local_ip, snap.key.peer_port, delta_in, delta_out)
-        updated_prev[snap.key] = (snap.bytes_in, snap.bytes_out)
+        updated_prev[snap.key] = (snap.bytes_in, snap.bytes_out, False)
 
     for snap in diff.closed:
         updated_prev.pop(snap.key, None)
