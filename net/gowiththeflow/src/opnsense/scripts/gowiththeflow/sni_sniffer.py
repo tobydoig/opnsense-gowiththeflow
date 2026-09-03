@@ -13,6 +13,17 @@ from __future__ import annotations
 
 import struct
 
+try:
+    import syslog
+except ImportError:  # syslog is POSIX-only -- this module's own tests run on Windows
+    syslog = None
+
+
+def _log_error(message: str) -> None:
+    if syslog is not None:
+        syslog.syslog(syslog.LOG_ERR, message)
+
+
 _HANDSHAKE_RECORD_TYPE = 0x16
 _CLIENT_HELLO_MSG_TYPE = 0x01
 _SNI_EXTENSION_TYPE = 0x0000
@@ -199,7 +210,16 @@ def sniff_loop(interfaces: list[str], on_hint, extra_ports: list[int] | None = N
     (observed: silently falls back to an undissected Raw packet, with a
     console warning, no exception) -- so this always explicitly re-parses
     the raw bytes as Ethernet itself rather than trusting sniff()'s own
-    dissection to have succeeded."""
+    dissection to have succeeded.
+
+    Real bug, found live on a user's own box in the equivalent dns_sniffer.py
+    code path: an unhandled exception anywhere in per-packet processing
+    propagates out of scapy's own sniff() and kills this entire thread --
+    silently, with zero trace anywhere, since gowiththeflowd.py's
+    Daemonize wrapper redirects stderr to /dev/null. Caught per-packet
+    here too, matching dpi_classifier.capture_loop()'s own already-
+    established "log and keep going" precedent, so one bad packet costs
+    one dropped hint instead of the entire capture thread going dark."""
     import time
 
     from scapy.layers.inet import IP, TCP
@@ -211,15 +231,21 @@ def sniff_loop(interfaces: list[str], on_hint, extra_ports: list[int] | None = N
     reassembler = ClientHelloReassembler()
 
     def _handle(pkt) -> None:
-        eth = Ether(bytes(pkt))
-        if IP not in eth or TCP not in eth:
-            return
-        payload = _tcp_payload_bytes(eth[IP], eth[TCP])
-        if not payload:
-            return
-        key = (eth[IP].src, eth[TCP].sport, eth[IP].dst, eth[TCP].dport)
-        hostname = reassembler.feed(key, payload)
-        if hostname is not None:
-            on_hint(eth[IP].src, eth[TCP].sport, eth[IP].dst, eth[TCP].dport, hostname, int(time.time()))
+        try:
+            eth = Ether(bytes(pkt))
+            if IP not in eth or TCP not in eth:
+                return
+            payload = _tcp_payload_bytes(eth[IP], eth[TCP])
+            if not payload:
+                return
+            key = (eth[IP].src, eth[TCP].sport, eth[IP].dst, eth[TCP].dport)
+            hostname = reassembler.feed(key, payload)
+            if hostname is not None:
+                on_hint(eth[IP].src, eth[TCP].sport, eth[IP].dst, eth[TCP].dport, hostname, int(time.time()))
+        except Exception:
+            # Full traceback, not just repr(e) -- see dns_sniffer.py's
+            # equivalent handler for why that distinction mattered live.
+            import traceback
+            _log_error("gowiththeflow: SNI sniffer packet handling failed:\n%s" % traceback.format_exc())
 
     sniff(iface=interfaces, filter=bpf_filter, prn=_handle, store=False)

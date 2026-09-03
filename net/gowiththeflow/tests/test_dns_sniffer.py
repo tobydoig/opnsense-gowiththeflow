@@ -1,4 +1,4 @@
-from scapy.layers.dns import DNS, DNSQR, DNSRR
+from scapy.layers.dns import DNS, DNSQR, DNSRR, DNSRRRSIG
 from scapy.layers.inet import IP, TCP, UDP
 from scapy.layers.inet6 import IPv6
 
@@ -166,6 +166,32 @@ def test_query_event_captures_mixed_answer_types_in_order():
     ))
     event = extract_query_events(pkt, SEEN_AT)
     assert event.answers == "CNAME:example.com,A:93.184.216.34"
+
+
+def test_query_event_handles_a_dnssec_signature_answer_without_crashing():
+    # Real bug, found live on a user's own box: a DNSSEC-signed domain
+    # (Unbound validating with the DO bit set) returns an RRSIG answer
+    # alongside the real one -- scapy represents RRSIG with its own
+    # structured fields (signature, keytag, algorithm, ...), not a
+    # generic `rdata` blob, so the unconditional rr.rdata access used
+    # for every other answer type raised AttributeError. Because this
+    # ran inside sniff_loop()'s uncaught prn callback, it silently killed
+    # the entire capture thread -- not just query logging, but hostname
+    # resolution too. Record just the type name for anything without a
+    # decodable rdata rather than crashing.
+    rrsig = DNSRRRSIG(
+        rrname="example.com", type=46, ttl=300, typecovered=1, algorithm=8,
+        labels=2, originalttl=300, expiration=2_000_000_000, inception=1_900_000_000,
+        keytag=12345, signersname="example.com", signature=b"fakesignature",
+    )
+    a = DNSRR(rrname="example.com", type=1, ttl=300, rdata="93.184.216.34")
+    pkt = _real_roundtrip(
+        IP(src="8.8.8.8", dst="192.168.1.50")
+        / UDP(sport=53, dport=51234)
+        / DNS(id=1, qr=1, rcode=0, qd=[DNSQR(qname="example.com", qtype=1)], an=[a, rrsig], ancount=2)
+    )
+    event = extract_query_events(pkt, SEEN_AT)
+    assert event.answers == "A:93.184.216.34,RRSIG"
 
 
 def test_query_event_truncates_a_pathologically_large_answer_set():

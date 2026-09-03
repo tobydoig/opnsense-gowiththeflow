@@ -17,6 +17,17 @@ from scapy.layers.inet import IP
 from scapy.layers.inet6 import IPv6
 from scapy.packet import Packet
 
+try:
+    import syslog
+except ImportError:  # syslog is POSIX-only -- this module's own tests run on Windows
+    syslog = None
+
+
+def _log_error(message: str) -> None:
+    if syslog is not None:
+        syslog.syslog(syslog.LOG_ERR, message)
+
+
 MIN_TTL = 60
 MAX_TTL = 24 * 3600
 
@@ -156,7 +167,22 @@ def extract_query_events(packet: Packet, seen_at: int) -> QueryEvent | None:
     for i in range(dns.ancount):
         rr = dns.an[i]
         rtype = _type_name(int(rr.type))
-        answer_strs.append(f"{rtype}:{_decode_rdata(rr.rdata)}")
+        if hasattr(rr, "rdata"):
+            answer_strs.append(f"{rtype}:{_decode_rdata(rr.rdata)}")
+        else:
+            # DNSSEC (and similar) record types -- RRSIG, DNSKEY, NSEC,
+            # ... -- carry their own structured fields (signature,
+            # keytag, algorithm, ...) instead of a generic rdata blob.
+            # Confirmed live: a real RRSIG answer (a DNSSEC-signed
+            # domain, e.g. teams.cloud.microsoft under Unbound's default
+            # DNSSEC validation) crashed this unconditional rr.rdata
+            # access, and because this ran inside sniff_loop()'s prn
+            # callback with nothing catching it, it silently killed the
+            # entire capture thread -- taking hostname resolution down
+            # with it, not just query logging. Recording just the record
+            # type (no value) is enough for a query-log viewer; nobody
+            # reading this page needs a raw signature decoded.
+            answer_strs.append(rtype)
     truncated = len(answer_strs) > _MAX_ANSWERS_SHOWN
     shown = answer_strs[:_MAX_ANSWERS_SHOWN]
     if truncated:
@@ -189,24 +215,48 @@ def sniff_loop(
     (observed: silently falls back to an undissected Raw packet, with a
     console warning, no exception) -- so this always explicitly re-parses
     the raw bytes as Ethernet itself rather than trusting sniff()'s own
-    dissection to have succeeded."""
+    dissection to have succeeded.
+
+    Real bug, found live on a user's own box: an unhandled exception
+    anywhere in per-packet processing propagates out of scapy's own
+    sniff() and kills this entire thread -- silently, with zero trace
+    anywhere, since gowiththeflowd.py's Daemonize wrapper redirects
+    stderr to /dev/null (confirmed by reading its source). One later
+    packet caused every future DNS query from that point on to go
+    unrecorded, indistinguishable from a working sniffer to anything
+    watching the daemon itself (hostname caching runs from a separate
+    code path unaffected by a query-log-specific failure, or could -- in
+    a worse case -- have stopped too with the same silent non-symptom).
+    Caught per-packet here, matching dpi_classifier.capture_loop()'s own
+    already-established "log and keep going" precedent for the exact
+    same class of bug, so one bad packet costs one dropped observation
+    instead of the entire capture thread going dark with no way to even
+    tell it happened."""
     import time
 
     from scapy.layers.l2 import Ether
     from scapy.sendrecv import sniff
 
     def _handle(pkt: Packet) -> None:
-        eth = Ether(bytes(pkt))
-        now_i = int(time.time())
-        for obs in extract_observations(eth, now_i):
-            on_observation(obs)
-        # Same re-parsed packet feeds both extractors -- avoids a second
-        # sniff()/Ether() reparse just to also log the raw query/response,
-        # since on_query_event is optional (only set when
-        # enable_dns_query_log is on).
-        if on_query_event is not None:
-            event = extract_query_events(eth, now_i)
-            if event is not None:
-                on_query_event(event)
+        try:
+            eth = Ether(bytes(pkt))
+            now_i = int(time.time())
+            for obs in extract_observations(eth, now_i):
+                on_observation(obs)
+            # Same re-parsed packet feeds both extractors -- avoids a second
+            # sniff()/Ether() reparse just to also log the raw query/response,
+            # since on_query_event is optional (only set when
+            # enable_dns_query_log is on).
+            if on_query_event is not None:
+                event = extract_query_events(eth, now_i)
+                if event is not None:
+                    on_query_event(event)
+        except Exception:
+            # The full traceback, not just repr(e) -- confirmed live this
+            # is what actually made the RRSIG bug above diagnosable at
+            # all; a bare exception message alone wouldn't have pointed
+            # at the exact failing line or record type.
+            import traceback
+            _log_error("gowiththeflow: DNS sniffer packet handling failed:\n%s" % traceback.format_exc())
 
     sniff(iface=interfaces, filter=bpf_filter, prn=_handle, store=False)

@@ -1750,6 +1750,41 @@
   after a restart -- a clearly better failure mode. Two new tests
   (seeded-baseline-establishes-without-a-delta, then diffs normally on
   the next tick). 191 tests passing.
+- **1.6.3 -- real bug found by the user on nostromo: the DNS/SNI sniffer
+  threads can die silently, with zero trace anywhere, taking hostname
+  resolution and DNS query logging down with them while the rest of the
+  daemon (Live/Top Talkers, pf-state polling) keeps running normally.**
+  Root-caused live, over an extended back-and-forth with the user
+  checking real data on their own box: an initial suspicion around the
+  `bucket_start` hourly boundary turned out to be a timezone artifact in
+  comparing a UTC process-start timestamp against a browser-local
+  "last updated" time (both were actually the same instant); the real
+  smoking gun was a genuinely new domain resolving fine right after a
+  restart, working for one burst of a few queries, then permanently
+  producing bare IPs on Live for anything new -- meaning the whole
+  capture thread had died, not just the query-log half of it.
+  `gowiththeflowd.py`'s `Daemonize` wrapper redirects stdin/stdout/
+  *stderr* all to `/dev/null` (confirmed by reading its source) -- so an
+  unhandled exception anywhere in `dns_sniffer.sniff_loop()`/`sni_
+  sniffer.sniff_loop()`'s per-packet callback propagates out of scapy's
+  own `sniff()`, kills that thread, and leaves genuinely zero trace in
+  any log, which is exactly why grepping the system log twice during
+  diagnosis came up empty despite something clearly being wrong.
+  `dpi_classifier.capture_loop()` already had the right pattern for this
+  exact class of bug (a real fix from 1.4.1: catch broad exceptions
+  around each unit of work, log via the stdlib `syslog` module, keep
+  going) -- it just hadn't been generalized to the other two sniffer
+  threads. Fixed by wrapping both threads' per-packet `_handle()` bodies
+  the same way. The specific packet/condition that originally triggered
+  the crash on nostromo was never identified (couldn't be, given zero
+  trace existed) -- the fix doesn't need to know what it was; it makes
+  the *next* occurrence, on any thread, actually diagnosable instead of
+  silently fatal. Verified on the test VM: normal operation unaffected
+  (dns_query_log kept growing correctly post-fix), and a real
+  `shutdown -r now` confirmed the daemon and both sniffer threads still
+  come up cleanly. 191 tests passing (sniff_loop() itself remains
+  untested by unit tests, by this module's own long-standing design --
+  it's only ever proven against real capture on a real box).
 - **Not yet started**: the staticOverrides grid editor, proper repo
   signing before this pkg-repo is relied on for anything that matters,
   and a possible future "scheduled traffic blocking" feature (the
