@@ -5,6 +5,7 @@
             <History order="20" url="/ui/gowiththeflow/history"/>
             <DnsQueries VisibleName="DNS Queries" order="25" url="/ui/gowiththeflow/dnsqueries"/>
             <TopTalkers VisibleName="Top Talkers" order="30" url="/ui/gowiththeflow/toptalkers"/>
+            <Blockrules VisibleName="Block Rules" order="40" url="/ui/gowiththeflow/blockrules"/>
         </GoWithTheFlow>
     </Reporting>
     <Services>

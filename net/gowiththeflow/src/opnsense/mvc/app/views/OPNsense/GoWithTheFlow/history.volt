@@ -74,63 +74,6 @@
 
         loadHistoryChart();
 
-        // Its own grid, entirely independent of the days/local-host
-        // filters above (it always shows the full, currently-blocked
-        // set) -- deliberately not wired into reloadAll(), so it never
-        // reloads on a filter change, and deliberately reloaded again on
-        // every "shown.bs.tab" below rather than only once here, since a
-        // block/unblock made from the Live page in the meantime would
-        // otherwise go unnoticed until some unrelated action reloaded it.
-        $("#grid-blocked").UIBootgrid({
-            search: '/api/gowiththeflow/blocked/search/',
-            commands: {
-                gwtfunblock: {
-                    title: "{{ lang._('Unblock this device') }}",
-                    classname: 'fa fa-ban fa-fw text-danger',
-                    sequence: 1,
-                    method: function (event, cell) {
-                        const d = cell.getData();
-                        stdDialogConfirm(
-                            "{{ lang._('Confirm unblock') }}",
-                            "{{ lang._('Restore traffic to and from') }} " + d.host + "?",
-                            "{{ lang._('Unblock') }}", "{{ lang._('Cancel') }}",
-                            function () {
-                                ajaxCall('/api/gowiththeflow/blocked/unblock', { local_ip: d.local_ip }, function (data) {
-                                    if (data && data.status !== 'ok') {
-                                        stdDialogInform(
-                                            "{{ lang._('Unblock failed') }}",
-                                            (data && data.error) || "{{ lang._('Unknown error') }}",
-                                            "{{ lang._('Close') }}", undefined, 'danger'
-                                        );
-                                    }
-                                    $("#grid-blocked").bootgrid('reload');
-                                });
-                            },
-                            'warning'
-                        );
-                    }
-                }
-            },
-            options: {
-                selection: false,
-                multiSelect: false,
-                formatters: {
-                    "timestampformatter": function (column, row) {
-                        return formatTimestampGWTF(row[column.id]);
-                    }
-                }
-            }
-        });
-        addCsvExportButtonGWTF('grid-blocked', 'gowiththeflow-blocked.csv');
-
-        $('a[href="#history-blocked"]').on('shown.bs.tab', function () {
-            $("#days-selection-wrapper, #local-host-selection-wrapper").hide();
-            $("#grid-blocked").bootgrid('reload');
-        });
-        $('a[href="#history-overview"], a[href="#history-table"]').on('shown.bs.tab', function () {
-            $("#days-selection-wrapper, #local-host-selection-wrapper").show();
-        });
-
         function populateLocalHostOptionsGWTF(localHosts) {
             let known = $("#local-host-selection > option").map(function () {
                 return $(this).val();
@@ -243,13 +186,6 @@
         }).appendTo('#' + gridId + '-actions-group');
     }
 
-    function formatTimestampGWTF(unixSeconds) {
-        if (unixSeconds === undefined || unixSeconds === null) {
-            return "";
-        }
-        return new Date(unixSeconds * 1000).toLocaleString();
-    }
-
     function formatBytesGWTF(bytes) {
         if (bytes === undefined || bytes === null) {
             return "";
@@ -283,7 +219,6 @@
 <ul class="nav nav-tabs" data-tabs="tabs" id="historytabs">
     <li class="active"><a data-toggle="tab" href="#history-overview">{{ lang._('Overview') }}</a></li>
     <li><a data-toggle="tab" href="#history-table">{{ lang._('Table') }}</a></li>
-    <li><a data-toggle="tab" href="#history-blocked">{{ lang._('Blocked') }}</a></li>
 </ul>
 <div class="tab-content content-box col-xs-12 __mb">
     <div id="history-overview" class="tab-pane fade in active">
@@ -316,23 +251,6 @@
                     <th data-column-id="bytes_in" data-type="numeric" data-formatter="bytesformatter">{{ lang._('Bytes In') }}</th>
                     <th data-column-id="bytes_out" data-type="numeric" data-formatter="bytesformatter">{{ lang._('Bytes Out') }}</th>
                     <th data-column-id="bytes_total" data-type="numeric" data-formatter="bytesformatter">{{ lang._('Total') }}</th>
-                </tr>
-            </thead>
-            <tbody>
-            </tbody>
-        </table>
-    </div>
-    <div id="history-blocked" class="tab-pane fade in">
-        <table id="grid-blocked" class="table table-condensed table-hover table-striped table-responsive">
-            <thead>
-                <tr>
-                    <th data-column-id="commands" data-width="3em" data-searchable="false" data-sortable="false" data-formatter="commands"></th>
-                    <th data-column-id="row_id" data-identifier="true" data-visible="false">id</th>
-                    <th data-column-id="host" data-type="string">{{ lang._('Host') }}</th>
-                    <th data-column-id="mac" data-type="string" data-width="12em">{{ lang._('MAC') }}</th>
-                    <th data-column-id="blocked_at" data-type="numeric" data-formatter="timestampformatter">{{ lang._('Blocked At') }}</th>
-                    <th data-column-id="blocked_by" data-type="string" data-width="10em">{{ lang._('Blocked By') }}</th>
-                    <th data-column-id="reason" data-type="string">{{ lang._('Reason') }}</th>
                 </tr>
             </thead>
             <tbody>

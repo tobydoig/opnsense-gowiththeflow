@@ -204,6 +204,65 @@ CREATE TABLE IF NOT EXISTS blocked_hosts (
   reason TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_blocked_hosts_at ON blocked_hosts(blocked_at);
+
+-- Source of truth for the block-rules feature (host-only or host+domain
+-- blocks, each with an optional schedule) -- deliberately separate from
+-- blocked_hosts, which is the literal, continuously-rewritten mirror of
+-- pf's own block table (sync_pf() rebuilds it from 100% of its rows). A
+-- domain-only rule must never land there, or it would get full-host
+-- blocked by mistake. block_rules_engine.py derives blocked_hosts rows
+-- (for rule_type='host') and Unbound dnsbl.blocklist rows (for
+-- rule_type='domain') FROM this table, never the other way round.
+CREATE TABLE IF NOT EXISTS block_rules (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  rule_type TEXT NOT NULL CHECK (rule_type IN ('host', 'domain')),
+  local_ip TEXT NOT NULL,
+  -- Snapshotted at rule-creation time, same rationale as blocked_hosts'
+  -- own hostname/mac columns above.
+  mac TEXT,
+  hostname TEXT,
+  -- CSV domain list, NULL for rule_type='host' -- deliberately the same
+  -- shape as Unbound's own dnsbl.blocklist.wildcards field, so no
+  -- translation is needed when applying a domain rule.
+  domains TEXT,
+  -- NULL = "always" (this rule behaves exactly like a block did before
+  -- this feature existed: blocked until manually unblocked). Otherwise
+  -- {"windows": [{"days": ["mon", ...], "start": "20:00", "end": "08:00"}]},
+  -- parsed by block_schedule.py.
+  schedule_json TEXT,
+  -- Pausing a rule (enabled=0) stops the scheduler from touching it at
+  -- all, without losing the rule's own configuration.
+  enabled INTEGER NOT NULL DEFAULT 1,
+  -- A manual block/unblock while a schedule is active is a real,
+  -- temporary override lasting until the current schedule segment ends
+  -- (that window's own end if manually unblocked mid-window, or the next
+  -- window's start if manually blocked mid-gap) -- see
+  -- block_schedule.current_segment_end(). NULL override_until means no
+  -- override is active; the reconcile tick clears both columns once
+  -- override_until has passed.
+  manual_override_state TEXT CHECK (manual_override_state IN ('blocked', 'unblocked') OR manual_override_state IS NULL),
+  override_until INTEGER,
+  -- Written by the reconcile tick every pass; the PHP API reads this
+  -- rather than re-implementing the schedule predicate itself, at the
+  -- cost of up to one reconcile interval's staleness right after a
+  -- boundary -- an accepted, honestly-labeled tradeoff.
+  last_effective_state TEXT,
+  last_evaluated_at INTEGER,
+  -- Stable key (e.g. 'gowiththeflow:rule:<id>') used to find/own only
+  -- this plugin's own row in Unbound's dnsbl.blocklist -- never touches
+  -- a user's own manually-configured blocklists. NULL for rule_type='host'.
+  unbound_description TEXT,
+  created_at INTEGER NOT NULL,
+  created_by TEXT,
+  reason TEXT,
+  updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_block_rules_local_ip ON block_rules(local_ip);
+-- Two independent "block everything" rules for the same device is
+-- meaningless; domain rules have no such limit (e.g. youtube.com and
+-- reddit.com as two separate rules with different schedules is real).
+CREATE UNIQUE INDEX IF NOT EXISTS idx_block_rules_one_host_rule
+  ON block_rules(local_ip) WHERE rule_type = 'host';
 """
 
 

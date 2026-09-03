@@ -1560,7 +1560,7 @@
 <ul class="nav nav-tabs" data-tabs="tabs" id="livetabs">
     <li class="active"><a data-toggle="tab" href="#live-overview">{{ lang._('Overview') }}</a></li>
     <li><a data-toggle="tab" href="#live-toptalkers">{{ lang._('Top Talkers') }}</a></li>
-    <li><a data-toggle="tab" href="#live-table">{{ lang._('Table') }}</a></li>
+    <li><a data-toggle="tab" href="#live-table">{{ lang._('Details') }}</a></li>
 </ul>
 <div class="tab-content content-box col-xs-12 __mb">
     <div id="live-overview" class="tab-pane fade in active">
@@ -1598,7 +1598,7 @@
     </div>
     <div id="live-toptalkers" class="tab-pane fade in">
         <p class="help-block">
-            {{ lang._('Click a host to see its connections in the Table tab. "1 min" is a trailing moving window (not just the last refresh); "window" covers the same 30-minute range as the Overview chart.') }}
+            {{ lang._('Click a host to see its connections in the Details tab. "1 min" is a trailing moving window (not just the last refresh); "window" covers the same 30-minute range as the Overview chart.') }}
         </p>
         <table id="grid-live-toptalkers" class="table table-condensed table-hover table-striped table-responsive">
             <thead>

@@ -24,6 +24,7 @@ import sys
 import time
 
 import blocklist
+import block_rules_engine
 import db
 
 DB_PATH = "/var/db/gowiththeflow/flows.db"
@@ -59,21 +60,19 @@ def cmd_block(args: argparse.Namespace) -> dict:
     if ip is None:
         return {"status": "error", "error": f"not a valid single IP address: {args.ip!r}"}
 
-    import subprocess
-
-    ifconfig_output = subprocess.run(
-        ["/sbin/ifconfig", "-a"], capture_output=True, text=True, check=False
-    ).stdout
-    if ip in blocklist.parse_own_addresses(ifconfig_output):
-        return {"status": "error", "error": "refusing to block one of the firewall's own addresses"}
-    if blocklist.is_subnet_edge_address(ip, _load_local_subnets()):
-        return {"status": "error", "error": "refusing to block a network/broadcast address -- not a real device"}
+    refusal = blocklist.refuse_reason_for_host_block(ip, _load_local_subnets())
+    if refusal is not None:
+        return {"status": "error", "error": refusal}
 
     conn = db.connect(DB_PATH)
     db.init_schema(conn)
     hostname, mac = _lookup_identity(conn, ip)
     now = int(time.time())
     blocklist.add_block(conn, ip, hostname, mac, args.by, args.reason, now)
+    # Keeps the block-rules feature's unified page in lockstep with this
+    # pre-existing quick-block action -- a block made here shows up there
+    # too, as an "always" host rule, with no separate migration step.
+    block_rules_engine.create_host_rule(conn, ip, hostname, mac, args.by, args.reason, now)
 
     warnings = []
     if not blocklist.rules_present():
@@ -110,6 +109,12 @@ def cmd_unblock(args: argparse.Namespace) -> dict:
     conn = db.connect(DB_PATH)
     db.init_schema(conn)
     blocklist.remove_block(conn, ip)
+    # Same lockstep reasoning as cmd_block above -- without this, the
+    # mirrored "always" host rule would still be enabled, and the
+    # scheduler's own reconcile tick would silently re-block this exact
+    # IP within the next ~60s of the user unblocking it here.
+    conn.execute("DELETE FROM block_rules WHERE rule_type = 'host' AND local_ip = ?", (ip,))
+    conn.commit()
     sync_result = blocklist.sync_pf(conn, TABLE_FILE_PATH)
 
     warnings = []

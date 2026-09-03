@@ -1785,16 +1785,146 @@
   come up cleanly. 191 tests passing (sniff_loop() itself remains
   untested by unit tests, by this module's own long-standing design --
   it's only ever proven against real capture on a real box).
-- **Not yet started**: the staticOverrides grid editor, proper repo
-  signing before this pkg-repo is relied on for anything that matters,
-  and a possible future "scheduled traffic blocking" feature (the
-  user's original motivating real-world case -- catching a kid's gaming
-  device active late at night, wanting to eventually block it during set
-  hours). The unified peer model and the new `state` field are already
-  compatible with that future feature; it's deliberately not designed or
-  scoped yet, and would most likely layer on top via pf's own
-  schedule-based rules rather than this plugin reinventing blocking
-  itself. See "Roadmap" below for the larger post-launch feature set
+- **1.7.0 -- block rules on a schedule, and per-domain blocking.** The
+  user's original motivating case (catching a kid's gaming device active
+  late at night and blocking it during set hours) plus a second one
+  raised alongside it (block just youtube.com for one device, not the
+  whole thing). Ended up smaller than either sounded alone: per-domain
+  blocking rides OPNsense's own native Unbound DNSBL feature (Services >
+  Unbound DNS > Blocklist) rather than any custom DNS-blocking mechanism
+  -- confirmed live, not assumed, that a `dnsbl.blocklist` row's
+  `wildcards` field blocks a domain and every subdomain automatically,
+  and `source_nets` genuinely scopes the block to one client IP (proved
+  with a real test entry: blocked for the target IP including a
+  subdomain, passed for every other IP). The actual new work is a
+  scheduler sitting on top of both this and the existing pf-based
+  host-block mechanism, plus a friendlier interface than either
+  Unbound's own blocklist editor or hand-writing pf rules.
+  New `block_rules` table (db.py) -- deliberately separate from
+  `blocked_hosts`, which stays exactly as it was (the literal,
+  continuously-rewritten mirror of pf's own block table): a domain-only
+  rule must never land there, or it would get full-host-blocked by
+  mistake. `block_rules` is a real table of rules (host-only or
+  host+domain, each with an optional weekly schedule), not just a set of
+  currently-blocked IPs. A schedule is one or more `{days, start, end}`
+  windows (`block_schedule.py`, pure logic, no I/O -- overnight-spanning
+  windows, e.g. the user's own "8pm-8am weekdays, 9pm-7:30am weekends"
+  example, and multiple chained/overlapping windows merging into one
+  continuous segment, are both exercised directly by its own tests).
+  Decided with the user: a manual unblock while a schedule would
+  otherwise be blocking is a real, temporary override lasting until that
+  window's own end (not just until the next reconcile tick), and
+  symmetrically a manual block during a gap holds until the next window
+  would naturally start anyway -- that second half wasn't explicitly
+  decided, it's this feature's own natural extension of the first,
+  called out as such rather than silently assumed.
+  `gowiththeflowd.py` gained a new ~60s reconcile tick (`block_rules_
+  engine.reconcile_all()`, same elapsed-gating shape as the existing
+  hourly/daily jobs, plus one extra call at startup so a restart
+  mid-window re-asserts state immediately) that is the *only* thing
+  deciding what's currently blocked -- kept in the daemon rather than a
+  separate PHP-driven cron specifically so there is still exactly one
+  writer of "what's blocked right now" (this project's existing
+  `blocked_hosts`/pf architecture already had exactly one, on purpose)
+  and because killing in-flight pf states on a schedule-triggered block
+  needs the same `blocklist.kill_states()` capability manual blocking
+  already uses, which only exists inside the running daemon process. A
+  domain rule's actual enforcement crosses into PHP regardless (Unbound's
+  config is PHP-model-owned) via a new, small, dedicated CLI script
+  (`dnsbl_apply.php`, shelled out to directly, not via configd) rather
+  than Python re-implementing Unbound's config generation -- confirmed
+  live end-to-end through the real daemon's own reconcile tick, not just
+  a direct CLI call: created a scheduled domain rule with a ~2-minute
+  test window, confirmed it was blocked while active, then watched the
+  daemon's own background loop actually flip it back to "Pass" within
+  ~15 seconds of the window ending, with no manual trigger at all.
+  The existing block-a-host quick-block icon on Live/Top Talkers keeps
+  working completely unchanged -- `block_host.py`'s own `cmd_block`/
+  `cmd_unblock` now also upsert/delete a mirrored "always" host rule in
+  `block_rules` in the same call, so both surfaces stay in lockstep with
+  no separate migration step, and so the scheduler's own reconcile tick
+  can never fight with a block made the old way (an easy trap: without
+  this, unblocking via the old icon would leave a stale enabled rule
+  behind that the next reconcile tick would silently re-block within
+  ~60s).
+  A domain rule's target device must already have a static DHCP
+  reservation (refused, not auto-created, if it doesn't) -- confirmed
+  live which exact Dnsmasq.xml field shape to check
+  (`\OPNsense\Dnsmasq\Dnsmasq()->hosts`, an ArrayField whose own `ip`/
+  `hwaddr` fields ARE the reservation, not a separate nested collection
+  as originally guessed from reading the XML alone) rather than trusting
+  the schema on paper.
+  The Add/Edit dialog's "Device" field accepts a known hostname as well
+  as a raw IP (`BlockrulesController::resolveDeviceIp()`, a case-
+  insensitive `local_host_identity` lookup, most-recent-wins like every
+  other identity lookup in this project) plus a `<datalist>`-driven
+  autocomplete of every locally-known device -- confirmed live against a
+  real inserted identity row (exact hostname, mixed-case hostname, raw
+  IP, and an unknown name correctly returning null).
+  New unified "Block Rules" page (`blockrules.volt`, its own top-level
+  menu entry) replaces History's old Blocked tab -- one grid for every
+  rule regardless of kind, each row showing its schedule (or "Always")
+  and live status (read from a cache field the reconcile tick itself
+  writes, rather than a second PHP implementation of the schedule
+  predicate that could drift from the real one -- up to one reconcile
+  interval's staleness right after a boundary is an accepted,
+  honestly-labeled tradeoff). `BlockedController::searchAction()` (the
+  old tab's own endpoint) was deleted outright as dead code rather than
+  left behind, now that nothing calls it.
+  New tests: `block_schedule.py` (14), `block_rules_engine.py` (26,
+  covering the full CRUD surface plus the pure decision logic and the
+  reconcile loop surviving one rule's bad data), `block_rules.py`'s CLI
+  (12), plus `blocklist.py`'s new shared `refuse_reason_for_host_block()`
+  guard (factored out of `block_host.py` so the new `block_rules.py`
+  entry point can't drift from the original's own firewall-lockout
+  checks) and `block_host.py`'s new lockstep behavior (5). 252 tests
+  passing.
+- **1.7.0 follow-ups.** Two robustness gaps found via the user's own
+  pointed questions after the above shipped, both from the same root
+  cause this project has now hit three times (see dns_sniffer.py's
+  RRSIG fix in 1.6.3): `Daemonize` redirects stdin/stdout/stderr to
+  `/dev/null`, so an unhandled exception anywhere in the main loop or a
+  background thread is completely invisible unless it's explicitly
+  caught and logged.
+  1. `gowiththeflowd.py`'s call to `block_rules_engine.reconcile_all()`
+     wasn't itself exception-wrapped -- only per-rule failures inside
+     `reconcile_all()` were caught. A failure in the reconcile call's own
+     setup (e.g. its initial query) would have taken the *entire* daemon
+     down silently. Fixed with a `_reconcile_schedules()` wrapper
+     (log-and-continue, same shape as every other guarded call site).
+     Verified live: renamed the real `block_rules` table away, confirmed
+     the daemon logged the expected error every cycle for 3+ cycles on
+     the *same* PID while every other job (DNS query log writes
+     included) kept working normally, then restored the table and
+     confirmed a clean recovery with no further errors.
+  2. The PTR reverse-DNS fallback (`ptr_resolver.py`) only ever got one
+     attempt per peer, made inline in the main poll loop at the moment a
+     session first opened, capped at 10 lookups/60s. Real-world symptom
+     reported by the user: peers that manually `nslookup`'d fine (e.g. a
+     GitHub/Facebook CDN edge) were showing as bare IPs in the Details
+     tab. Root cause: a burst of new sessions from several devices at
+     once could exceed that one poll's lookup budget, and once a peer
+     missed its single shot it was never retried for the life of that
+     flow -- worse, a single failed lookup (even a transient one) was
+     negative-cached for a full hour, so a lookup that would have
+     succeeded moments later stayed blocked. Fixed by moving PTR lookups
+     onto their own background thread (`ptr_resolver.resolve_loop()`,
+     same queue/callback shape as `dpi_classifier.capture_loop`) so a
+     slow upstream resolver can never stall pf state polling, and
+     changing the trigger from "only newly-opened sessions" to "every
+     still-open, still-unresolved session, every poll" -- a still-open
+     flow's peer now keeps getting retried rather than getting one shot.
+     With lookups off the poll loop's hot path, the rate-limit budget
+     was raised (10 -> 60/60s) and the negative-cache TTL shortened
+     (3600s -> 300s) to act as a retry backoff rather than an hour-long
+     lockout. 3 new tests for `resolve_loop()` (hit, miss, and surviving
+     a raising resolver without killing the thread). 255 tests passing.
+- **Not yet started**: the staticOverrides grid editor, and proper repo
+  signing before this pkg-repo is relied on for anything that matters.
+  ("Scheduled traffic blocking" -- the user's original motivating
+  real-world case, catching a kid's gaming device active late at night --
+  is no longer on this list: see the 1.7.0 entry below.) See "Roadmap"
+  below for the larger post-launch feature set
   (app/category classification, local<->local tracking, Sankey
   visualization, DPI) agreed after the user asked to aim for rough
   feature parity with the commercial ZenArmor plugin -- items #2 and #3

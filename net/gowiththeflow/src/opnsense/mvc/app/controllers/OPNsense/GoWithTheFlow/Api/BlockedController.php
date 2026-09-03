@@ -5,28 +5,6 @@ namespace OPNsense\GoWithTheFlow\Api;
 class BlockedController extends DbApiControllerBase
 {
     /**
-     * Bootgrid-shaped, for the History > Blocked tab.
-     */
-    public function searchAction()
-    {
-        $records = [];
-        $db = $this->openDb();
-        if ($db !== null) {
-            $result = $db->query(
-                'SELECT local_ip, hostname, mac, blocked_at, blocked_by, reason
-                 FROM blocked_hosts ORDER BY blocked_at DESC'
-            );
-            while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
-                $row['row_id'] = $row['local_ip'];
-                $row['host'] = $this->formatHost($row['hostname'], $row['local_ip']);
-                $records[] = $row;
-            }
-        }
-
-        return $this->searchRecordsetBase($records, null, 'blocked_at');
-    }
-
-    /**
      * Flat {"blocked": ["10.0.0.5", ...]} -- for the Live page's per-row
      * block-icon state. searchAction()'s paginated Bootgrid envelope
      * can't tell the Live grids about a blocked host that happens to be

@@ -119,6 +119,34 @@ def test_is_subnet_edge_address_never_flags_ipv6():
     assert not blocklist.is_subnet_edge_address("fd00::", ["fd00::/64"])
 
 
+# --- refuse_reason_for_host_block -----------------------------------------
+
+def test_refuse_reason_for_host_block_refuses_the_firewalls_own_address(monkeypatch):
+    monkeypatch.setattr(
+        blocklist.subprocess, "run",
+        lambda args, **kw: _FakeCompletedProcess(stdout=_load_fixture("ifconfig_a_sample.txt")),
+    )
+    reason = blocklist.refuse_reason_for_host_block("10.0.0.1", ["10.0.0.0/24"])
+    assert reason is not None and "firewall" in reason
+
+
+def test_refuse_reason_for_host_block_refuses_a_broadcast_address(monkeypatch):
+    monkeypatch.setattr(
+        blocklist.subprocess, "run",
+        lambda args, **kw: _FakeCompletedProcess(stdout=_load_fixture("ifconfig_a_sample.txt")),
+    )
+    reason = blocklist.refuse_reason_for_host_block("10.0.0.255", ["10.0.0.0/24"])
+    assert reason is not None and "broadcast" in reason
+
+
+def test_refuse_reason_for_host_block_allows_a_real_device(monkeypatch):
+    monkeypatch.setattr(
+        blocklist.subprocess, "run",
+        lambda args, **kw: _FakeCompletedProcess(stdout=_load_fixture("ifconfig_a_sample.txt")),
+    )
+    assert blocklist.refuse_reason_for_host_block("10.0.0.9", ["10.0.0.0/24"]) is None
+
+
 def test_is_subnet_edge_address_rejects_garbage_ip_or_subnet():
     assert not blocklist.is_subnet_edge_address("not-an-ip", ["10.0.0.0/24"])
     assert not blocklist.is_subnet_edge_address("10.0.0.255", ["not-a-subnet"])

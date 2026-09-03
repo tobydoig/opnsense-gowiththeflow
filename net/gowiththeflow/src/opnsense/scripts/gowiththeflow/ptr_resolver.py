@@ -5,15 +5,48 @@ Stage A7: exercised with an injected `resolve_fn` in place of a real
 `socket.gethostbyaddr` call, so tests are fully deterministic and never
 touch the network. The live entrypoint wires a real resolver in
 gowiththeflowd.py, proven against real traffic in Phase B.
+
+`resolve_loop()` (added after a real gap found live: a burst of new
+sessions from several devices at once could exhaust a single poll cycle's
+lookup budget, and a peer that missed its one-shot attempt at flow-open
+was never retried for the life of that flow) runs PTR lookups on a
+dedicated background thread rather than inline in gowiththeflowd.py's main
+poll loop. That's the actual reason for the rate limit below -- not
+memory or CPU cost (the cache is a couple of tiny in-process dicts) but
+that `socket.gethostbyaddr()` is a blocking network call, and one running
+inline in the poll loop could stall pf state polling for every device on
+the network if the upstream resolver is slow. Off the hot path, the
+budget can be far more generous, and gowiththeflowd.py now retries any
+still-open, still-unresolved session's peer on every poll rather than
+only once at open time.
 """
 
 from __future__ import annotations
 
+import time
 from typing import Callable
 
-DEFAULT_MAX_LOOKUPS_PER_WINDOW = 10
+try:
+    import syslog
+except ImportError:  # syslog is POSIX-only -- this module's own tests run on Windows
+    syslog = None
+
+
+def _log_error(message: str) -> None:
+    if syslog is not None:
+        syslog.syslog(syslog.LOG_ERR, message)
+
+
+# Generous now that lookups run off the main poll loop (see module
+# docstring) -- was 10/60s when this ran inline and needed to bound how
+# long a single poll cycle could be blocked.
+DEFAULT_MAX_LOOKUPS_PER_WINDOW = 60
 DEFAULT_WINDOW_S = 60
-NEGATIVE_CACHE_TTL_S = 3600
+# Short enough to act as a retry backoff rather than an hour-long lockout
+# -- a still-open session's peer gets re-enqueued on every poll, so a
+# transient failure (a momentary resolver hiccup, not a real NXDOMAIN)
+# recovers in minutes instead of blocking the rest of that flow's life.
+NEGATIVE_CACHE_TTL_S = 300
 
 
 class PtrResolver:
@@ -48,6 +81,37 @@ class PtrResolver:
         if hostname is None:
             self._negative_cache[ip] = now + NEGATIVE_CACHE_TTL_S
         return hostname
+
+
+def resolve_loop(
+    work_queue,
+    on_result: Callable[[str, "str | None"], None],
+    resolver: PtrResolver,
+) -> None:
+    """Background thread loop: pulls candidate peer IPs off `work_queue`
+    and resolves each via `resolver`, off gowiththeflowd.py's main poll
+    loop thread -- see module docstring for why a blocking
+    socket.gethostbyaddr() must never run inline there.
+
+    Always calls on_result(ip, hostname_or_None) exactly once per
+    dequeued item, even on a miss or a rate-limited skip. The caller uses
+    this to clear its own in-flight tracking so a still-unresolved,
+    still-open session's peer is eligible to be retried on a later poll
+    rather than being stuck forever once dequeued.
+
+    Never exits on its own, matching dns_sniffer.sniff_loop/
+    sni_sniffer.sniff_loop/dpi_classifier.capture_loop. Wraps each item in
+    its own try/except -- Daemonize redirects stderr to /dev/null, so an
+    unhandled exception here would otherwise silently kill this thread
+    for the rest of the process's life."""
+    while True:
+        ip = work_queue.get()
+        try:
+            hostname = resolver.resolve(ip, time.time())
+        except Exception as e:
+            _log_error("gowiththeflow: PTR lookup for %s failed: %r" % (ip, e))
+            hostname = None
+        on_result(ip, hostname)
 
 
 def live_resolve_fn(ip: str) -> str | None:

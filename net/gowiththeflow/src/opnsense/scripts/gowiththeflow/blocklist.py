@@ -105,6 +105,24 @@ def is_subnet_edge_address(ip: str, local_subnets: list[str]) -> bool:
     return False
 
 
+def refuse_reason_for_host_block(ip: str, local_subnets: list[str]) -> str | None:
+    """Returns a human-readable refusal reason if `ip` must never be
+    host-blocked (the firewall's own address, or a subnet's network/
+    broadcast address), or None if blocking it is fine. Shared by every
+    caller that creates a host-type block (block_host.py's own cmd_block,
+    block_rules.py's `create --type host`) so this guard can't drift
+    between the two entry points -- there was only ever meant to be one
+    place that decides this."""
+    ifconfig_output = subprocess.run(
+        ["/sbin/ifconfig", "-a"], capture_output=True, text=True, check=False
+    ).stdout
+    if ip in parse_own_addresses(ifconfig_output):
+        return "refusing to block one of the firewall's own addresses"
+    if is_subnet_edge_address(ip, local_subnets):
+        return "refusing to block a network/broadcast address -- not a real device"
+    return None
+
+
 def render_table_file(ips: list[str]) -> str:
     """One address per line, deduplicated and sorted, trailing newline --
     matches pf's own table-file format (see pfctl(8)'s TABLES section).

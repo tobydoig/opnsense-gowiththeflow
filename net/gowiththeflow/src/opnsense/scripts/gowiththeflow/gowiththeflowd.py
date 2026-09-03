@@ -11,6 +11,7 @@ only exercised end-to-end in Phase B, per the project plan.
 
 from __future__ import annotations
 
+import itertools
 import json
 import queue
 import subprocess
@@ -18,6 +19,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 
+import block_rules_engine
 import categories
 import category_updater
 import correlator
@@ -34,10 +36,22 @@ import sni_sniffer
 from pf_state_poller import PfStatePoller
 from sni_sniffer import FlowHintCache
 
+try:
+    import syslog
+except ImportError:  # syslog is POSIX-only -- this module's own tests run on Windows
+    syslog = None
+
+
+def _log_error(message: str) -> None:
+    if syslog is not None:
+        syslog.syslog(syslog.LOG_ERR, message)
+
+
 POLL_INTERVAL_S = 5
 LOCALHOST_REFRESH_INTERVAL_S = 5 * 60
 HOURLY_JOB_INTERVAL_S = 60 * 60
 DAILY_JOB_INTERVAL_S = 24 * 60 * 60
+SCHEDULE_RECONCILE_INTERVAL_S = 60
 PTR_TTL_S = 24 * 3600
 # Comfortably above the Live Overview chart's fixed 30-minute range --
 # pruned every poll cycle (not just hourly, see the prune_live_ticks
@@ -140,6 +154,21 @@ class Config:
         )
 
 
+def _reconcile_schedules(conn, now_i: int) -> None:
+    """Wraps block_rules_engine.reconcile_all() so a genuinely unexpected
+    failure (as opposed to one bad rule's own data, which reconcile_all()
+    already isolates and logs itself) logs and lets the main loop
+    continue, rather than taking the *entire* daemon down silently --
+    the exact class of bug this project already found and fixed once
+    this session for the DNS sniffer threads (Daemonize redirects
+    stderr to /dev/null, so an unhandled exception anywhere up here
+    would otherwise vanish with zero trace)."""
+    try:
+        block_rules_engine.reconcile_all(conn, now_i)
+    except Exception as e:
+        _log_error("gowiththeflow: schedule reconcile failed: %r" % (e,))
+
+
 def run(config: Config) -> None:
     conn = db.connect(config.db_path)
     db.init_schema(conn)
@@ -174,6 +203,14 @@ def run(config: Config) -> None:
     dns_query_events: queue.Queue = queue.Queue()
     sni_hints: queue.Queue = queue.Queue()
     dpi_results: queue.Queue = queue.Queue()
+    ptr_work: queue.Queue = queue.Queue()
+    ptr_results: queue.Queue = queue.Queue()
+    # Dedups against re-enqueueing a peer already queued/in-flight on the
+    # PTR worker thread -- without this, a peer that stays unresolved
+    # across several back-to-back polls (retried every poll now, see
+    # ptr_resolver.py) would pile up redundant queue entries faster than
+    # a slow lookup could drain them.
+    ptr_in_flight: set[str] = set()
 
     # scapy's sniff() raises StopIteration given an empty interface list
     # (real crash caught running this under rc.d with no interfaces
@@ -209,10 +246,23 @@ def run(config: Config) -> None:
             args=(config.capture_interfaces, config.local_subnets, dpi_results.put, DPI_BURST_DURATION_S),
             daemon=True,
         ).start()
+    if ptr is not None:
+        threading.Thread(
+            target=ptr_resolver.resolve_loop,
+            args=(ptr_work, ptr_results.put, ptr),
+            daemon=True,
+        ).start()
 
     last_localhost_refresh = 0.0
     last_hourly_job = 0.0
     last_daily_job = 0.0
+
+    # Reconciled once here, unlike the hourly/daily jobs above, so a
+    # daemon restart mid-window re-asserts the correct blocked/unblocked
+    # state immediately rather than leaving it stale for up to a full
+    # SCHEDULE_RECONCILE_INTERVAL_S.
+    last_schedule_reconcile = time.time()
+    _reconcile_schedules(conn, int(last_schedule_reconcile))
 
     while True:
         now = time.time()
@@ -263,26 +313,45 @@ def run(config: Config) -> None:
         rollup.prune_live_ticks(conn, now_i, LIVE_TICK_RETENTION_S)
 
         if ptr is not None:
-            # Any newly-opened session the resolver couldn't name gets a
-            # rate-limited, best-effort PTR attempt; a hit is cached so the
-            # *next* poll picks it up via the normal hostcache path. Skipped
-            # entirely for a local peer -- its IP would never PTR-resolve to
-            # anything meaningful, and db.record_diff never calls the
-            # resolver for one anyway.
-            for snap in diff.opened:
+            # Every still-open session the resolver couldn't name (not
+            # just newly-opened ones -- a real gap found live: a burst of
+            # simultaneous new sessions from several devices could exceed
+            # one poll's worth of PTR budget, and a peer that missed its
+            # one-shot attempt at open time was never retried for the
+            # life of that flow) gets queued for a background, rate-
+            # limited, best-effort PTR attempt on ptr_resolver.resolve_loop's
+            # own thread -- never inline here, so a slow upstream resolver
+            # can't stall pf state polling for the whole network. A hit is
+            # cached so the *next* poll picks it up via the normal
+            # hostcache path. Skipped entirely for a local peer -- its IP
+            # would never PTR-resolve to anything meaningful, and
+            # db.record_diff never calls the resolver for one anyway.
+            for snap in itertools.chain(diff.opened, diff.updated):
                 if snap.peer_is_local:
+                    continue
+                peer_ip = snap.key.peer_ip
+                if peer_ip in ptr_in_flight:
                     continue
                 hostname, _source, _category = resolver(snap)
                 if hostname is None:
-                    ptr_hostname = ptr.resolve(snap.key.peer_ip, now)
-                    if ptr_hostname is not None:
-                        hostcache.upsert_hostname(
-                            conn, snap.key.peer_ip, ptr_hostname, "ptr", PTR_TTL_S, now_i
-                        )
+                    ptr_in_flight.add(peer_ip)
+                    ptr_work.put(peer_ip)
+
+            while not ptr_results.empty():
+                peer_ip, ptr_hostname = ptr_results.get_nowait()
+                ptr_in_flight.discard(peer_ip)
+                if ptr_hostname is not None:
+                    hostcache.upsert_hostname(
+                        conn, peer_ip, ptr_hostname, "ptr", PTR_TTL_S, now_i
+                    )
 
         if now - last_localhost_refresh >= LOCALHOST_REFRESH_INTERVAL_S:
             localhost_identity.refresh(conn, now_i)
             last_localhost_refresh = now
+
+        if now - last_schedule_reconcile >= SCHEDULE_RECONCILE_INTERVAL_S:
+            _reconcile_schedules(conn, now_i)
+            last_schedule_reconcile = now
 
         if now - last_hourly_job >= HOURLY_JOB_INTERVAL_S:
             rollup.checkpoint_long_lived_sessions(conn, now_i)
