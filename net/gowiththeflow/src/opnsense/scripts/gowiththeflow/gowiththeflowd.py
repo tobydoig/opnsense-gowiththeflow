@@ -290,8 +290,21 @@ def run(config: Config) -> None:
             # Absolute path, not just "pfctl" -- rc.d's PATH is minimal (this
             # is what caught localhost_identity.refresh()'s equivalent bug
             # with "configctl"; fixed proactively here for the same reason).
+            #
+            # timeout=15 found live, the hard way: a single sustained,
+            # multi-gigabyte download (a game client update) intermittently
+            # made this specific call block for minutes at a time -- not a
+            # bug in this code at all, but the kernel evidently deprioritizing
+            # an administrative "dump the whole pf state table" query while
+            # genuinely busy servicing that much real packet throughput.
+            # With no timeout, that meant the *entire* daemon froze solid --
+            # no exception, nothing for the loop's own top-level catch-all
+            # to catch, live_sessions simply stopped advancing until a
+            # manual restart, which then froze again the next time the same
+            # download resumed being that heavy. A timeout here turns that
+            # into exactly one skipped, logged poll cycle instead.
             pfctl_output = subprocess.run(
-                ["/sbin/pfctl", "-vvs", "state"], capture_output=True, text=True, check=True
+                ["/sbin/pfctl", "-vvs", "state"], capture_output=True, text=True, check=True, timeout=15
             ).stdout
             diff = poller.poll(pfctl_output)
             resolver = correlator.make_resolver(

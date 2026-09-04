@@ -126,16 +126,25 @@ def refresh(conn: sqlite3.Connection, now: int) -> int:
     Uses absolute paths for both commands -- real bug caught running this
     under rc.d on the OPNsense 26.7 test VM: the service's PATH doesn't
     include /usr/local/sbin, so plain "configctl" raised FileNotFoundError
-    and killed the daemon's main thread (this call isn't inside a
-    try/except, unlike the sniffer threads)."""
+    and killed the daemon's main thread. That's since become the main
+    loop's own top-level catch-all's job to survive (see
+    gowiththeflowd.py), which is also why `timeout=` matters here now --
+    an unbounded subprocess.run() call inside that loop can freeze the
+    *entire* daemon (nothing to catch, since it never raises) rather than
+    just this one refresh failing. See gowiththeflowd.py's own pfctl call
+    for the real incident this was found from: a genuinely huge, sustained
+    single-connection transfer intermittently made `pfctl -vvs state`
+    (kernel-level, not this file, but the exact same class of gap) take
+    long enough that nothing here would have caught it either without
+    this."""
     import subprocess
 
     leases_raw = subprocess.run(
         ["/usr/local/sbin/configctl", "dnsmasq", "list", "leases"],
-        capture_output=True, text=True, check=True,
+        capture_output=True, text=True, check=True, timeout=15,
     ).stdout
     arp_raw = subprocess.run(
-        ["/usr/sbin/arp", "-an"], capture_output=True, text=True, check=True
+        ["/usr/sbin/arp", "-an"], capture_output=True, text=True, check=True, timeout=15,
     ).stdout
 
     merged = merge_identities(parse_leases_json(leases_raw), parse_arp_output(arp_raw))
