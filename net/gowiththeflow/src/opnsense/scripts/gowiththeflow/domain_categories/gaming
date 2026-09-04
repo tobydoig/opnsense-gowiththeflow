@@ -1,0 +1,35 @@
+# category: Gaming
+
+# Game-networking SDKs and game-company domains that
+# v2fly/domain-list-community's curated "category-games" file (our only
+# automated Gaming source) doesn't happen to include.
+robertsspaceindustries.com
+exitgames.com
+mobilityware.com
+tocaboca.com
+animaljam.com
+peoplefungames.com
+cubecraft.net
+hardlightgames.com
+galaxite.net
+devvit.net
+inpvp.net
+megasmp.gg
+enchanted.gg
+gxcorner.games
+playpiknik.com
+# 4netplayers.com's own reverse-PTR pattern for its rented game servers
+# ("gs-<ip>.server.4netplayers.com") is an explicit "this is a game
+# server" signal, unlike a generic VPS host's PTR.
+4netplayers.com
+
+# --- Second pass ---
+
+cloudimperiumgames.com  # same company as robertsspaceindustries.com above
+# NVIDIA's GeForce/cloud-gaming-specific subdomains -- scoped narrowly,
+# not bare nvidia.com, which is a much broader hardware/AI company
+# domain.
+geforce.com
+gfe.nvidia.com
+ops-gx.nvidia.com
+nvidiagrid.net

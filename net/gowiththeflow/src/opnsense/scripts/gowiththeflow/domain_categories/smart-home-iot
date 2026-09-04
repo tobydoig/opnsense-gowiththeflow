@@ -1,0 +1,29 @@
+# category: Smart Home/IoT
+
+# Smart home / IoT device cloud backends -- single-purpose (a Ring
+# doorbell's API isn't also going to serve up news or shopping), so the
+# suffix alone is a reliable signal here in a way it usually isn't for
+# general company domains.
+tplinkcloud.com
+tplinknbu.com
+tp-link.com
+tplinkra.com
+tapo.com
+wyzecam.com
+wyze.com
+ring.com
+tuya.com
+meethue.com
+ecobee.com
+firewalla.com
+encipher.io
+garmin.com
+synology.com
+samsunghealth.com
+samsungcloud.com
+samsungapps.com
+
+# --- Second pass ---
+
+firewalla.org  # same company as firewalla.com above, just a second TLD
+securecomwireless.com  # home alarm/security-system cloud backend, same single-purpose logic

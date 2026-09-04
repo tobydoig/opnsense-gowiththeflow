@@ -1,0 +1,26 @@
+# category: Communication
+
+# WebRTC/VoIP signalling infrastructure -- used by many different apps
+# for the actual call, so it's a purpose-based bucket rather than any
+# one app's own category.
+ekiga.net
+stun.1und1.de
+stun.kaptcha.com
+vivox.com
+
+# --- Second pass ---
+
+# Customer-support chat/helpdesk widgets -- a live-support channel,
+# same purpose bucket as WhatsApp/Discord/Zoom (covered upstream via
+# v2fly).
+zendesk.com
+zdassets.com
+freshworksapi.com
+freshchat.com
+gorgias.chat
+intercom.io
+intercomcdn.com
+intercomcdn.eu
+liveperson.net
+getzowie.com
+salesiq.zoho.eu  # scoped to the SalesIQ chat widget, not all of Zoho

@@ -1,0 +1,71 @@
+# category: Shopping
+#
+# Seeded second pass, from a later nostromo "Uncategorized Hosts"
+# export. Extends into buckets the first pass deliberately deferred
+# (see the news/banking files' own headers) now that there's a real,
+# traffic-ordered list to work from rather than guessing at coverage
+# ahead of time. Same discipline throughout this whole directory: a
+# suffix only goes in if the *entire* domain is safe to bucket
+# regardless of which subdomain shows up -- generic hosting-provider
+# PTR hosts (*.ip.linodeusercontent.com, *.datapacket.com, ...) and
+# one-off/low-confidence names are left alone rather than guessed at.
+
+# Single-brand storefronts/CDNs, plus Shopify's own platform domains
+# (any store built on Shopify, not one company).
+vinted.com
+vinted.co.uk
+vinted.net
+vinted.lt
+asos.com
+asos-media.com
+asosservices.com
+next.co.uk
+nordstrom.com
+marksandspencer.com
+debenhams.com
+zalando.co.uk
+ztat.net  # Zalando's own CDN
+temu.com
+kwcdn.com  # Temu's CDN
+shein.com
+ltwebstatic.com  # Shein's CDN
+etsystatic.com  # etsy.com itself already covered upstream (v2fly)
+ebaydesc.com
+johnlewis.com
+dunelm.com
+mainlinemenswear.co.uk
+cottontraders.com
+mountainwarehouse.com
+flannels.com
+roman.co.uk
+bonprix.co.uk
+woolovers.com
+jdwilliams.co.uk
+hsn.com
+worldofbooks.com
+zara.com
+uniqlo.com
+argos.co.uk
+bouxavenue.com
+matalan.co.uk
+damart.co.uk
+myshopify.com
+shopifycdn.com
+shopify.com
+
+# Airsoft/tactical-gear retailers -- same single-purpose logic.
+mirtactical.com
+highpressureairsoft.co.uk
+usedairsoft.co.uk
+outdoorandtactical.co.uk
+gearofwar.co.uk
+redwolfairsoft.com
+airsoftzone.co.uk
+zenitco.ru
+
+# 3D-printer manufacturers' own sites (not the model-sharing communities
+# like Thingiverse/Printables/Cults3D, which aren't storefronts and
+# were left alone).
+ultimaker.com
+bambulab.com
+elegoo.com

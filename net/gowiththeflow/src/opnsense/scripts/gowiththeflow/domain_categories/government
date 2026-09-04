@@ -1,0 +1,8 @@
+# category: Government
+#
+# UK/US government services -- gov.uk is effectively a public-sector
+# namespace (every UK government department/agency lives under it),
+# safe to bucket wholesale the same way a company's own domain is.
+gov.uk
+digitalgov.gov
+met.police.uk

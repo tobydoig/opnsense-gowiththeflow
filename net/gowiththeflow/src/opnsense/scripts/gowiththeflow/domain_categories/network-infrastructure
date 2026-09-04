@@ -1,0 +1,92 @@
+# category: Network Infrastructure
+
+# DNS/NTP/registry infrastructure -- root/TLD/registry nameservers,
+# third-party DNS providers, and time-sync servers. Single-purpose
+# network plumbing, essentially never anything a user would recognize
+# as "a site they visited" regardless of which specific service
+# triggered the lookup.
+root-servers.net
+gtld-servers.net
+edu-servers.net
+gtld.biz
+nic.uk
+arin.net
+ripe.net
+apnic.net
+afrinic.net
+iana-servers.net
+nsone.net
+ultradns.net
+ultradns.com
+ultradns.org
+ultradns.info
+ultradns.biz
+ultradns.co.uk
+ultradns2.org
+ultradns2.com
+digicertdns.net
+digicertdns.com
+azuregov-dns.us
+dnsmadeeasy.com
+bitnames.com
+bunnydns.com
+ncuk.net
+ncuk.net.uk
+demysdns.co.uk
+demysdns.com
+everett.org
+dns.cn
+dns.it
+afilias-nst.org
+afilias-nst.info
+pir-ns.org
+domaincontrol.com
+sectigoweb.com
+constellix.net
+adobe.net
+ntpns.org
+pool.ntp.org
+panq.nl
+ntp0.sotaconnect.net
+ntp1.karneval.cz
+ntp1.exa-networks.co.uk
+ntp2.as200552.net
+ntp2.glypnod.com
+ntp5.leontp.com
+01.ntp.sarik.tech
+pool.ntp0.cam.ac.uk
+pool.ntp1.cam.ac.uk
+pool.ntp3.cam.ac.uk
+
+# Microsoft's Azure Traffic Manager nameserver domains -- every instance
+# observed was an "ns1-4.<region>-msedge.net" delegation record, not
+# actual content, regardless of which Microsoft-hosted service was
+# being resolved.
+ax-msedge.net
+arc-msedge.net
+arm-msedge.net
+bx-msedge.net
+mcr-msedge.net
+o-msedge.net
+ln-msedge.net
+wac-msedge.net
+b-dc-msedge.net
+
+# Ookla's speedtest server network and speedtest.net itself --
+# bandwidth-testing infrastructure, not content.
+ooklaserver.net
+speedtest.net
+
+# --- Second pass ---
+
+# zenarmor.net is OPNsense's own Zenarmor/Sensei security plugin's
+# update server -- appliance plumbing, not a site. The speedtest
+# entries below are scoped to the *exact* hostname observed, not their
+# whole parent domain (unlike ooklaserver.net/speedtest.net above, an
+# ISP's own root domain usually carries other, non-infra content too --
+# see toob.co.uk below for exactly this reasoning).
+updates.zenarmor.net
+speedtest.trooli.com
+speedtest.ths.connectfibre.co.uk
+speedtest.skybloxsystems.co.uk
+speedtest.toob.co.uk  # toob.co.uk's ROOT domain is NOT included -- it also runs other content

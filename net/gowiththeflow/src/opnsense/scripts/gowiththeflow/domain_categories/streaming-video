@@ -1,0 +1,6 @@
+# category: Streaming/Video
+#
+# Amazon Prime Video's own CDN domain -- distinct from primevideo.com
+# itself (already covered upstream via v2fly's "primevideo" keyword)
+# and not caught by that keyword since it's a separate domain.
+pv-cdn.net

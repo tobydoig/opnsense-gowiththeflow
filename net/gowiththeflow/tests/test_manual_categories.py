@@ -1,3 +1,5 @@
+import pytest
+
 import manual_categories
 
 
@@ -57,3 +59,47 @@ def test_pass_two_overrides_spot_check():
     # bbc.co.uk itself is still deliberately left alone (spans News/
     # Streaming/Music -- see OVERRIDES' own docstring).
     assert manual_categories.categorize("www.bbc.co.uk") is None
+
+
+def test_anthropic_is_categorized_as_ai():
+    # Non-negotiable (see domain_categories/ai's own comment).
+    assert manual_categories.categorize("anthropic.com") == "AI"
+    assert manual_categories.categorize("api.anthropic.com") == "AI"
+
+
+def test_load_overrides_parses_header_comments_and_trailing_notes(tmp_path):
+    (tmp_path / "shopping").write_text(
+        "# category: Shopping\n"
+        "\n"
+        "# a full-line comment before a group of entries\n"
+        "example-store.com\n"
+        "example-outlet.com  # trailing note, should be stripped\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "news").write_text(
+        "# category: News\nexample-news.com\n",
+        encoding="utf-8",
+    )
+    overrides = manual_categories._load_overrides(tmp_path)
+    assert overrides == {
+        "example-store.com": "Shopping",
+        "example-outlet.com": "Shopping",
+        "example-news.com": "News",
+    }
+
+
+def test_load_overrides_orders_longest_suffix_first(tmp_path):
+    (tmp_path / "cat") \
+        .write_text("# category: X\nnvidia.com\ngfe.nvidia.com\n", encoding="utf-8")
+    overrides = manual_categories._load_overrides(tmp_path)
+    assert list(overrides.keys())[0] == "gfe.nvidia.com"
+
+
+def test_load_overrides_rejects_a_domain_with_no_category_header(tmp_path):
+    (tmp_path / "broken").write_text("example.com\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="category"):
+        manual_categories._load_overrides(tmp_path)
+
+
+def test_load_overrides_returns_empty_dict_for_a_missing_directory(tmp_path):
+    assert manual_categories._load_overrides(tmp_path / "does-not-exist") == {}

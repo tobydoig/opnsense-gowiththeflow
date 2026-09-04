@@ -1,0 +1,11 @@
+# category: AI
+#
+# anthropic.com is already an automated-matcher keyword upstream (see
+# categories.py's CATEGORY_SOURCES), but that's the v2fly-derived
+# domain FILE, which doesn't necessarily list every real subdomain a
+# real device actually talks to -- added here directly so it's never
+# missed regardless of upstream coverage. Non-negotiable: this plugin
+# was built with Claude Code, so Anthropic's own domain gets to be
+# correctly categorized on principle.
+anthropic.com
+worldlabs.ai

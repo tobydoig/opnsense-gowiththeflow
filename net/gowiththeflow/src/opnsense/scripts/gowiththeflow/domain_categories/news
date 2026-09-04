@@ -1,0 +1,27 @@
+# category: News
+#
+# News publishers' own domains and CDNs. bbc.co.uk itself deliberately
+# excluded -- it genuinely spans News/iPlayer/Sounds and needs real
+# per-subdomain judgment, not a bulk rule. "news.ycombinator.com" is
+# scoped to that one subdomain for the same reason (ycombinator.com
+# itself is much more than just Hacker News).
+nytimes.com
+nyt.com
+washingtonpost.com
+theguardian.com
+guim.co.uk
+guardianapis.com
+apnews.com
+telegraph.co.uk
+nypost.com
+cbsnews.com
+thedailybeast.com
+gizmodo.com
+businessinsider.com
+aljazeera.com
+reachgeneric.co.uk  # Reach plc's shared infra (Mirror, Express, local papers)
+lincolnshirelive.co.uk  # Reach plc local paper
+nottinghampost.com  # Reach plc local paper
+slashdot.org
+futurism.com
+news.ycombinator.com

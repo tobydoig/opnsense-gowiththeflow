@@ -1,0 +1,15 @@
+# category: Cloud Infrastructure
+
+# Sky's own ISP-embedded CDN cache nodes ("Google Global Cache" style --
+# note the literal "ggc"/"aanp" markers in the hostnames) --
+# infrastructure carrying someone else's content, not a site of its
+# own, same idea as Cloudflare/Akamai/Fastly already being Cloud
+# Infrastructure rather than "whatever site happens to be behind it."
+isp.sky.com
+
+# --- Second pass ---
+
+# CDN/WAF infrastructure, same "carries someone else's content" idea as
+# above.
+bunnyinfra.net
+sucuri.net

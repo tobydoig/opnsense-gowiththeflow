@@ -1,0 +1,31 @@
+# category: Banking
+#
+# Banks, payment processors, and card/fraud infrastructure -- these
+# only ever carry the bank's/processor's own traffic.
+coinbase.com
+paypal.com
+paypalobjects.com
+chase.com
+capitalone.com
+hsbc.co.uk
+hsbc.com
+hsbc.net
+hsbc.uk
+lloydsbank.co.uk
+lloydsbanking.com
+lloydsbankinggroup.com
+nsandi.com
+firstdirect.com
+virginmoney.com
+klarna.com
+klarnaservices.com
+klarnacdn.net
+klarnaevt.com
+stripe.com
+stripecdn.com
+stripe.network
+visa.com
+worldpay.com
+sardine.ai  # fraud-detection SDK used by financial services
+cardinalcommerce.com  # Mastercard's 3-D Secure card-auth service
+zetapay.tech

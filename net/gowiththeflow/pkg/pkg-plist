@@ -37,6 +37,20 @@ usr/local/opnsense/scripts/gowiththeflow/correlator.py
 usr/local/opnsense/scripts/gowiththeflow/db.py
 usr/local/opnsense/scripts/gowiththeflow/dns_sniffer.py
 usr/local/opnsense/scripts/gowiththeflow/dnsbl_apply.php
+usr/local/opnsense/scripts/gowiththeflow/domain_categories/ads-tracking
+usr/local/opnsense/scripts/gowiththeflow/domain_categories/ai
+usr/local/opnsense/scripts/gowiththeflow/domain_categories/banking
+usr/local/opnsense/scripts/gowiththeflow/domain_categories/cloud-infrastructure
+usr/local/opnsense/scripts/gowiththeflow/domain_categories/communication
+usr/local/opnsense/scripts/gowiththeflow/domain_categories/education
+usr/local/opnsense/scripts/gowiththeflow/domain_categories/gaming
+usr/local/opnsense/scripts/gowiththeflow/domain_categories/government
+usr/local/opnsense/scripts/gowiththeflow/domain_categories/network-infrastructure
+usr/local/opnsense/scripts/gowiththeflow/domain_categories/news
+usr/local/opnsense/scripts/gowiththeflow/domain_categories/peer-to-peer
+usr/local/opnsense/scripts/gowiththeflow/domain_categories/shopping
+usr/local/opnsense/scripts/gowiththeflow/domain_categories/smart-home-iot
+usr/local/opnsense/scripts/gowiththeflow/domain_categories/streaming-video
 usr/local/opnsense/scripts/gowiththeflow/dpi_classifier.py
 usr/local/opnsense/scripts/gowiththeflow/gowiththeflowd.py
 usr/local/opnsense/scripts/gowiththeflow/hostcache.py
@@ -59,5 +73,6 @@ usr/local/opnsense/version/gowiththeflow
 @dir usr/local/opnsense/mvc/app/models/OPNsense/GoWithTheFlow/Menu
 @dir usr/local/opnsense/mvc/app/models/OPNsense/GoWithTheFlow
 @dir usr/local/opnsense/mvc/app/views/OPNsense/GoWithTheFlow
+@dir usr/local/opnsense/scripts/gowiththeflow/domain_categories
 @dir usr/local/opnsense/scripts/gowiththeflow
 @dir usr/local/opnsense/service/templates/OPNsense/GoWithTheFlow

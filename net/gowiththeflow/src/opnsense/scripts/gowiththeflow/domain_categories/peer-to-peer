@@ -1,0 +1,11 @@
+# category: Peer-to-Peer
+
+# Well-known UK residential-broadband reverse-DNS domains -- the
+# traffic itself is almost certainly P2P/gaming/WebRTC to someone's
+# home connection, not a site being browsed. Deliberately narrow: only
+# suffixes where every observed hostname under them was this exact PTR
+# shape, unlike e.g. toob.co.uk (also runs its own speedtest server
+# under the same domain) or as13285.net-style ones mixed with other
+# uses, which were left alone rather than guessed.
+btcentralplus.com
+gigaclear.net
