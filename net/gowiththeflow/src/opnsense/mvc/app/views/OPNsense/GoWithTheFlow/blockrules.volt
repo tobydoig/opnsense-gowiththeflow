@@ -47,15 +47,19 @@
     }
 
     // Populates the device field's autocomplete with every locally-known
-    // device -- picking a suggestion fills in its raw IP (always
-    // resolvable), but the field also accepts a hostname typed directly
-    // (BlockrulesController::resolveDeviceIp() looks it up either way),
-    // so this is a convenience, not the only way to specify a device.
+    // device -- picking a suggestion fills in its *hostname* (falling
+    // back to the IP only for a device with no known name), so a rule
+    // stays correctly attached to the device if its DHCP lease later
+    // hands out a different IP (BlockrulesController::resolveDeviceIp()
+    // looks up either form). The field also accepts either typed
+    // directly, so this is a convenience, not the only way to specify a
+    // device.
     function gwtfPopulateDeviceOptions(localHosts) {
         const list = $("#gwtf-device-options");
         list.empty();
         Object.keys(localHosts).forEach(function (ip) {
-            $('<option>', { value: ip, label: localHosts[ip] }).appendTo(list);
+            const entry = localHosts[ip];
+            $('<option>', { value: entry.hostname || ip, label: entry.label }).appendTo(list);
         });
     }
 

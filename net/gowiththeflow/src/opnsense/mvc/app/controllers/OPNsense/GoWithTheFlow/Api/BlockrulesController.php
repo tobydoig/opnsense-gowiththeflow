@@ -32,10 +32,17 @@ class BlockrulesController extends DbApiControllerBase
             // locally-known device, not just ones already in block_rules,
             // same "DnsqueriesController-style" local_hosts map this
             // project's other filter dropdowns already return alongside
-            // their own search results.
+            // their own search results. Ships the bare hostname
+            // separately from the display label so the dialog can fill
+            // the device field with the *name* (stable across a DHCP
+            // lease change) rather than the IP snapshot when a suggestion
+            // is picked -- resolveDeviceIp() already accepts either.
             $lhResult = $db->query('SELECT DISTINCT ip, hostname FROM local_host_identity WHERE ip IS NOT NULL');
             while ($lhRow = $lhResult->fetchArray(SQLITE3_ASSOC)) {
-                $localHosts[$lhRow['ip']] = $this->formatHost($lhRow['hostname'], $lhRow['ip']);
+                $localHosts[$lhRow['ip']] = [
+                    'hostname' => $lhRow['hostname'],
+                    'label' => $this->formatHost($lhRow['hostname'], $lhRow['ip']),
+                ];
             }
         }
 
