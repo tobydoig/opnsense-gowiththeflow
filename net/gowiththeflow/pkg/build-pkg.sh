@@ -53,9 +53,20 @@ cp "${SRC}/etc/inc/plugins.inc.d/gowiththeflow.inc" \
 # never ship a stale bytecode cache picked up from a local dev run
 find "$STAGE" -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 
+# Every script actions_gowiththeflow.conf invokes by bare path (relying
+# on its own shebang + the exec bit, not an explicit interpreter prefix)
+# needs this set explicitly -- git tracks all of these as mode 644 (no
+# executable bit), so whatever made block_host.py/block_rules.py work
+# despite that was incidental state on a specific build machine, not
+# anything this script actually guaranteed. Caught live: recategorize.py
+# failed configd's "Execute error" the first time it shipped, for
+# exactly this reason.
 chmod +x \
     "${STAGE}/usr/local/etc/rc.d/gowiththeflow" \
-    "${STAGE}/usr/local/opnsense/scripts/gowiththeflow/gowiththeflowd.py"
+    "${STAGE}/usr/local/opnsense/scripts/gowiththeflow/gowiththeflowd.py" \
+    "${STAGE}/usr/local/opnsense/scripts/gowiththeflow/block_host.py" \
+    "${STAGE}/usr/local/opnsense/scripts/gowiththeflow/block_rules.py" \
+    "${STAGE}/usr/local/opnsense/scripts/gowiththeflow/recategorize.py"
 
 sed -e "s/%%VERSION%%/${VERSION}/" -e "s/%%ARCH%%/${ARCH}/" \
     "${SCRIPT_DIR}/version.json.tmpl" > "${STAGE}/usr/local/opnsense/version/gowiththeflow"

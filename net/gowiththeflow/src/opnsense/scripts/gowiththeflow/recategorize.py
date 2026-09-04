@@ -1,3 +1,4 @@
+#!/usr/local/bin/python3
 """CLI: lists currently-uncategorized hostnames by real traffic volume
 (the same query ToptalkersController::uncategorizedAction() uses for
 the GUI's own "Uncategorized Hosts" tab), and re-applies today's
