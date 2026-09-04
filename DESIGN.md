@@ -1919,6 +1919,45 @@
      (3600s -> 300s) to act as a retry backoff rather than an hour-long
      lockout. 3 new tests for `resolve_loop()` (hit, miss, and surviving
      a raising resolver without killing the thread). 255 tests passing.
+  3. **The `resolve_loop()` background-thread fix above (#2) had its own
+     bug, found in real production on the user's own box (nostromo) the
+     very first night schedule-driven blocking ran unattended.** The
+     daemon died within 60-120s of every restart, with *zero* trace
+     anywhere -- not even from #1's own reconcile-wrapper fix, which was
+     already installed and never fired, ruling that path out and pointing
+     at something else in the main loop entirely. Added a top-level
+     try/except around the *whole* loop body (logging the full traceback
+     and backing off one poll interval before retrying) specifically to
+     get visibility into whatever this was -- and it immediately paid
+     off: `ValueError: too many values to unpack (expected 2)` at
+     `peer_ip, ptr_hostname = ptr_results.get_nowait()`. Root cause:
+     `resolve_loop()` called `on_result(ip, hostname)` as two positional
+     arguments, and gowiththeflowd.py wired `on_result` directly to a
+     bound `queue.Queue.put` -- but `Queue.put(item, block=True,
+     timeout=None)` treats a second positional argument as `block`, not
+     a second queued value, so the queue only ever held a bare IP
+     *string*, never a tuple. The instant any real PTR result came back
+     on a busy real network (which essentially never happened on the
+     project's own near-idle dev VM during Phase B verification), the
+     consumer's unpack blew up. This had nothing to do with the schedule
+     feature the user was actually testing that night -- the timing
+     correlation with the 60s schedule-reconcile interval was
+     coincidental. Existing unit tests for `resolve_loop()` didn't catch
+     it because they used a hand-written two-argument `on_result`
+     callback rather than a real `Queue.put` -- fixed by having
+     `resolve_loop()` pass a single `(ip, hostname)` tuple instead
+     (matching `sni_sniffer.py`'s own established callback convention),
+     and added a regression test that wires a *real* bound
+     `queue.Queue.put` directly to `resolve_loop()` -- confirmed it fails
+     against the old calling convention and passes against this one.
+     Verified live on nostromo: hand-patched both files in place (the
+     package hadn't been rebuilt yet), watched the daemon run past 3+
+     minutes with zero further errors and fresh DB writes throughout,
+     versus dying every single time within 60-120s before. This is the
+     canonical "your tests only prove your test doubles are consistent
+     with each other" lesson -- worth remembering the next time a
+     background-thread callback gets wired to a stdlib method directly
+     rather than a hand-written function. 256 tests passing.
 - **Not yet started**: the staticOverrides grid editor, and proper repo
   signing before this pkg-repo is relied on for anything that matters.
   ("Scheduled traffic blocking" -- the user's original motivating
