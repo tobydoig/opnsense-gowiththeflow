@@ -1958,6 +1958,75 @@
      with each other" lesson -- worth remembering the next time a
      background-thread callback gets wired to a stdlib method directly
      rather than a hand-written function. 256 tests passing.
+- **1.8.0.** Everything below shipped as further live-verified rebuilds
+  still labeled "1.7.0," across one long session -- by the end that had
+  made the version number itself meaningless as a marker of what was
+  actually running, which is the whole reason this is a real version
+  bump rather than another silent rebuild.
+  1. **Block Rules edit (pencil) icon never rendered at all.** Root
+     cause: `edit` is a *reserved* command name in
+     `opnsense_bootgrid.js`'s own built-in command set
+     (`requires: ['get', 'set']`, checked against a `crud` config this
+     plugin never provides since it uses its own hand-built modal, not
+     `getForm()` scaffolding). The library's merge logic only overwrites
+     fields a custom command definition actually provides, so the
+     built-in's `requires` survived untouched and the visibility check
+     silently failed. Renamed to `gwtfedit`, matching this project's own
+     `gwtf`-prefixed convention for custom grid commands.
+  2. **Device autocomplete now fills the device field with the
+     hostname, not the IP** -- stays correctly attached to a device
+     across a DHCP lease change (`resolveDeviceIp()` already accepted
+     either form; this just changes which one gets suggested).
+  3. **History's "Table" tab renamed to "Details"**, matching the
+     earlier Live->Table rename, plus a new **Last Seen** column
+     (`MAX(bucket_start)` across the matched rollup rows).
+  4. **`manual_categories.py`'s second pass** (~125 new entries seeded
+     from a real "Uncategorized Hosts" export: Shopping/News/Banking/
+     Education/Government as new buckets, plus extensions to existing
+     ones), **then a structural refactor**: the hardcoded `OVERRIDES`
+     dict became `domain_categories/`, one plain-text file per category
+     (mirroring the upstream v2fly files' own one-file-per-category
+     shape), each starting with a `# category: <Display Name>` header
+     (three real category names contain a `/`, which can't be a
+     filename) followed by one domain per line with the same `#`-comment
+     support the dict's inline comments used -- verified byte-for-byte
+     that every one of the old dict's 270 entries carried over with zero
+     drops or typos before deleting it. `claude.ai`/ChatGPT/Gemini/Grok
+     and `anthropic.com` added to AI (correctly pulling
+     `gemini.google.com` out of the broader automated "google" ->
+     Cloud/Productivity bucket, since manual overrides are checked
+     first).
+  5. **New `recategorize.py`** -- category is stamped once when a
+     connection is first written and never revisited, so growing
+     `domain_categories/` only ever affected *newly-observed* traffic
+     until now. `list-uncategorized` mirrors the GUI's own
+     "Uncategorized Hosts" tab query, straight from the database.
+     `apply` (with `--dry-run`) re-resolves every distinct
+     already-recorded hostname via a new shared `categories.
+     resolve_category()` helper (factored out of gowiththeflowd.py's own
+     live categorization so the daemon and this offline pass can never
+     drift apart) and updates any row across
+     connections_raw/live_sessions/rollup_hourly/rollup_daily whose
+     category no longer matches. Exposed as a "Recategorize History"
+     button on Settings. Two real bugs found running this live against
+     nostromo's actual history (neither caught by any test, since the
+     test DB is tiny): `connections_raw`/`live_sessions` had no index on
+     `peer_hostname` (apply's per-hostname UPDATE was a full table scan
+     each time -- 9+ minutes and climbing on real data, 19s after adding
+     the missing indexes defensively, skip rather than raise against the
+     ancient pre-rename legacy schema the category-column migration test
+     exercises); and the new script had neither a shebang nor the exec
+     bit, so its configd action failed with a bare "Execute error" --
+     `build-pkg.sh` had only ever explicitly `chmod +x`'d
+     gowiththeflowd.py, and every other CLI script's exec bit turned out
+     to be incidental state on whichever machine last built the package,
+     not anything actually guaranteed. Also added `PRAGMA
+     busy_timeout=30000` to `db.connect()` (nothing had one before),
+     since recategorize.py's own multi-second write transaction was
+     colliding with the daemon's 5s poll cycle and logging avoidable
+     "database is locked" errors. Ran for real against nostromo's actual
+     history: 871 hostnames corrected, re-run confirmed idempotent (0
+     changes the second time), daemon stayed healthy throughout.
 - **Not yet started**: the staticOverrides grid editor, and proper repo
   signing before this pkg-repo is relied on for anything that matters.
   ("Scheduled traffic blocking" -- the user's original motivating
