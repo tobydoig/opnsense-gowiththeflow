@@ -186,6 +186,208 @@ OVERRIDES: dict[str, str] = {
     # mixed with other uses, which were left alone rather than guessed.
     "btcentralplus.com": "Peer-to-Peer",
     "gigaclear.net": "Peer-to-Peer",
+
+    # --- Second pass, seeded from a later nostromo "Uncategorized
+    # Hosts" export. Extends into buckets the first pass deliberately
+    # deferred (Shopping/News/Banking company domains, per its own
+    # docstring) now that there's a real, traffic-ordered list to work
+    # from rather than guessing at coverage ahead of time. Same
+    # discipline as pass one throughout: a suffix only goes in if the
+    # *entire* domain is safe to bucket regardless of which subdomain
+    # shows up (a retailer's storefront, a bank's own domain, a single-
+    # purpose SDK/CDN) -- generic hosting-provider PTR hosts
+    # (*.ip.linodeusercontent.com, *.datapacket.com, ...) and one-off/
+    # low-confidence names are left alone rather than guessed at.
+
+    # Retail -- single-brand storefronts/CDNs, plus Shopify's own
+    # platform domains (any store built on Shopify, not one company).
+    "vinted.com": "Shopping", "vinted.co.uk": "Shopping", "vinted.net": "Shopping",
+    "vinted.lt": "Shopping",
+    "asos.com": "Shopping", "asos-media.com": "Shopping", "asosservices.com": "Shopping",
+    "next.co.uk": "Shopping",
+    "nordstrom.com": "Shopping",
+    "marksandspencer.com": "Shopping",
+    "debenhams.com": "Shopping",
+    "zalando.co.uk": "Shopping", "ztat.net": "Shopping",  # ztat.net is Zalando's own CDN
+    "temu.com": "Shopping", "kwcdn.com": "Shopping",  # kwcdn.com is Temu's CDN
+    "shein.com": "Shopping", "ltwebstatic.com": "Shopping",  # Shein's CDN
+    "etsystatic.com": "Shopping",  # etsy.com itself already covered upstream (v2fly)
+    "ebaydesc.com": "Shopping",
+    "johnlewis.com": "Shopping",
+    "dunelm.com": "Shopping",
+    "mainlinemenswear.co.uk": "Shopping",
+    "cottontraders.com": "Shopping",
+    "mountainwarehouse.com": "Shopping",
+    "flannels.com": "Shopping",
+    "roman.co.uk": "Shopping",
+    "bonprix.co.uk": "Shopping",
+    "woolovers.com": "Shopping",
+    "jdwilliams.co.uk": "Shopping",
+    "hsn.com": "Shopping",
+    "worldofbooks.com": "Shopping",
+    "zara.com": "Shopping",
+    "uniqlo.com": "Shopping",
+    "argos.co.uk": "Shopping",
+    "bouxavenue.com": "Shopping",
+    "matalan.co.uk": "Shopping",
+    "damart.co.uk": "Shopping",
+    "myshopify.com": "Shopping", "shopifycdn.com": "Shopping", "shopify.com": "Shopping",
+    # Airsoft/tactical-gear retailers -- same single-purpose logic.
+    "mirtactical.com": "Shopping", "highpressureairsoft.co.uk": "Shopping",
+    "usedairsoft.co.uk": "Shopping", "outdoorandtactical.co.uk": "Shopping",
+    "gearofwar.co.uk": "Shopping", "redwolfairsoft.com": "Shopping",
+    "airsoftzone.co.uk": "Shopping", "zenitco.ru": "Shopping",
+    # 3D-printer manufacturers' own sites (not the model-sharing
+    # communities like Thingiverse/Printables/Cults3D, which aren't
+    # storefronts and were left alone).
+    "ultimaker.com": "Shopping", "bambulab.com": "Shopping", "elegoo.com": "Shopping",
+
+    # News publishers -- their own domains and CDNs. bbc.co.uk itself
+    # deliberately excluded (see pass one's docstring: it genuinely spans
+    # News/iPlayer/Sounds and needs real per-subdomain judgment, not a
+    # bulk rule) -- "news.ycombinator.com" is scoped to that one
+    # subdomain for the same reason (ycombinator.com itself is much more
+    # than just Hacker News).
+    "nytimes.com": "News", "nyt.com": "News",
+    "washingtonpost.com": "News",
+    "theguardian.com": "News", "guim.co.uk": "News", "guardianapis.com": "News",
+    "apnews.com": "News",
+    "telegraph.co.uk": "News",
+    "nypost.com": "News",
+    "cbsnews.com": "News",
+    "thedailybeast.com": "News",
+    "gizmodo.com": "News",
+    "businessinsider.com": "News",
+    "aljazeera.com": "News",
+    "reachgeneric.co.uk": "News",  # Reach plc's shared infra (Mirror, Express, local papers)
+    "lincolnshirelive.co.uk": "News", "nottinghampost.com": "News",  # Reach plc local papers
+    "slashdot.org": "News",
+    "futurism.com": "News",
+    "news.ycombinator.com": "News",
+
+    # Banks, payment processors, and card/fraud infrastructure -- these
+    # only ever carry the bank's/processor's own traffic.
+    "coinbase.com": "Banking",
+    "paypal.com": "Banking", "paypalobjects.com": "Banking",
+    "chase.com": "Banking",
+    "capitalone.com": "Banking",
+    "hsbc.co.uk": "Banking", "hsbc.com": "Banking", "hsbc.net": "Banking", "hsbc.uk": "Banking",
+    "lloydsbank.co.uk": "Banking", "lloydsbanking.com": "Banking",
+    "lloydsbankinggroup.com": "Banking",
+    "nsandi.com": "Banking",
+    "firstdirect.com": "Banking",
+    "virginmoney.com": "Banking",
+    "klarna.com": "Banking", "klarnaservices.com": "Banking", "klarnacdn.net": "Banking",
+    "klarnaevt.com": "Banking",
+    "stripe.com": "Banking", "stripecdn.com": "Banking", "stripe.network": "Banking",
+    "visa.com": "Banking",
+    "worldpay.com": "Banking",
+    "sardine.ai": "Banking",  # fraud-detection SDK used by financial services
+    "cardinalcommerce.com": "Banking",  # Mastercard's 3-D Secure card-auth service
+    "zetapay.tech": "Banking",
+
+    # Marketing/analytics/consent-management SaaS -- the same "tracks or
+    # profiles you for someone else's benefit" purpose as Ads/Tracking's
+    # existing v2fly-sourced entries, just not covered by that upstream
+    # list.
+    "scorecardresearch.com": "Ads/Tracking",
+    "taboola.com": "Ads/Tracking",
+    "onetrust.com": "Ads/Tracking", "onetrust.io": "Ads/Tracking",
+    "cookielaw.org": "Ads/Tracking",
+    "cookieyes.com": "Ads/Tracking",
+    "cookiebot.com": "Ads/Tracking",
+    "consentmanager.net": "Ads/Tracking",
+    "usercentrics.eu": "Ads/Tracking",
+    "trustarc.com": "Ads/Tracking",
+    "klaviyo.com": "Ads/Tracking",
+    "mailchimp.com": "Ads/Tracking", "list-manage.com": "Ads/Tracking",
+    "chimpstatic.com": "Ads/Tracking",
+    "bazaarvoice.com": "Ads/Tracking",
+    "yotpo.com": "Ads/Tracking",
+    "powerreviews.com": "Ads/Tracking",
+    "trustpilot.com": "Ads/Tracking",
+    "branch.io": "Ads/Tracking",
+    "appsflyer.com": "Ads/Tracking",
+    "singular.net": "Ads/Tracking",
+    "rudderstack.com": "Ads/Tracking",
+    "optimizely.com": "Ads/Tracking",
+    "qualtrics.com": "Ads/Tracking",
+    "medallia.com": "Ads/Tracking",
+    "rubiconproject.com": "Ads/Tracking",
+    "inmobi.com": "Ads/Tracking",
+    "omtrdc.net": "Ads/Tracking",  # Adobe Experience Cloud (Analytics/Target)
+    "pendo.io": "Ads/Tracking",
+
+    # Customer-support chat/helpdesk widgets -- a live-support channel,
+    # same purpose bucket as WhatsApp/Discord/Zoom above.
+    "zendesk.com": "Communication", "zdassets.com": "Communication",
+    "freshworksapi.com": "Communication", "freshchat.com": "Communication",
+    "gorgias.chat": "Communication",
+    "intercom.io": "Communication", "intercomcdn.com": "Communication",
+    "intercomcdn.eu": "Communication",
+    "liveperson.net": "Communication",
+    "getzowie.com": "Communication",
+    "salesiq.zoho.eu": "Communication",  # scoped to the SalesIQ chat widget, not all of Zoho
+
+    # Gaming -- same company as robertsspaceindustries.com (already
+    # above), and NVIDIA's GeForce/cloud-gaming-specific subdomains
+    # (scoped narrowly, not bare nvidia.com, which is a much broader
+    # hardware/AI company domain).
+    "cloudimperiumgames.com": "Gaming",
+    "geforce.com": "Gaming", "gfe.nvidia.com": "Gaming", "ops-gx.nvidia.com": "Gaming",
+    "nvidiagrid.net": "Gaming",
+
+    # firewalla.org is the same company as firewalla.com (already
+    # above), just a second TLD. securecomwireless.com is a home
+    # alarm/security-system cloud backend, same single-purpose logic as
+    # the rest of this bucket.
+    "firewalla.org": "Smart Home/IoT",
+    "securecomwireless.com": "Smart Home/IoT",
+
+    # CDN/WAF infrastructure carrying someone else's content, same idea
+    # as Cloudflare/Akamai/Fastly already being Cloud Infrastructure
+    # rather than "whatever site happens to be behind it."
+    "bunnyinfra.net": "Cloud Infrastructure",
+    "sucuri.net": "Cloud Infrastructure",
+
+    # zenarmor.net is OPNsense's own Zenarmor/Sensei security plugin's
+    # update server -- appliance plumbing, not a site. The speedtest
+    # entries are scoped to the *exact* hostname observed, not their
+    # whole parent domain (unlike ooklaserver.net/speedtest.net above,
+    # an ISP's own root domain usually carries other, non-infra content
+    # too -- see pass one's own note on toob.co.uk for exactly this
+    # reasoning).
+    "updates.zenarmor.net": "Network Infrastructure",
+    "speedtest.trooli.com": "Network Infrastructure",
+    "speedtest.ths.connectfibre.co.uk": "Network Infrastructure",
+    "speedtest.skybloxsystems.co.uk": "Network Infrastructure",
+    "speedtest.toob.co.uk": "Network Infrastructure",
+
+    # Amazon Prime Video's own CDN domain -- distinct from primevideo.com
+    # itself (already covered upstream via v2fly's "primevideo" keyword)
+    # and not caught by that keyword since it's a separate domain.
+    "pv-cdn.net": "Streaming/Video",
+
+    # School/education portals -- a real, recurring cluster in family
+    # network traffic that neither v2fly nor pass one's buckets cover.
+    "edulinkone.com": "Education",
+    "mychildatschool.com": "Education",
+    "classmanager.com": "Education",
+    "parentpay.com": "Education",
+    "mathletics.com": "Education",
+    "schoolgrid.co.uk": "Education",
+    "e4education.co.uk": "Education",
+    "pearson.com": "Education",
+    "coursera.org": "Education",
+
+    # UK/US government services -- gov.uk is effectively a public-sector
+    # namespace (every UK government department/agency lives under it),
+    # safe to bucket wholesale the same way a company's own domain is.
+    "gov.uk": "Government",
+    "digitalgov.gov": "Government",
+    "met.police.uk": "Government",
+
+    "worldlabs.ai": "AI",
 }
 
 
