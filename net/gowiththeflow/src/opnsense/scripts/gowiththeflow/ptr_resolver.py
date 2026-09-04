@@ -85,7 +85,7 @@ class PtrResolver:
 
 def resolve_loop(
     work_queue,
-    on_result: Callable[[str, "str | None"], None],
+    on_result: "Callable[[tuple[str, str | None]], None]",
     resolver: PtrResolver,
 ) -> None:
     """Background thread loop: pulls candidate peer IPs off `work_queue`
@@ -93,11 +93,27 @@ def resolve_loop(
     loop thread -- see module docstring for why a blocking
     socket.gethostbyaddr() must never run inline there.
 
-    Always calls on_result(ip, hostname_or_None) exactly once per
-    dequeued item, even on a miss or a rate-limited skip. The caller uses
-    this to clear its own in-flight tracking so a still-unresolved,
-    still-open session's peer is eligible to be retried on a later poll
-    rather than being stuck forever once dequeued.
+    Always calls on_result((ip, hostname_or_None)) -- a single tuple
+    argument, matching how sni_sniffer.py's own callback packs its
+    result before queuing -- exactly once per dequeued item, even on a
+    miss or a rate-limited skip. The caller uses this to clear its own
+    in-flight tracking so a still-unresolved, still-open session's peer
+    is eligible to be retried on a later poll rather than being stuck
+    forever once dequeued.
+
+    A REAL production bug, caught live: this used to call
+    on_result(ip, hostname) as two positional arguments so that
+    gowiththeflowd.py could wire `ptr_results.put` directly as
+    `on_result`. That silently broke, because queue.Queue.put(item,
+    block=True, timeout=None) treats a second positional argument as
+    `block`, not a second queued value -- so the queue only ever held a
+    bare IP string, never a tuple. The instant a real PTR result came
+    back on a busy network, the main loop's `peer_ip, ptr_hostname =
+    ptr_results.get_nowait()` tried to unpack that string's individual
+    characters and blew up with "too many values to unpack", killing the
+    whole daemon before this file's own top-level catch-all existed to
+    even log it. Passing a single tuple is directly compatible with
+    Queue.put with no wrapping needed, and is intrinsically unambiguous.
 
     Never exits on its own, matching dns_sniffer.sniff_loop/
     sni_sniffer.sniff_loop/dpi_classifier.capture_loop. Wraps each item in
@@ -111,7 +127,7 @@ def resolve_loop(
         except Exception as e:
             _log_error("gowiththeflow: PTR lookup for %s failed: %r" % (ip, e))
             hostname = None
-        on_result(ip, hostname)
+        on_result((ip, hostname))
 
 
 def live_resolve_fn(ip: str) -> str | None:

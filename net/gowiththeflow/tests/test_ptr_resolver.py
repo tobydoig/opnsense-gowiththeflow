@@ -76,8 +76,8 @@ def test_resolve_loop_reports_a_hit():
     results = []
     work.put("1.2.3.4")
 
-    def on_result(ip, hostname):
-        results.append((ip, hostname))
+    def on_result(result):
+        results.append(result)
         raise _StopLoop
 
     try:
@@ -96,8 +96,8 @@ def test_resolve_loop_reports_a_miss_not_just_a_hit():
     results = []
     work.put("1.2.3.4")
 
-    def on_result(ip, hostname):
-        results.append((ip, hostname))
+    def on_result(result):
+        results.append(result)
         raise _StopLoop
 
     try:
@@ -127,8 +127,8 @@ def test_resolve_loop_survives_a_raising_resolver_and_keeps_processing():
     work.put("1.2.3.4")
     work.put("5.6.7.8")
 
-    def on_result(ip, hostname):
-        results.append((ip, hostname))
+    def on_result(result):
+        results.append(result)
         if len(results) == 2:
             raise _StopLoop
 
@@ -137,3 +137,47 @@ def test_resolve_loop_survives_a_raising_resolver_and_keeps_processing():
     except _StopLoop:
         pass
     assert results == [("1.2.3.4", None), ("5.6.7.8", "resolved.example")]
+
+
+def test_resolve_loop_is_directly_compatible_with_a_real_queue_put():
+    """A REAL production bug, caught live on nostromo: gowiththeflowd.py
+    wires on_result to a bound queue.Queue.put method directly (not a
+    hand-written callback), so this must be exercised with the real
+    thing, not a test double. The old calling convention -- resolve_loop
+    calling on_result(ip, hostname) as two positional arguments -- passed
+    every other test in this file (which all use hand-written on_result
+    functions accepting two arguments) while being silently broken
+    against a real Queue: queue.Queue.put(item, block=True, timeout=None)
+    swallows a second positional argument as `block`, so the queue only
+    ever held a bare IP string, never a tuple. The consumer's `peer_ip,
+    ptr_hostname = ptr_results.get_nowait()` then blew up unpacking that
+    string's individual characters with 'ValueError: too many values to
+    unpack', killing the whole daemon in production before its own
+    top-level catch-all existed to even log it. This test calls
+    resolve_loop() with a real bound Queue.put and would have failed
+    against the old convention."""
+    resolver = PtrResolver(resolve_fn=lambda ip: "resolved.example" if ip == "1.2.3.4" else None)
+    work: queue.Queue = queue.Queue()
+    results: queue.Queue = queue.Queue()
+    work.put("1.2.3.4")
+    work.put("5.6.7.8")
+
+    call_count = 0
+    real_put = results.put
+
+    def counting_put(item):
+        nonlocal call_count
+        call_count += 1
+        real_put(item)
+        if call_count == 2:
+            raise _StopLoop
+
+    try:
+        resolve_loop(work, counting_put, resolver)
+    except _StopLoop:
+        pass
+
+    seen = [results.get_nowait(), results.get_nowait()]
+    assert seen == [("1.2.3.4", "resolved.example"), ("5.6.7.8", None)]
+    for peer_ip, ptr_hostname in seen:  # this exact unpack is what crashed before the fix
+        assert isinstance(peer_ip, str) and (ptr_hostname is None or isinstance(ptr_hostname, str))
