@@ -17,6 +17,7 @@ import queue
 import subprocess
 import threading
 import time
+import traceback
 from dataclasses import dataclass, field
 
 import block_rules_engine
@@ -265,114 +266,133 @@ def run(config: Config) -> None:
     _reconcile_schedules(conn, int(last_schedule_reconcile))
 
     while True:
-        now = time.time()
-        now_i = int(now)
+        try:
+            now = time.time()
+            now_i = int(now)
 
-        while not dns_observations.empty():
-            obs = dns_observations.get_nowait()
-            hostcache.upsert_hostname(conn, obs.ip, obs.hostname, "dns", obs.ttl, now_i)
+            while not dns_observations.empty():
+                obs = dns_observations.get_nowait()
+                hostcache.upsert_hostname(conn, obs.ip, obs.hostname, "dns", obs.ttl, now_i)
 
-        while not dns_query_events.empty():
-            db.record_dns_query_event(conn, dns_query_events.get_nowait())
+            while not dns_query_events.empty():
+                db.record_dns_query_event(conn, dns_query_events.get_nowait())
 
-        while not sni_hints.empty():
-            local_ip, local_port, remote_ip, remote_port, hostname, ts = sni_hints.get_nowait()
-            flow_hints.put(local_ip, local_port, remote_ip, remote_port, hostname, ts)
+            while not sni_hints.empty():
+                local_ip, local_port, remote_ip, remote_port, hostname, ts = sni_hints.get_nowait()
+                flow_hints.put(local_ip, local_port, remote_ip, remote_port, hostname, ts)
 
-        flow_hints.purge_expired(now)
+            flow_hints.purge_expired(now)
 
-        # dpi_results only gets new entries roughly once per
-        # DPI_BURST_DURATION_S (a batch cadence, not a live one -- see
-        # dpi_classifier.py) -- draining every poll cycle regardless is
-        # still correct and cheap, same as the other queues above.
-        while not dpi_results.empty():
-            rec = dpi_results.get_nowait()
-            db.update_dpi_protocol(
-                conn, rec.proto, rec.local_ip, rec.local_port,
-                rec.peer_ip, rec.peer_port, rec.dpi_protocol,
+            # dpi_results only gets new entries roughly once per
+            # DPI_BURST_DURATION_S (a batch cadence, not a live one -- see
+            # dpi_classifier.py) -- draining every poll cycle regardless is
+            # still correct and cheap, same as the other queues above.
+            while not dpi_results.empty():
+                rec = dpi_results.get_nowait()
+                db.update_dpi_protocol(
+                    conn, rec.proto, rec.local_ip, rec.local_port,
+                    rec.peer_ip, rec.peer_port, rec.dpi_protocol,
+                )
+
+            # Absolute path, not just "pfctl" -- rc.d's PATH is minimal (this
+            # is what caught localhost_identity.refresh()'s equivalent bug
+            # with "configctl"; fixed proactively here for the same reason).
+            pfctl_output = subprocess.run(
+                ["/sbin/pfctl", "-vvs", "state"], capture_output=True, text=True, check=True
+            ).stdout
+            diff = poller.poll(pfctl_output)
+            resolver = correlator.make_resolver(
+                conn, static_overrides, flow_hints, now_i, categorize_fn=category_holder.categorize
             )
+            db.record_diff(conn, diff, now=now_i, resolve_hostname=resolver)
 
-        # Absolute path, not just "pfctl" -- rc.d's PATH is minimal (this
-        # is what caught localhost_identity.refresh()'s equivalent bug
-        # with "configctl"; fixed proactively here for the same reason).
-        pfctl_output = subprocess.run(
-            ["/sbin/pfctl", "-vvs", "state"], capture_output=True, text=True, check=True
-        ).stdout
-        diff = poller.poll(pfctl_output)
-        resolver = correlator.make_resolver(
-            conn, static_overrides, flow_hints, now_i, categorize_fn=category_holder.categorize
-        )
-        db.record_diff(conn, diff, now=now_i, resolve_hostname=resolver)
+            tick_rows, tick_prev_bytes = live_ticks.compute_tick_deltas(
+                diff, tick_prev_bytes, LIVE_TICK_NEW_SESSION_MAX_AGE_S
+            )
+            db.record_live_ticks(conn, now_i, tick_rows)
+            # Retention here is minutes, not days like the rollup tables --
+            # pruned every cycle so the table never balloons between prunes.
+            rollup.prune_live_ticks(conn, now_i, LIVE_TICK_RETENTION_S)
 
-        tick_rows, tick_prev_bytes = live_ticks.compute_tick_deltas(
-            diff, tick_prev_bytes, LIVE_TICK_NEW_SESSION_MAX_AGE_S
-        )
-        db.record_live_ticks(conn, now_i, tick_rows)
-        # Retention here is minutes, not days like the rollup tables --
-        # pruned every cycle so the table never balloons between prunes.
-        rollup.prune_live_ticks(conn, now_i, LIVE_TICK_RETENTION_S)
+            if ptr is not None:
+                # Every still-open session the resolver couldn't name (not
+                # just newly-opened ones -- a real gap found live: a burst of
+                # simultaneous new sessions from several devices could exceed
+                # one poll's worth of PTR budget, and a peer that missed its
+                # one-shot attempt at open time was never retried for the
+                # life of that flow) gets queued for a background, rate-
+                # limited, best-effort PTR attempt on ptr_resolver.resolve_loop's
+                # own thread -- never inline here, so a slow upstream resolver
+                # can't stall pf state polling for the whole network. A hit is
+                # cached so the *next* poll picks it up via the normal
+                # hostcache path. Skipped entirely for a local peer -- its IP
+                # would never PTR-resolve to anything meaningful, and
+                # db.record_diff never calls the resolver for one anyway.
+                for snap in itertools.chain(diff.opened, diff.updated):
+                    if snap.peer_is_local:
+                        continue
+                    peer_ip = snap.key.peer_ip
+                    if peer_ip in ptr_in_flight:
+                        continue
+                    hostname, _source, _category = resolver(snap)
+                    if hostname is None:
+                        ptr_in_flight.add(peer_ip)
+                        ptr_work.put(peer_ip)
 
-        if ptr is not None:
-            # Every still-open session the resolver couldn't name (not
-            # just newly-opened ones -- a real gap found live: a burst of
-            # simultaneous new sessions from several devices could exceed
-            # one poll's worth of PTR budget, and a peer that missed its
-            # one-shot attempt at open time was never retried for the
-            # life of that flow) gets queued for a background, rate-
-            # limited, best-effort PTR attempt on ptr_resolver.resolve_loop's
-            # own thread -- never inline here, so a slow upstream resolver
-            # can't stall pf state polling for the whole network. A hit is
-            # cached so the *next* poll picks it up via the normal
-            # hostcache path. Skipped entirely for a local peer -- its IP
-            # would never PTR-resolve to anything meaningful, and
-            # db.record_diff never calls the resolver for one anyway.
-            for snap in itertools.chain(diff.opened, diff.updated):
-                if snap.peer_is_local:
-                    continue
-                peer_ip = snap.key.peer_ip
-                if peer_ip in ptr_in_flight:
-                    continue
-                hostname, _source, _category = resolver(snap)
-                if hostname is None:
-                    ptr_in_flight.add(peer_ip)
-                    ptr_work.put(peer_ip)
+                while not ptr_results.empty():
+                    peer_ip, ptr_hostname = ptr_results.get_nowait()
+                    ptr_in_flight.discard(peer_ip)
+                    if ptr_hostname is not None:
+                        hostcache.upsert_hostname(
+                            conn, peer_ip, ptr_hostname, "ptr", PTR_TTL_S, now_i
+                        )
 
-            while not ptr_results.empty():
-                peer_ip, ptr_hostname = ptr_results.get_nowait()
-                ptr_in_flight.discard(peer_ip)
-                if ptr_hostname is not None:
-                    hostcache.upsert_hostname(
-                        conn, peer_ip, ptr_hostname, "ptr", PTR_TTL_S, now_i
-                    )
+            if now - last_localhost_refresh >= LOCALHOST_REFRESH_INTERVAL_S:
+                localhost_identity.refresh(conn, now_i)
+                last_localhost_refresh = now
 
-        if now - last_localhost_refresh >= LOCALHOST_REFRESH_INTERVAL_S:
-            localhost_identity.refresh(conn, now_i)
-            last_localhost_refresh = now
+            if now - last_schedule_reconcile >= SCHEDULE_RECONCILE_INTERVAL_S:
+                _reconcile_schedules(conn, now_i)
+                last_schedule_reconcile = now
 
-        if now - last_schedule_reconcile >= SCHEDULE_RECONCILE_INTERVAL_S:
-            _reconcile_schedules(conn, now_i)
-            last_schedule_reconcile = now
+            if now - last_hourly_job >= HOURLY_JOB_INTERVAL_S:
+                rollup.checkpoint_long_lived_sessions(conn, now_i)
+                rollup.rollup_hourly(conn, now_i)
+                rollup.prune_raw(conn, now_i, config.raw_retention_days)
+                last_hourly_job = now
 
-        if now - last_hourly_job >= HOURLY_JOB_INTERVAL_S:
-            rollup.checkpoint_long_lived_sessions(conn, now_i)
-            rollup.rollup_hourly(conn, now_i)
-            rollup.prune_raw(conn, now_i, config.raw_retention_days)
-            last_hourly_job = now
+            if now - last_daily_job >= DAILY_JOB_INTERVAL_S:
+                rollup.rollup_daily(conn, now_i)
+                rollup.prune_hourly(conn, now_i, config.rollup_hourly_retention_days)
+                rollup.prune_daily(conn, now_i, config.rollup_daily_retention_days)
+                # dns_query_log has no rollup step of its own (see its schema
+                # comment) -- prune_daily()'s own `table=` param already
+                # generalizes to it unmodified, since it just does a plain
+                # DELETE ... WHERE bucket_start < ? regardless of table.
+                rollup.prune_daily(conn, now_i, config.dns_query_log_retention_days, table="dns_query_log")
+                rollup.incremental_vacuum(conn)
+                _refresh_categories_in_background(category_holder)
+                last_daily_job = now
 
-        if now - last_daily_job >= DAILY_JOB_INTERVAL_S:
-            rollup.rollup_daily(conn, now_i)
-            rollup.prune_hourly(conn, now_i, config.rollup_hourly_retention_days)
-            rollup.prune_daily(conn, now_i, config.rollup_daily_retention_days)
-            # dns_query_log has no rollup step of its own (see its schema
-            # comment) -- prune_daily()'s own `table=` param already
-            # generalizes to it unmodified, since it just does a plain
-            # DELETE ... WHERE bucket_start < ? regardless of table.
-            rollup.prune_daily(conn, now_i, config.dns_query_log_retention_days, table="dns_query_log")
-            rollup.incremental_vacuum(conn)
-            _refresh_categories_in_background(category_holder)
-            last_daily_job = now
-
-        time.sleep(POLL_INTERVAL_S)
+            time.sleep(POLL_INTERVAL_S)
+        except Exception:
+            # Last-resort net around the *entire* loop body -- every call
+            # above this point runs unguarded except for the few specific
+            # spots (schedule reconcile, DNS/SNI/DPI/PTR threads) already
+            # wrapped individually elsewhere in this project. Confirmed for
+            # real: an overnight run with schedule-driven blocking active
+            # for the first time died with absolutely zero trace anywhere
+            # (Daemonize redirects stderr to /dev/null, and nothing here
+            # caught whatever it was), so the daemon's own log had nothing
+            # in it at all -- the only symptom was the Live page going
+            # stale. Logs the full traceback, not just repr(e), since this
+            # is the catch-all of last resort and needs to actually explain
+            # itself when every more specific guard has already had its
+            # turn. Sleeps the same as a normal cycle before retrying so a
+            # deterministic failure (e.g. a missing binary) logs steadily
+            # rather than spinning in a tight, syslog-flooding crash loop.
+            _log_error("gowiththeflow: main loop iteration failed:\n%s" % traceback.format_exc())
+            time.sleep(POLL_INTERVAL_S)
 
 
 if __name__ == "__main__":
