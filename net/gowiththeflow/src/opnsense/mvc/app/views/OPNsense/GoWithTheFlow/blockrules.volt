@@ -146,7 +146,20 @@
         $("#grid-blockrules").UIBootgrid({
             search: '/api/gowiththeflow/blockrules/search/',
             commands: {
-                edit: {
+                // Named gwtfedit, not edit -- "edit" is a RESERVED command
+                // name in opnsense_bootgrid.js's own built-in command set
+                // (requires: ['get', 'set'], checked against a `crud`
+                // config this plugin never provides since it uses its own
+                // hand-built modal, not getForm() scaffolding). A custom
+                // command sharing that name gets shallow-merged onto the
+                // built-in's stale `requires: ['get', 'set']` (only
+                // title/classname/sequence/method get overwritten), so
+                // the visibility check fails and the button silently
+                // never renders -- confirmed live: this was the entire
+                // "no edit/pencil icon at all" bug, on both nostromo and
+                // the dev VM. del/override_* aren't reserved names, so
+                // they get a clean `requires: []` and always worked fine.
+                gwtfedit: {
                     title: "{{ lang._('Edit') }}",
                     classname: 'fa fa-pencil fa-fw',
                     sequence: 1,
