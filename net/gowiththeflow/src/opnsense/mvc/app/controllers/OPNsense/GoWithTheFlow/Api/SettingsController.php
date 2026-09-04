@@ -41,4 +41,27 @@ class SettingsController extends ApiMutableModelControllerBase
         $db->exec('DELETE FROM ip_hostname_cache');
         return ['status' => 'ok'];
     }
+
+    /**
+     * Re-applies today's category logic (manual overrides, then the
+     * v2fly-based matcher) across already-recorded history -- a
+     * domain_categories/ addition only affects newly-observed traffic
+     * otherwise, since category is stamped once when a connection is
+     * first written and never revisited. Needs Python-side matching
+     * logic (recategorize.py, shared with gowiththeflowd.py via
+     * categories.resolve_category()), so unlike the two actions above
+     * this shells out via configd rather than a direct SQLite delete.
+     */
+    public function recategorizeAction()
+    {
+        if (!$this->request->isPost()) {
+            return ['status' => 'failed'];
+        }
+        $backend = new \OPNsense\Core\Backend();
+        $result = json_decode($backend->configdRun('gowiththeflow recategorize'), true);
+        if (!is_array($result)) {
+            return ['status' => 'failed', 'error' => 'no response from the recategorize action'];
+        }
+        return $result;
+    }
 }

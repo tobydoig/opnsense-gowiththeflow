@@ -1,4 +1,5 @@
-from categories import CATEGORY_SOURCES, CategoryMatcher, parse_file
+import manual_categories
+from categories import CATEGORY_SOURCES, CategoryMatcher, parse_file, resolve_category
 
 
 def test_parse_file_handles_suffix_full_regexp_and_comments():
@@ -169,3 +170,21 @@ def test_categorize_precedence_follows_category_sources_order():
     files = {"a": "shared.example.com", "b": "shared.example.com"}
     matcher = CategoryMatcher(files, {"First": ["a"], "Second": ["b"]})
     assert matcher.categorize("shared.example.com") == "First"
+
+
+def test_resolve_category_manual_override_wins_over_matcher(monkeypatch):
+    monkeypatch.setitem(manual_categories.OVERRIDES, "shared.example.com", "Manual Wins")
+    files = {"a": "shared.example.com"}
+    matcher = CategoryMatcher(files, {"Automated": ["a"]})
+    assert resolve_category("shared.example.com", matcher) == "Manual Wins"
+
+
+def test_resolve_category_falls_back_to_matcher_with_no_manual_override():
+    files = {"a": "matcher-only.example.com"}
+    matcher = CategoryMatcher(files, {"Automated": ["a"]})
+    assert resolve_category("matcher-only.example.com", matcher) == "Automated"
+
+
+def test_resolve_category_returns_none_when_neither_matches():
+    matcher = CategoryMatcher({}, {})
+    assert resolve_category("totally-unmapped.example.com", matcher) is None

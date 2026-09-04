@@ -351,6 +351,53 @@ def test_schema_init_is_idempotent(tmp_path):
     assert "internal_rollup_daily" not in tables
 
 
+def test_init_schema_creates_peer_hostname_indexes_for_recategorize(tmp_path):
+    # recategorize.py's apply command does a plain UPDATE ... WHERE
+    # peer_hostname = ? against these two tables -- without an index,
+    # that's a full table scan per distinct hostname.
+    conn = db.connect(str(tmp_path / "flows.db"))
+    db.init_schema(conn)
+    indexes = {
+        r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='index'")
+    }
+    assert "idx_live_hostname" in indexes
+    assert "idx_raw_hostname" in indexes
+
+
+def test_init_schema_skips_hostname_index_on_a_pre_rename_legacy_schema(tmp_path):
+    # The same legacy shape test_init_schema_migrates_category_column...
+    # above exercises (peer_hostname didn't exist yet) -- must not raise
+    # even though the new indexes above can't be created against it.
+    conn = db.connect(str(tmp_path / "flows.db"))
+    conn.execute(
+        """
+        CREATE TABLE live_sessions (
+          id INTEGER PRIMARY KEY,
+          proto TEXT NOT NULL,
+          local_ip TEXT NOT NULL, local_port INTEGER NOT NULL,
+          remote_ip TEXT NOT NULL, remote_port INTEGER NOT NULL,
+          remote_hostname TEXT, hostname_source TEXT,
+          first_seen INTEGER NOT NULL, last_seen INTEGER NOT NULL,
+          bytes_in INTEGER NOT NULL DEFAULT 0, bytes_out INTEGER NOT NULL DEFAULT 0,
+          pkts_in INTEGER NOT NULL DEFAULT 0, pkts_out INTEGER NOT NULL DEFAULT 0,
+          last_checkpoint_at INTEGER NOT NULL DEFAULT 0,
+          baseline_bytes_in INTEGER NOT NULL DEFAULT 0, baseline_bytes_out INTEGER NOT NULL DEFAULT 0,
+          baseline_pkts_in INTEGER NOT NULL DEFAULT 0, baseline_pkts_out INTEGER NOT NULL DEFAULT 0,
+          UNIQUE(proto, local_ip, local_port, remote_ip, remote_port)
+        )
+        """
+    )
+    conn.commit()
+    db.init_schema(conn)  # must not raise
+    indexes = {
+        r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='index'")
+    }
+    assert "idx_live_hostname" not in indexes
+    # connections_raw was never hand-crafted with an old shape here, so
+    # it gets created fresh (with peer_hostname) and its index normally.
+    assert "idx_raw_hostname" in indexes
+
+
 def _query_event(**overrides):
     fields = dict(
         local_ip="192.168.1.50", query_name="example.com", query_type="A",

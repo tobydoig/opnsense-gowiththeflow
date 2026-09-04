@@ -279,6 +279,17 @@ def connect(db_path: str) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA auto_vacuum=INCREMENTAL")
+    # SQLite's own default is 0 -- a second writer (a CLI action via
+    # configd, or recategorize.py's own bulk UPDATE) fails immediately
+    # with "database is locked" rather than briefly waiting its turn.
+    # Confirmed live: recategorize.py's own single write transaction
+    # (all its UPDATEs at once, ~20s against a real box's real history)
+    # held the lock longer than an initial, more conservative 5000ms
+    # timeout covered, producing a handful of caught-and-logged (not
+    # fatal -- see gowiththeflowd.py's own top-level catch-all) "database
+    # is locked" errors during that window regardless. Costs nothing when
+    # there's no contention, so generous rather than tight.
+    conn.execute("PRAGMA busy_timeout = 30000")
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -332,6 +343,30 @@ def init_schema(conn: sqlite3.Connection) -> None:
     except sqlite3.OperationalError as e:
         if "duplicate column" not in str(e).lower():
             raise
+
+    # recategorize.py's apply command UPDATEs by peer_hostname across
+    # both of these tables -- without an index, that's a full table scan
+    # per distinct hostname (confirmed live: a dry run against a real
+    # box's real history took minutes rather than seconds before this
+    # existed). Created here, after the migrations above rather than
+    # inside SCHEMA_SQL itself, so it can't ever run against a
+    # pre-migration install that doesn't have peer_hostname yet (the
+    # ancient remote_hostname-era schema the category-column migration
+    # test above deliberately still exercises) -- "no such column" here
+    # means the migration above hasn't (and in that specific legacy
+    # case, per this project's own decision, never will) rename it, so
+    # it's a no-op rather than an error, same shape as the "duplicate
+    # column" catches above.
+    for stmt in (
+        "CREATE INDEX IF NOT EXISTS idx_live_hostname ON live_sessions(peer_hostname)",
+        "CREATE INDEX IF NOT EXISTS idx_raw_hostname ON connections_raw(peer_hostname)",
+    ):
+        try:
+            conn.execute(stmt)
+            conn.commit()
+        except sqlite3.OperationalError as e:
+            if "no such column" not in str(e).lower():
+                raise
 
 
 def load_live_sessions_as_snapshots(conn: sqlite3.Connection) -> list[StateSnapshot]:

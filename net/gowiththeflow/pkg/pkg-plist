@@ -59,6 +59,7 @@ usr/local/opnsense/scripts/gowiththeflow/localhost_identity.py
 usr/local/opnsense/scripts/gowiththeflow/manual_categories.py
 usr/local/opnsense/scripts/gowiththeflow/pf_state_poller.py
 usr/local/opnsense/scripts/gowiththeflow/ptr_resolver.py
+usr/local/opnsense/scripts/gowiththeflow/recategorize.py
 usr/local/opnsense/scripts/gowiththeflow/rollup.py
 usr/local/opnsense/scripts/gowiththeflow/sni_sniffer.py
 usr/local/opnsense/service/conf/actions.d/actions_gowiththeflow.conf

@@ -17,6 +17,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
+import manual_categories
+
 # Order matters: categorize() returns the first match, and company-wide
 # files (google, microsoft, amazon, apple, ...) include their own
 # ad-serving subdomains -- or, in amazon's case, its entire cloud
@@ -178,3 +180,16 @@ class CategoryMatcher:
             if any(r.search(hostname) for r, _tags in rules.regexes):
                 return category
         return None
+
+
+def resolve_category(hostname: str | None, matcher: CategoryMatcher) -> str | None:
+    """Manual overrides (manual_categories.py) always win over this
+    automated v2fly-based matcher -- same precedence static_overrides
+    gets over the automated hostname resolvers in correlator.py. Shared
+    by gowiththeflowd.py's live categorization and recategorize.py's
+    offline re-pass over already-recorded history, so the two can never
+    drift out of sync with each other."""
+    override = manual_categories.categorize(hostname)
+    if override is not None:
+        return override
+    return matcher.categorize(hostname)
