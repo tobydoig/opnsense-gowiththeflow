@@ -47,7 +47,8 @@ class HistoryController extends DbApiControllerBase
                            THEN r1.bytes_out ELSE r1.bytes_in END) AS bytes_in,
                   SUM(CASE WHEN :local_ip != '' AND r1.peer_is_local = 1 AND r1.peer_ip = :local_ip
                            THEN r1.bytes_in ELSE r1.bytes_out END) AS bytes_out,
-                  SUM(r1.conn_count) AS conn_count
+                  SUM(r1.conn_count) AS conn_count,
+                  MAX(r1.bucket_start) AS last_seen
                 FROM $table r1
                 LEFT JOIN local_host_identity lhi ON lhi.ip = r1.local_ip
                 WHERE r1.bucket_start >= :cutoff

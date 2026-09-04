@@ -65,6 +65,9 @@
                 formatters: {
                     "bytesformatter": function (column, row) {
                         return formatBytesGWTF(row[column.id]);
+                    },
+                    "timestampformatter": function (column, row) {
+                        return formatTimestampGWTF(row[column.id]);
                     }
                 }
             }
@@ -199,6 +202,13 @@
         }
         return value.toFixed(i === 0 ? 0 : 1) + " " + units[i];
     }
+
+    function formatTimestampGWTF(unixSeconds) {
+        if (unixSeconds === undefined || unixSeconds === null) {
+            return "";
+        }
+        return new Date(unixSeconds * 1000).toLocaleString();
+    }
 </script>
 
 <div class="content-box col-xs-12 __mb">
@@ -218,7 +228,7 @@
 </div>
 <ul class="nav nav-tabs" data-tabs="tabs" id="historytabs">
     <li class="active"><a data-toggle="tab" href="#history-overview">{{ lang._('Overview') }}</a></li>
-    <li><a data-toggle="tab" href="#history-table">{{ lang._('Table') }}</a></li>
+    <li><a data-toggle="tab" href="#history-table">{{ lang._('Details') }}</a></li>
 </ul>
 <div class="tab-content content-box col-xs-12 __mb">
     <div id="history-overview" class="tab-pane fade in active">
@@ -251,6 +261,7 @@
                     <th data-column-id="bytes_in" data-type="numeric" data-formatter="bytesformatter">{{ lang._('Bytes In') }}</th>
                     <th data-column-id="bytes_out" data-type="numeric" data-formatter="bytesformatter">{{ lang._('Bytes Out') }}</th>
                     <th data-column-id="bytes_total" data-type="numeric" data-formatter="bytesformatter">{{ lang._('Total') }}</th>
+                    <th data-column-id="last_seen" data-type="numeric" data-formatter="timestampformatter" data-width="14em">{{ lang._('Last Seen') }}</th>
                 </tr>
             </thead>
             <tbody>
