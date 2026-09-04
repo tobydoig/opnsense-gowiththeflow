@@ -2027,6 +2027,29 @@
      "database is locked" errors. Ran for real against nostromo's actual
      history: 871 hostnames corrected, re-run confirmed idempotent (0
      changes the second time), daemon stayed healthy throughout.
+- **1.8.1 -- real production freeze, found live on the user's own box the
+  same night 1.8.0 was cut.** A single sustained multi-gigabyte download
+  (a game client update, confirmed via its pf state: a byte counter
+  matching the download size almost exactly) intermittently made
+  `pfctl -vvs state` block for minutes at a time -- not a bug in this
+  project's own code, but the kernel apparently deprioritizing an
+  administrative "dump the whole pf state table" query while genuinely
+  busy servicing that much real packet throughput. `subprocess.run()` for
+  that call (and localhost_identity.py's two, `configctl dnsmasq list
+  leases`/`arp -an`) had no timeout anywhere, so the *entire* daemon froze
+  solid each time: no exception, so nothing for the main loop's own
+  top-level catch-all (1.7.0 follow-up #3, above) to catch --
+  `live_sessions` simply stopped advancing, silently, until a manual
+  restart, which then froze again the next time the download got heavy
+  enough. Diagnosed without touching the live box beyond read-only
+  checks (ps state, a kernel stack dump via `procstat -kk`, and finding
+  the actual outsized pf state) -- confirmed the moment the download
+  actually finished that the daemon self-recovered on its own (`ps`
+  state flipped D -> S, `live_sessions` resumed within seconds), which
+  is what pinned this down before the fix even shipped. Added
+  `timeout=15` to all three calls -- a timeout expiring now means
+  exactly one skipped, logged poll cycle instead of an indefinite
+  freeze. 275 tests passing.
 - **Not yet started**: the staticOverrides grid editor, and proper repo
   signing before this pkg-repo is relied on for anything that matters.
   ("Scheduled traffic blocking" -- the user's original motivating
