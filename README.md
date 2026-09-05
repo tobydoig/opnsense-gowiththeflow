@@ -1,10 +1,10 @@
 # Go With The Flow
 
-An [OPNsense](https://opnsense.org/) plugin for per-host connection and
-bandwidth tracking, with passive hostname resolution — no DNS proxy, no
-packet redirection, nothing phoning home. Runs as a single lightweight
-Python daemon integrated into OPNsense's own service and plugin
-framework, with a PHP/MVC front end for the GUI pages.
+An [OPNsense](https://opnsense.org/) plugin, the primary inspiration was
+to for blocking devices on my local network on a schedule (ie. block the
+kids phones, ipads etc at night so they sleep). Then added a few more
+features like live details of what's actually going across the network
+showing resolved hostnames instead of just IPs.
 
 ## Features
 
@@ -101,4 +101,4 @@ box, since `pkg create` doesn't cross-build.
 
 ## License
 
-BSD 2-Clause (per `pkg/+MANIFEST`).
+MIT (per `pkg/+MANIFEST`) — see [`LICENSE`](LICENSE).

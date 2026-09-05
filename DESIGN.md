@@ -2200,6 +2200,13 @@
   Commands column width dropped from 152 to 122 (152/5 x4, matching
   1.9.7's per-icon measurement for one fewer icon) -- not yet
   re-confirmed live the way 152 was. Reboot-survival cycle clean.
+- **1.9.9 -- licensing switched from BSD 2-Clause to MIT**, ahead of the
+  source repo going public: `pkg/+MANIFEST`'s `licenses` field, a new
+  root-level `LICENSE` file, and `README.md`'s License section all
+  updated together. Also added the repo's first `README.md` (features,
+  architecture, install/dev instructions, pointing to this file for the
+  full history) -- previously only `DESIGN.md` existed. Reboot-survival
+  cycle clean.
 - **Not yet started**: the staticOverrides grid editor, and proper repo
   signing before this pkg-repo is relied on for anything that matters.
   ("Scheduled traffic blocking" -- the user's original motivating
