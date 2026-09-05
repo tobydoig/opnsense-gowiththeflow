@@ -101,4 +101,5 @@ box, since `pkg create` doesn't cross-build.
 
 ## License
 
-MIT (per `pkg/+MANIFEST`) — see [`LICENSE`](LICENSE).
+No license is granted — all rights reserved. This source is here for
+transparency, not for reuse or redistribution.

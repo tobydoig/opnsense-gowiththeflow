@@ -1,6 +1,6 @@
 {
   "name": "os-gowiththeflow",
-  "version": "1.9.9",
+  "version": "1.9.10",
   "origin": "net/os-gowiththeflow",
   "comment": "Per-host connection and bandwidth tracking with hostname resolution, scheduled host and domain blocking.",
   "desc": "Go With The Flow tracks, per local host, which remote hosts it talks to and how many bytes in/out, both live and historically. Remote hostnames are resolved via passive DNS and TLS SNI observation rather than raw IPs alone. Scheduled host and domain blocking is supported, with the ability to block by hostname, domain, or IP address. The package also provides a web interface for viewing and managing the tracked data and blocking rules.",
@@ -8,8 +8,6 @@
   "www": "https://github.com/tobydoig/opnsense-gowiththeflow",
   "prefix": "/",
   "categories": ["net"],
-  "licenselogic": "single",
-  "licenses": ["MIT"],
   "deps": {
     "py313-scapy": {
       "origin": "net/scapy",

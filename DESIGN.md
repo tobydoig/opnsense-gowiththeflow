@@ -2207,6 +2207,12 @@
   architecture, install/dev instructions, pointing to this file for the
   full history) -- previously only `DESIGN.md` existed. Reboot-survival
   cycle clean.
+- **1.9.10 -- reversed 1.9.9's MIT license, on request: no license at
+  all.** Removed the root `LICENSE` file, dropped `pkg/+MANIFEST`'s now-
+  empty `licenselogic`/`licenses` fields entirely (both optional in a
+  pkg manifest), and reworded `README.md`'s License section to state
+  plainly that no license is granted -- source visible for
+  transparency, not reuse. Reboot-survival cycle clean.
 - **Not yet started**: the staticOverrides grid editor, and proper repo
   signing before this pkg-repo is relied on for anything that matters.
   ("Scheduled traffic blocking" -- the user's original motivating
