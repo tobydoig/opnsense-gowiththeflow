@@ -101,5 +101,7 @@ box, since `pkg create` doesn't cross-build.
 
 ## License
 
-No license is granted — all rights reserved. This source is here for
-transparency, not for reuse or redistribution.
+MIT, with the [Commons Clause](https://commonsclause.com/) — free to
+use, modify, and redistribute, including within a business, but nobody
+may sell it or sell a product/service whose value comes substantially
+from it. See [`LICENSE`](LICENSE).

@@ -2213,6 +2213,24 @@
   pkg manifest), and reworded `README.md`'s License section to state
   plainly that no license is granted -- source visible for
   transparency, not reuse. Reboot-survival cycle clean.
+- **1.9.11 -- 1.9.10's "no license" meant the opposite of what was
+  wanted, and "do what you will" turned out to mean "except sell it."**
+  Absence of a license is the *most* restrictive state under copyright
+  law (all rights reserved by default, not "do what you will" -- a real
+  mix-up caught before it shipped anywhere). The first fix (Unlicense,
+  full public domain) also never shipped -- once "except sell" came up,
+  full public domain would have permitted exactly that. Landed on
+  **MIT + the Commons Clause** instead: free to use/modify/redistribute,
+  including inside a business, but nobody may sell it or sell a
+  product/service whose value comes substantially from it -- confirmed
+  this specific scope against the alternative (PolyForm Noncommercial,
+  which would have blocked *any* commercial use at all, not just
+  reselling) before writing the actual `LICENSE` text. Root `LICENSE`
+  (Commons Clause condition + the underlying MIT text, matching the
+  standard combined format published at commonsclause.com),
+  `pkg/+MANIFEST`'s `licenses` field, and `README.md`'s License section
+  all updated together. Lines up with the source repo
+  (`opnsense-gowiththeflow`) going public. Reboot-survival cycle clean.
 - **Not yet started**: the staticOverrides grid editor, and proper repo
   signing before this pkg-repo is relied on for anything that matters.
   ("Scheduled traffic blocking" -- the user's original motivating
