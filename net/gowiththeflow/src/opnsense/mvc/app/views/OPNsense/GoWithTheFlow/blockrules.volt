@@ -210,8 +210,8 @@
                 // the visibility check fails and the button silently
                 // never renders -- confirmed live: this was the entire
                 // "no edit/pencil icon at all" bug, on both nostromo and
-                // the dev VM. del/override_* aren't reserved names, so
-                // they get a clean `requires: []` and always worked fine.
+                // the dev VM. `del` isn't a reserved name, so it gets a
+                // clean `requires: []` and always worked fine.
                 gwtfedit: {
                     title: "{{ lang._('Edit') }}",
                     classname: 'fa fa-pencil fa-fw',
@@ -285,38 +285,24 @@
                         });
                     },
                 },
-                override_unblock: {
-                    title: "{{ lang._('Unblock now (until this window ends)') }}",
-                    classname: 'fa fa-play fa-fw text-success',
-                    sequence: 2,
-                    filter: function (cell) {
-                        const d = cell.getData();
-                        return d.enabled == 1 && !!d.schedule_json && d.last_effective_state === 'blocked';
-                    },
-                    method: function (event, cell) {
-                        ajaxCall('/api/gowiththeflow/blockrules/override/' + cell.getData().id + '/', { state: 'unblocked' }, function () {
-                            $("#grid-blockrules").bootgrid('reload');
-                        });
-                    },
-                },
-                override_block: {
-                    title: "{{ lang._('Block now (until the next window starts)') }}",
-                    classname: 'fa fa-ban fa-fw',
-                    sequence: 2,
-                    filter: function (cell) {
-                        const d = cell.getData();
-                        return d.enabled == 1 && !!d.schedule_json && d.last_effective_state !== 'blocked';
-                    },
-                    method: function (event, cell) {
-                        ajaxCall('/api/gowiththeflow/blockrules/override/' + cell.getData().id + '/', { state: 'blocked' }, function () {
-                            $("#grid-blockrules").bootgrid('reload');
-                        });
-                    },
-                },
+                // The two schedule-override buttons (temporarily force
+                // blocked/unblocked mid-window, without touching the
+                // rule's enabled state or schedule) were removed here --
+                // both conditionally appeared/disappeared based on rule
+                // state at the same moment gwtftoggle's own icon flips
+                // between pause/play, and override_unblock's icon was
+                // ALSO a green play arrow, so pausing a rule visually
+                // looked like two different things were happening to two
+                // different buttons for confusingly similar reasons.
+                // Pause/resume alone covers the real-world need this was
+                // trying to serve. The backend (rule_override / set_override
+                // / RuleDecision's manual_override_state+override_until)
+                // is untouched -- still reachable via the CLI/API if ever
+                // needed again, just not exposed in this grid any more.
                 del: {
                     title: "{{ lang._('Delete this rule') }}",
                     classname: 'fa fa-trash-o fa-fw text-danger',
-                    sequence: 5,
+                    sequence: 4,
                     method: function (event, cell) {
                         const d = cell.getData();
                         stdDialogConfirm(
@@ -435,15 +421,14 @@
     <table id="grid-blockrules" class="table table-condensed table-hover table-striped table-responsive">
         <thead>
             <tr>
-                <!-- Wide enough for every command that can appear on one
-                     row at once: edit, duplicate, pause/resume, one of
-                     the two schedule-override buttons, delete -- up to
-                     5 icons. Too narrow here silently collapses the
-                     overflow into a "..." menu (not a resize the user
-                     can do from the grid itself) rather than erroring,
-                     so this was easy to not notice until a real screen
-                     happened to be narrower than whatever showed every
-                     icon during dev-VM testing.
+                <!-- Wide enough for every command that always appears on
+                     one row: edit, duplicate, pause/resume, delete --
+                     exactly 4 icons now that the two schedule-override
+                     buttons are gone (see the removed-commands comment
+                     near "del" below). Too narrow here silently
+                     collapses the overflow into a "..." menu (not a
+                     resize the user can do from the grid itself) rather
+                     than erroring.
 
                      A bare number here (not "Nem") is a deliberate,
                      precise choice, not an oversight -- opnsense_
@@ -455,14 +440,15 @@
                      font-size and isn't the same number of px you'd get
                      doing the em math yourself -- confirmed live via
                      devtools this was rendering at 215px for what was
-                     meant to be a much narrower column, and a 10em ->
-                     14em -> 10em guessing cycle never converged on the
-                     right value for exactly that reason. A bare number
+                     meant to be a much narrower column. A bare number
                      skips all of that and is used as the literal pixel
-                     width directly -- 152 is the exact value confirmed
-                     live to fit all 5 command icons with no leftover
-                     gap. -->
-                <th data-column-id="commands" data-width="152" data-searchable="false" data-sortable="false" data-formatter="commands"></th>
+                     width directly. 152 was the value confirmed live to
+                     exactly fit 5 icons with no leftover gap; 122 here
+                     is that same per-icon measurement (152/5, x4) for
+                     the 4 that remain now -- not yet re-confirmed live
+                     the way 152 was, since removing 2 commands and
+                     re-measuring needs the user's own screen again. -->
+                <th data-column-id="commands" data-width="122" data-searchable="false" data-sortable="false" data-formatter="commands"></th>
                 <th data-column-id="row_id" data-identifier="true" data-visible="false">id</th>
                 <th data-column-id="name" data-type="string">{{ lang._('Name') }}</th>
                 <th data-column-id="device" data-type="string">{{ lang._('Devices') }}</th>

@@ -2186,6 +2186,20 @@
   browser available in this environment -- this one is a measured,
   mechanism-verified value rather than another guess, but the user's
   own visual confirmation on nostromo remains the real check.
+- **1.9.8 -- dropped the two schedule-override grid buttons; single
+  pause/resume covers it.** Reported live: pausing a rule made the
+  "Block now" button disappear at the same moment gwtftoggle's own icon
+  flipped from pause to play -- and override_unblock's icon was *also*
+  a green play arrow, so two different buttons were changing for
+  confusingly similar-looking reasons at once. Removed override_block/
+  override_unblock from the grid entirely; pause/resume alone covers
+  the real need. Now exactly 4 commands always show (edit, duplicate,
+  pause/resume, delete), none of them conditionally filtered any more.
+  The backend (`rule_override`/`set_override`/`manual_override_state`+
+  `override_until`) is untouched, just no longer wired to a button.
+  Commands column width dropped from 152 to 122 (152/5 x4, matching
+  1.9.7's per-icon measurement for one fewer icon) -- not yet
+  re-confirmed live the way 152 was. Reboot-survival cycle clean.
 - **Not yet started**: the staticOverrides grid editor, and proper repo
   signing before this pkg-repo is relied on for anything that matters.
   ("Scheduled traffic blocking" -- the user's original motivating
