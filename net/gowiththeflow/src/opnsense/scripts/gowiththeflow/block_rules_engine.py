@@ -13,6 +13,7 @@ without a VM.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import subprocess
 from dataclasses import dataclass
@@ -50,49 +51,57 @@ def get_rule(conn: sqlite3.Connection, rule_id: int) -> sqlite3.Row | None:
     return conn.execute("SELECT * FROM block_rules WHERE id = ?", (rule_id,)).fetchone()
 
 
+def _encode_devices(devices: list[dict]) -> str:
+    """`devices` is a list of already-resolved per-device snapshots
+    ([{"ip": ..., "hostname": ...|None, "mac": ...|None}, ...]) -- the
+    same shape a single device's hostname/mac snapshot has always used,
+    just N of them. Callers (block_rules.py's CLI) build this list via
+    the same per-IP identity lookup that already existed for one device."""
+    return json.dumps(devices)
+
+
+def device_ips(row: sqlite3.Row) -> list[str]:
+    """The IPs of every device in a rule's group, in stored order."""
+    return [d["ip"] for d in json.loads(row["devices"])]
+
+
 def create_host_rule(
-    conn: sqlite3.Connection, ip: str, hostname: str | None, mac: str | None,
+    conn: sqlite3.Connection, name: str, devices: list[dict],
     created_by: str | None, reason: str | None, now: int,
 ) -> int:
-    """Upserts this device's host-type rule -- only one is ever allowed
-    per IP (the partial unique index enforces it). Called both by
-    block_rules.py's own `create` command and by block_host.py's existing
-    cmd_block, so the pre-existing Live/Top-Talkers quick-block icon and
-    this unified table stay in lockstep automatically, with no separate
-    migration step."""
-    conn.execute(
-        """
-        INSERT INTO block_rules
-            (rule_type, local_ip, mac, hostname, domains, schedule_json, enabled,
-             created_at, created_by, reason, updated_at)
-        VALUES ('host', ?, ?, ?, NULL, NULL, 1, ?, ?, ?, ?)
-        ON CONFLICT(local_ip) WHERE rule_type = 'host' DO UPDATE SET
-            mac = excluded.mac, hostname = excluded.hostname,
-            created_by = excluded.created_by, reason = excluded.reason,
-            updated_at = excluded.updated_at
-        """,
-        (ip, mac, hostname, now, created_by, reason, now),
-    )
-    conn.commit()
-    row = conn.execute("SELECT id FROM block_rules WHERE rule_type = 'host' AND local_ip = ?", (ip,)).fetchone()
-    return row["id"]
-
-
-def create_domain_rule(
-    conn: sqlite3.Connection, ip: str, hostname: str | None, mac: str | None,
-    domains: str, schedule_json: str | None, created_by: str | None, reason: str | None, now: int,
-) -> int:
-    """Always inserts a new row -- unlike host rules, a device can have
-    several independent domain rules at once (different domains,
-    different schedules)."""
+    """Always inserts a new row -- a device can no longer be upserted by
+    its own IP now that a rule covers a *group* (there's no single key
+    to upsert against). Two rules both trying to fully block the same
+    device is instead refused at create/edit time by
+    devices_conflicting_with_other_host_rules(), not enforced here."""
     cur = conn.execute(
         """
         INSERT INTO block_rules
-            (rule_type, local_ip, mac, hostname, domains, schedule_json, enabled,
+            (rule_type, name, devices, domains, schedule_json, enabled,
              created_at, created_by, reason, updated_at)
-        VALUES ('domain', ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
+        VALUES ('host', ?, ?, NULL, NULL, 1, ?, ?, ?, ?)
         """,
-        (ip, mac, hostname, domains, schedule_json, now, created_by, reason, now),
+        (name, _encode_devices(devices), now, created_by, reason, now),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def create_domain_rule(
+    conn: sqlite3.Connection, name: str, devices: list[dict],
+    domains: str, schedule_json: str | None, created_by: str | None, reason: str | None, now: int,
+) -> int:
+    """A device can have several independent domain rules at once
+    (different domains, different schedules) -- and, now, a domain rule
+    itself can cover several devices sharing the same domains/schedule."""
+    cur = conn.execute(
+        """
+        INSERT INTO block_rules
+            (rule_type, name, devices, domains, schedule_json, enabled,
+             created_at, created_by, reason, updated_at)
+        VALUES ('domain', ?, ?, ?, ?, 1, ?, ?, ?, ?)
+        """,
+        (name, _encode_devices(devices), domains, schedule_json, now, created_by, reason, now),
     )
     conn.commit()
     rule_id = cur.lastrowid
@@ -104,21 +113,118 @@ def create_domain_rule(
     return rule_id
 
 
+def _unenforce_removed_devices(conn: sqlite3.Connection, old_row: sqlite3.Row, removed_ips: set[str]) -> None:
+    """A device dropped from a rule's group by update_rule() isn't
+    covered by _apply_host_rule()/_apply_domain_rule() any more -- those
+    only ever loop the group's *current* devices, so without this a
+    removed device's block (or, for a domain rule, its per-device dnsbl
+    row) would simply never be undone and stay stuck forever. Safe to
+    unblock unconditionally for a host rule: the create/edit-time
+    conflict guard (devices_conflicting_with_other_host_rules) already
+    guarantees no other *enabled* host rule can be covering the same
+    device at the same time, so nothing else could still need it
+    blocked."""
+    if old_row["rule_type"] == "host":
+        changed = False
+        for ip in removed_ips:
+            if _is_host_blocked(conn, ip):
+                blocklist.remove_block(conn, ip)
+                changed = True
+        if changed:
+            blocklist.sync_pf(conn, TABLE_FILE_PATH)
+    else:
+        for ip in removed_ips:
+            description = f"{old_row['unbound_description']}:{ip}"
+            _run_dnsbl_apply("remove", description, old_row["domains"], ip, old_row["id"])
+
+
 def update_rule(
-    conn: sqlite3.Connection, rule_id: int, domains: str | None, schedule_json: str | None, now: int,
+    conn: sqlite3.Connection, rule_id: int, name: str, devices: list[dict],
+    domains: str | None, schedule_json: str | None, now: int,
 ) -> bool:
-    """Edits a rule's domains/schedule (host rules never have either) and
-    re-applies it immediately so a change takes effect right away rather
-    than waiting for the next reconcile tick."""
-    if get_rule(conn, rule_id) is None:
+    """Overwrites a rule's name/devices/domains/schedule (host rules
+    never have domains) and re-applies it immediately so a change takes
+    effect right away rather than waiting for the next reconcile tick.
+    Unconditional overwrite, not a partial update -- the dialog always
+    resubmits the rule's full state on Save, exactly like domains/
+    schedule already did before devices/name existed."""
+    old_row = get_rule(conn, rule_id)
+    if old_row is None:
         return False
+    removed_ips = set(device_ips(old_row)) - {d["ip"] for d in devices}
     conn.execute(
-        "UPDATE block_rules SET domains = ?, schedule_json = ?, updated_at = ? WHERE id = ?",
-        (domains, schedule_json, now, rule_id),
+        "UPDATE block_rules SET name = ?, devices = ?, domains = ?, schedule_json = ?, updated_at = ? WHERE id = ?",
+        (name, _encode_devices(devices), domains, schedule_json, now, rule_id),
     )
     conn.commit()
+    if removed_ips:
+        _unenforce_removed_devices(conn, old_row, removed_ips)
     apply_rule(conn, rule_id, now)
     return True
+
+
+def duplicate_rule(conn: sqlite3.Connection, rule_id: int, now: int) -> int | None:
+    """Copies a rule verbatim (name gets " (copy)" appended) but starts
+    **disabled** -- duplicating a rule must never instantly double-block
+    the same devices the original already covers. Does not call
+    apply_rule(): staying disabled means zero enforcement effect until
+    the user reviews and enables it. Returns the new rule's id, or None
+    if the source rule doesn't exist."""
+    row = get_rule(conn, rule_id)
+    if row is None:
+        return None
+    cur = conn.execute(
+        """
+        INSERT INTO block_rules
+            (rule_type, name, devices, domains, schedule_json, enabled,
+             created_at, created_by, reason, updated_at)
+        VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?)
+        """,
+        (
+            row["rule_type"], f"{row['name']} (copy)", row["devices"], row["domains"],
+            row["schedule_json"], now, row["created_by"], row["reason"], now,
+        ),
+    )
+    conn.commit()
+    new_id = cur.lastrowid
+    if row["rule_type"] == "domain":
+        conn.execute(
+            "UPDATE block_rules SET unbound_description = ? WHERE id = ?",
+            (f"gowiththeflow:rule:{new_id}", new_id),
+        )
+        conn.commit()
+    return new_id
+
+
+def devices_conflicting_with_other_host_rules(
+    conn: sqlite3.Connection, ips: list[str], exclude_rule_id: int | None = None,
+) -> dict[str, str]:
+    """Which of `ips` already appear in some *other* enabled
+    rule_type='host' rule -- two independent "block this device
+    entirely" rules for the same device is meaningless (whose schedule
+    would even apply?), the same reasoning the old schema's
+    per-IP-column unique index enforced, just as an application-level
+    check now that a device lives inside a JSON array rather than a
+    plain column. Domain rules are never checked -- several of those
+    for the same device (different domains, different schedules) is a
+    real, intended case. `exclude_rule_id` lets update_rule()'s caller
+    check a rule against every *other* rule without flagging itself.
+    Returns {ip: owning rule's name} rather than a bare list of IPs so
+    the caller can name the actual conflicting rule in its error message
+    -- a device can only ever be in one enabled host rule at a time
+    (that's the whole point of this guard), so each IP maps to exactly
+    one name."""
+    wanted = set(ips)
+    conflicts: dict[str, str] = {}
+    rows = conn.execute(
+        "SELECT id, name, devices FROM block_rules WHERE rule_type = 'host' AND enabled = 1"
+    ).fetchall()
+    for row in rows:
+        if exclude_rule_id is not None and row["id"] == exclude_rule_id:
+            continue
+        for ip in wanted & set(device_ips(row)):
+            conflicts[ip] = row["name"]
+    return conflicts
 
 
 def set_enabled(conn: sqlite3.Connection, rule_id: int, enabled: bool, now: int) -> bool:
@@ -221,49 +327,69 @@ def _is_host_blocked(conn: sqlite3.Connection, ip: str) -> bool:
 
 
 def _apply_host_rule(conn: sqlite3.Connection, row: sqlite3.Row, should_be_blocked: bool, now: int) -> None:
-    ip = row["local_ip"]
-    currently_blocked = _is_host_blocked(conn, ip)
-    if should_be_blocked and not currently_blocked:
-        blocklist.add_block(conn, ip, row["hostname"], row["mac"], row["created_by"], row["reason"], now)
-        blocklist.sync_pf(conn, TABLE_FILE_PATH)
-        blocklist.kill_states(ip)
-    elif not should_be_blocked and currently_blocked:
-        blocklist.remove_block(conn, ip)
+    """Loops every device in the group -- one `sync_pf()` call after the
+    loop, not per-device, since it unconditionally rewrites the whole pf
+    table from *all* of blocked_hosts regardless of which device
+    changed; calling it once per device would just repeat the same
+    full-table rewrite N times for no benefit."""
+    devices = json.loads(row["devices"])
+    changed = False
+    for device in devices:
+        ip = device["ip"]
+        currently_blocked = _is_host_blocked(conn, ip)
+        if should_be_blocked and not currently_blocked:
+            blocklist.add_block(conn, ip, device["hostname"], device["mac"], row["created_by"], row["reason"], now)
+            changed = True
+            blocklist.kill_states(ip)
+        elif not should_be_blocked and currently_blocked:
+            blocklist.remove_block(conn, ip)
+            changed = True
+    if changed:
         blocklist.sync_pf(conn, TABLE_FILE_PATH)
 
 
-def _run_dnsbl_apply(action: str, row: sqlite3.Row) -> None:
+def _run_dnsbl_apply(action: str, description: str, domains: str | None, source_ip: str, rule_id: int) -> None:
     result = subprocess.run(
         [
             PHP_BIN, "-f", DNSBL_APPLY_SCRIPT, "--",
             "--action", action,
-            "--description", row["unbound_description"],
-            "--domains", row["domains"] or "",
-            "--source-ip", row["local_ip"],
+            "--description", description,
+            "--domains", domains or "",
+            "--source-ip", source_ip,
         ],
         capture_output=True, text=True, check=False,
     )
     if result.returncode != 0:
         _log_error(
-            "gowiththeflow: dnsbl_apply.php %s failed for rule %s: %s"
-            % (action, row["id"], (result.stderr or result.stdout).strip()[:500])
+            "gowiththeflow: dnsbl_apply.php %s failed for rule %s (%s): %s"
+            % (action, rule_id, source_ip, (result.stderr or result.stdout).strip()[:500])
         )
 
 
 def _apply_domain_rule(row: sqlite3.Row, should_be_blocked: bool) -> None:
-    """A schedule-driven on/off toggle -- the Unbound row itself persists
-    (just its `enabled` flag flips) so re-enabling it moments later isn't
-    a full add/remove cycle. See _remove_domain_rule() for the distinct
-    "this rule is being deleted, actually remove the row" case."""
-    _run_dnsbl_apply("enable" if should_be_blocked else "disable", row)
+    """A schedule-driven on/off toggle -- each device's own Unbound row
+    persists (just its `enabled` flag flips) so re-enabling it moments
+    later isn't a full add/remove cycle. See _remove_domain_rule() for
+    the distinct "this rule is being deleted, actually remove the rows"
+    case. One dnsbl_apply.php call *per device* in the group, each with
+    its own description/source_nets, sharing the same domains -- see
+    db.py's own note on unbound_description for why N devices means N
+    independent Unbound rows rather than depending on source_nets
+    accepting multiple values in one row."""
+    action = "enable" if should_be_blocked else "disable"
+    for device in json.loads(row["devices"]):
+        description = f"{row['unbound_description']}:{device['ip']}"
+        _run_dnsbl_apply(action, description, row["domains"], device["ip"], row["id"])
 
 
 def _remove_domain_rule(row: sqlite3.Row) -> None:
     """Used only when the block_rules row itself is being deleted -- unlike
-    a routine schedule-driven disable, this actually removes this
-    plugin's row from Unbound's dnsbl.blocklist rather than leaving a
+    a routine schedule-driven disable, this actually removes each
+    device's row from Unbound's dnsbl.blocklist rather than leaving a
     disabled one behind forever."""
-    _run_dnsbl_apply("remove", row)
+    for device in json.loads(row["devices"]):
+        description = f"{row['unbound_description']}:{device['ip']}"
+        _run_dnsbl_apply("remove", description, row["domains"], device["ip"], row["id"])
 
 
 def apply_rule(conn: sqlite3.Connection, rule_id: int, now: int) -> RuleDecision | None:

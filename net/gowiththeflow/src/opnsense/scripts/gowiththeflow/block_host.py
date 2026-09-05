@@ -55,6 +55,18 @@ def _lookup_identity(conn, ip: str) -> tuple[str | None, str | None]:
     return row["hostname"], row["mac"]
 
 
+def _find_single_device_host_rule(conn, ip: str):
+    """The mirrored quick-block rule for exactly this IP, if one already
+    exists -- a single-device host rule whose one device is this IP.
+    Never matches a multi-device group rule that happens to include it;
+    that one is created/managed via the Block Rules UI, not here."""
+    for row in conn.execute("SELECT * FROM block_rules WHERE rule_type = 'host'").fetchall():
+        devices = json.loads(row["devices"])
+        if len(devices) == 1 and devices[0]["ip"] == ip:
+            return row
+    return None
+
+
 def cmd_block(args: argparse.Namespace) -> dict:
     ip = blocklist.normalize_ip(args.ip)
     if ip is None:
@@ -71,8 +83,21 @@ def cmd_block(args: argparse.Namespace) -> dict:
     blocklist.add_block(conn, ip, hostname, mac, args.by, args.reason, now)
     # Keeps the block-rules feature's unified page in lockstep with this
     # pre-existing quick-block action -- a block made here shows up there
-    # too, as an "always" host rule, with no separate migration step.
-    block_rules_engine.create_host_rule(conn, ip, hostname, mac, args.by, args.reason, now)
+    # too, as a single-device "always" host rule, with no separate
+    # migration step. Re-blocking the same IP updates that existing
+    # mirrored rule in place (preserving its schedule, if the user later
+    # gave it one via the Block Rules UI) rather than creating a second
+    # one -- create_host_rule() itself no longer upserts by IP now that a
+    # rule covers a group, so this is the one place that still needs to.
+    existing_rule = _find_single_device_host_rule(conn, ip)
+    devices = [{"ip": ip, "hostname": hostname, "mac": mac}]
+    if existing_rule is None:
+        block_rules_engine.create_host_rule(conn, hostname or ip, devices, args.by, args.reason, now)
+    else:
+        block_rules_engine.update_rule(
+            conn, existing_rule["id"], hostname or ip, devices,
+            existing_rule["domains"], existing_rule["schedule_json"], now,
+        )
 
     warnings = []
     if not blocklist.rules_present():
@@ -112,8 +137,14 @@ def cmd_unblock(args: argparse.Namespace) -> dict:
     # Same lockstep reasoning as cmd_block above -- without this, the
     # mirrored "always" host rule would still be enabled, and the
     # scheduler's own reconcile tick would silently re-block this exact
-    # IP within the next ~60s of the user unblocking it here.
-    conn.execute("DELETE FROM block_rules WHERE rule_type = 'host' AND local_ip = ?", (ip,))
+    # IP within the next ~60s of the user unblocking it here. Only ever
+    # removes a single-device rule exactly matching this IP -- the
+    # mirrored "quick block" shape cmd_block above creates -- never a
+    # multi-device group rule that happens to include it; membership in
+    # one of those is managed via the Block Rules UI, not this action.
+    existing_rule = _find_single_device_host_rule(conn, ip)
+    if existing_rule is not None:
+        conn.execute("DELETE FROM block_rules WHERE id = ?", (existing_rule["id"],))
     conn.commit()
     sync_result = blocklist.sync_pf(conn, TABLE_FILE_PATH)
 

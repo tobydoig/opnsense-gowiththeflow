@@ -2050,6 +2050,142 @@
   `timeout=15` to all three calls -- a timeout expiring now means
   exactly one skipped, logged poll cycle instead of an indefinite
   freeze. 275 tests passing.
+- **1.9.0 -- Block Rules: named, multi-device groups + duplication.** A
+  rule used to be identified by one device (`local_ip`/`mac`/`hostname`
+  columns); real use didn't fit that -- several devices (quest3s, ps5,
+  iphone-max, ipad-max) sharing the exact same weeknight schedule each
+  needed their own separate rule with no way to see them as one policy.
+  Replaced with `name TEXT` + `devices TEXT` (a JSON array of
+  `{"ip", "hostname", "mac"}` snapshots) -- a rule now names a *group*.
+  Existing rules migrate automatically in `db.init_schema()` (rename old
+  table, let `SCHEMA_SQL` recreate the new shape, re-insert each old row
+  as a single-device group named after its hostname or IP, drop the old
+  table) -- confirmed idempotent on a second run. The old DB-level
+  `idx_block_rules_one_host_rule` unique index (one host-block per
+  device) can't survive a device moving inside a JSON array, so it
+  became an application-level guard,
+  `devices_conflicting_with_other_host_rules()`, checked at both
+  create and edit (excluding the rule being edited from its own check).
+  A domain rule's group gets **N independent Unbound dnsbl.blocklist
+  rows**, one per device (each keyed `<unbound_description>:<device_ip>`,
+  scoped to that one device's `source_nets`, sharing the same domain
+  list) rather than depending on whether a single row's `source_nets`
+  accepts multiple values -- sidesteps needing to verify that at all.
+  New **Duplicate** rule action (`gwtfduplicate` -- not `duplicate`,
+  though that particular word turned out not to be reserved either;
+  kept the `gwtf`-prefix convention anyway so a future bootgrid version
+  reserving a plain word can never silently break this grid's buttons
+  the way `edit` did in 1.8.0) copies a rule verbatim, appends
+  " (copy)" to its name, and starts **disabled** -- it must never
+  instantly double-block the same devices the original already covers.
+  `block_host.py`'s pre-existing "quick block" action mirrors into this
+  same table (an "always" single-device host rule, kept in lockstep so
+  the unified Block Rules page and the quick block/unblock buttons never
+  disagree) -- `create_host_rule()` itself no longer upserts by IP now
+  that a rule covers a group, so `cmd_block()` finds-or-updates that
+  mirrored single-device rule itself, and `cmd_unblock()` only ever
+  deletes a rule that is *exactly* a single-device match for the IP
+  being unblocked, never a multi-device group rule that happens to
+  include it (that stays managed via the Block Rules UI). Found and
+  fixed one more real bug during dev-VM verification before shipping:
+  editing a rule to drop a device from its group left that device's pf
+  block (or, for a domain rule, its dnsbl row) orphaned forever --
+  `_apply_host_rule()`/`_apply_domain_rule()` only ever loop a rule's
+  *current* devices, so nothing reconciled a device that fell out of
+  the group. `update_rule()` now diffs the old device set against the
+  new one and explicitly unblocks/removes anything dropped. 295 tests
+  passing.
+- **1.9.1 -- device-list field accepted a compound "device" it
+  couldn't resolve.** Found live on nostromo the day after 1.9.0
+  shipped: typing a comma-separated list of names into the dialog's one
+  default device row (the same convention the Domains field already
+  uses) sent that whole string as a single array entry, which then
+  failed to resolve as one device with the literal error message
+  quoting the entire list. Fixed at both layers -- `gwtfCollectDevices()`
+  now splits each row's value on commas too, not just trims it, so
+  typing several names into one row, using "Add another device" per
+  name, or any mix all work the same way; `BlockrulesController::
+  resolveDevices()` splits each array entry on commas the same way too,
+  defense-in-depth in case the client-side split is ever bypassed or
+  out of sync, matching this project's established pattern of enforcing
+  guards at both the UI and server layer.
+- **1.9.2 -- enabling a rule never ran the host-rule conflict guard,
+  and there was no way to enable/disable a rule from the GUI at all.**
+  Reported directly: duplicating a rule (which starts disabled on
+  purpose, precisely so it can't instantly double-block the original's
+  own devices) then enabling it silently created a second enabled host
+  rule covering the same device, with no error -- `set_enabled()` never
+  ran `devices_conflicting_with_other_host_rules()`, only create/edit
+  did. `cmd_set_enabled()` now runs that same guard before turning a
+  host rule on, refusing with the conflicting rule's name, exactly like
+  create/edit already do (domain rules stay exempt, matching the
+  guard's existing host-only scope). Separately, and directly related:
+  nothing in the grid ever called the pre-existing set_enabled backend
+  at all -- there was no "pause"/"resume" control anywhere in the UI,
+  so a duplicated rule genuinely had no path back to enabled through
+  the GUI. New **gwtftoggle** grid command (not `toggle` -- also a
+  reserved `opnsense_bootgrid.js` command name, same collision class as
+  `edit`) fixes that. Also fixed while touching this: a paused rule was
+  still showing its last known "Blocked"/"Not blocked" label (set_enabled's
+  disable path unwinds enforcement directly, bypassing apply_rule(), so
+  it never updated last_effective_state) -- `formatStatus()` now checks
+  `enabled` first and shows "Paused"; the schedule-override buttons now
+  also hide for a paused rule instead of silently no-opping. Verified
+  live on the dev VM by reproducing the exact reported sequence
+  (duplicate, enable while the original stayed active -> refused
+  naming the original; pause the original, then enable the duplicate
+  cleanly -> succeeds), plus a full reboot-survival cycle. 297 tests
+  passing.
+- **1.9.3 -- conflict error reworded on request.** Was
+  `already blocked: 10.0.0.20 (already blocked by rule 'nvr')`; now
+  `already blocked by rule "nvr": nvr` -- leads with the rule name (the
+  thing the user actually needs to go act on), and shows the device's
+  known hostname instead of a bare IP where one's on file. Several
+  conflicting devices are grouped by rule name rather than repeating it
+  per device. Verified live against the dev VM's real `nvr` rule,
+  reproducing the exact wording requested; reboot-survival cycle clean.
+  298 tests passing.
+- **1.9.4 -- conflict error reworded again on request.** Now
+  `<hostname> is already being blocked by rule "<rule name>"` --
+  device leads, rule trails, one sentence per conflicting device (the
+  grouped-by-rule form from 1.9.3 didn't survive this second pass).
+  Verified live against the dev VM's real rule (renamed to "bingbong"
+  by the time this shipped, plus a "bingbong (copy)" -- both left
+  untouched as the user's own data, not test cruft); reboot-survival
+  cycle clean.
+- **1.9.5 -- Block Rules grid's commands column too narrow on
+  nostromo.** `data-width="8em"` was sized back when this grid had one
+  or two row commands; now up to five can appear on one row at once
+  (edit, duplicate, pause/resume, one schedule-override button,
+  delete), and 8em can't fit them all -- bootgrid silently collapses
+  the overflow into a "..." menu rather than erroring, which is why
+  this went unnoticed through dev-VM testing (evidently just a wider
+  browser window there) until the user hit it for real on nostromo.
+  Not something fixable by resizing the column from the grid itself --
+  it's a fixed template attribute. Bumped to 14em. Template-only
+  change (no Python/PHP logic touched); reboot-survival cycle clean, no
+  browser available in this environment to visually confirm the fix
+  beyond the CSS math -- flagged to the user to confirm on nostromo.
+- **1.9.7 -- the 1.9.5 fix was the wrong kind of guess, not just the
+  wrong number.** 14em left a visible empty gap on nostromo's real
+  screen; re-measuring from that screenshot and shipping 10em (never
+  actually published) would have just been guessing again in the same
+  broken units. The user found the real cause via devtools: this
+  OPNsense version renders `UIBootgrid()` through Tabulator.js
+  internally, and `opnsense_bootgrid.js`'s own column-width parsing only
+  takes an em/CSS-unit `data-width` at face value for a *hidden probe
+  element's rendered outerWidth()* (padding/border included, plus a
+  flat +5px margin) -- so the resulting pixel width depends on this
+  page's ambient font-size and was never going to match anyone's em
+  arithmetic by hand; confirmed live it was rendering 10em as 215px, not
+  anything close to a plain 10 x 16px assumption. A **bare number**
+  (no unit) skips all of that and is used as the literal pixel width
+  directly -- switched to `data-width="152"`, the exact value the user
+  confirmed live via devtools fits all 5 command icons with no leftover
+  gap. Template-only change; reboot-survival cycle clean. Still no
+  browser available in this environment -- this one is a measured,
+  mechanism-verified value rather than another guess, but the user's
+  own visual confirmation on nostromo remains the real check.
 - **Not yet started**: the staticOverrides grid editor, and proper repo
   signing before this pkg-repo is relied on for anything that matters.
   ("Scheduled traffic blocking" -- the user's original motivating

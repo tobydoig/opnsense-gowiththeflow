@@ -18,10 +18,11 @@ class BlockrulesController extends DbApiControllerBase
             $result = $db->query('SELECT * FROM block_rules ORDER BY created_at DESC');
             while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
                 $row['row_id'] = $row['id'];
-                // hostname/mac are snapshotted at rule-creation time, same
-                // rationale as blocked_hosts' own columns (see db.py) --
-                // deliberately not live-joined against local_host_identity.
-                $row['device'] = $this->formatHost($row['hostname'], $row['local_ip']);
+                // hostname/mac per device are snapshotted at rule-creation
+                // time, same rationale as blocked_hosts' own columns (see
+                // db.py) -- deliberately not live-joined against
+                // local_host_identity.
+                $row['device'] = $this->formatDeviceList($row['devices']);
                 $row['type_label'] = $row['rule_type'] === 'host' ? 'Host' : 'Host + Domain';
                 $row['schedule_label'] = $this->formatSchedule($row['schedule_json']);
                 $row['status_label'] = $this->formatStatus($row);
@@ -49,6 +50,24 @@ class BlockrulesController extends DbApiControllerBase
         $response = $this->searchRecordsetBase($records, null, 'created_at');
         $response['local_hosts'] = $localHosts;
         return $response;
+    }
+
+    /**
+     * "quest3s, ps5, iphone-max" -- every device in a rule's group,
+     * joined for display; a plain IP for any device with no known
+     * hostname. No truncation at this rule count; revisit only if a
+     * group with many devices turns out to need it.
+     */
+    private function formatDeviceList(?string $devicesJson): string
+    {
+        $devices = json_decode((string)$devicesJson, true);
+        if (!is_array($devices) || count($devices) === 0) {
+            return '';
+        }
+        return implode(', ', array_map(
+            fn($d) => $this->formatHost($d['hostname'] ?? null, $d['ip'] ?? ''),
+            $devices
+        ));
     }
 
     /**
@@ -80,10 +99,19 @@ class BlockrulesController extends DbApiControllerBase
      * by block_rules_engine.py's own reconcile tick, rather than
      * re-implementing the schedule predicate here -- up to one reconcile
      * interval's staleness right after a boundary is an accepted,
-     * honestly-labeled tradeoff (see DESIGN.md).
+     * honestly-labeled tradeoff (see DESIGN.md). Checked before
+     * last_effective_state, not after -- set_enabled()'s disable path
+     * unwinds enforcement directly rather than through apply_rule(), so
+     * it never updates last_effective_state; without this a paused rule
+     * would keep showing whatever "Blocked"/"Not blocked" it last had
+     * while still enabled, which is actively misleading now that
+     * pause/resume (gwtftoggle) is reachable from the grid at all.
      */
     private function formatStatus(array $row): string
     {
+        if (empty($row['enabled'])) {
+            return 'Paused';
+        }
         if (empty($row['last_effective_state'])) {
             return 'Pending';
         }
@@ -122,6 +150,89 @@ class BlockrulesController extends DbApiControllerBase
         $stmt->bindValue(':hostname', $input, SQLITE3_TEXT);
         $row = $stmt->execute()->fetchArray(SQLITE3_ASSOC);
         return $row !== false ? $row['ip'] : null;
+    }
+
+    /**
+     * `$raw` is a JSON-encoded array of raw device strings as typed by
+     * the user -- IP or known hostname, one per repeatable device-list
+     * row -- same acceptance resolveDeviceIp() already gave a single
+     * device before groups existed, just looped and JSON-decoded first
+     * since a group needs an actual list, not one POST field. Each
+     * array entry is itself split on commas too (not just trimmed) --
+     * the client already does this before ever sending the request, but
+     * a comma-separated list typed into one row (the same convention the
+     * Domains field already uses) must not silently become one bogus
+     * compound "device" if that client-side split were ever bypassed or
+     * out of sync; confirmed live this was the actual failure mode
+     * before the client-side fix landed. Returns [resolved IPs, null] or
+     * [null, error naming the offending token].
+     */
+    private function resolveDevices(string $raw): array
+    {
+        $tokens = json_decode($raw, true);
+        if (!is_array($tokens) || count($tokens) === 0) {
+            return [null, 'at least one device is required'];
+        }
+        $ips = [];
+        foreach ($tokens as $token) {
+            foreach (explode(',', (string)$token) as $piece) {
+                $piece = trim($piece);
+                if ($piece === '') {
+                    continue;
+                }
+                $ip = $this->resolveDeviceIp($piece);
+                if ($ip === null) {
+                    return [null, "not a valid IP address, and no known device is named '{$piece}'"];
+                }
+                $ips[] = $ip;
+            }
+        }
+        if (count($ips) === 0) {
+            return [null, 'at least one device is required'];
+        }
+        return [$ips, null];
+    }
+
+    /**
+     * Per-device guards for a rule's group, run once per device so the
+     * *first* violation names the specific device rather than failing
+     * generically -- host type refuses the firewall's-own-address the
+     * same way addAction() always has; domain type requires every
+     * device to already have a static DHCP reservation, since Unbound's
+     * dnsbl.blocklist match is by source IP and a device without one
+     * could silently drift to match nothing (or something else) after
+     * its next lease renewal.
+     */
+    private function validateDevicesForType(string $type, array $ips, string $domains): ?string
+    {
+        if ($type === 'host') {
+            $clientIp = $this->request->getClientAddress();
+            foreach ($ips as $ip) {
+                if ($ip === $clientIp) {
+                    return 'refusing to block the address you\'re currently connected from';
+                }
+            }
+            return null;
+        }
+        if (trim($domains) === '') {
+            return 'at least one domain is required';
+        }
+        foreach ($ips as $ip) {
+            [, $mac] = $this->lookupIdentity($ip);
+            if (empty($mac)) {
+                return "{$ip}: no known MAC address for this device yet -- has it been seen on the network?";
+            }
+            $reservedIp = $this->findDhcpReservationIp($mac);
+            if ($reservedIp === null) {
+                return "{$ip}: this device has no static DHCP reservation -- add one in " .
+                    'Services > Dnsmasq DNS & DHCP > Hosts before creating a domain block';
+            }
+            if ($reservedIp !== $ip) {
+                return "{$ip}: this device's DHCP reservation is for {$reservedIp} -- " .
+                    'its current lease may not have renewed to the reserved address yet';
+            }
+        }
+        return null;
     }
 
     private function lookupIdentity(string $ip): array
@@ -172,7 +283,8 @@ class BlockrulesController extends DbApiControllerBase
             return ['status' => 'failed'];
         }
         $type = $this->request->getPost('rule_type');
-        $rawDevice = (string)$this->request->getPost('local_ip');
+        $name = trim((string)$this->request->getPost('name'));
+        $devicesRaw = (string)($this->request->getPost('devices') ?: '[]');
         $domains = $this->request->getPost('domains') ?: '';
         $schedule = $this->request->getPost('schedule') ?: '';
         $reason = $this->request->getPost('reason') ?: '';
@@ -180,49 +292,21 @@ class BlockrulesController extends DbApiControllerBase
         if (!in_array($type, ['host', 'domain'], true)) {
             return ['status' => 'failed', 'error' => 'invalid rule type'];
         }
-        $ip = $this->resolveDeviceIp($rawDevice);
-        if ($ip === null) {
-            return [
-                'status' => 'failed',
-                'error' => "not a valid IP address, and no known device is named '{$rawDevice}'",
-            ];
+        if ($name === '') {
+            return ['status' => 'failed', 'error' => 'a name is required'];
         }
-
-        if ($type === 'host') {
-            // Same total-block lockout guard blockAction() already uses --
-            // see its own comment for why this is the one guard enforced
-            // here rather than at the pf-rule-priority level.
-            if ($ip === $this->request->getClientAddress()) {
-                return ['status' => 'failed', 'error' => 'refusing to block the address you\'re currently connected from'];
-            }
-        } else {
-            if (trim($domains) === '') {
-                return ['status' => 'failed', 'error' => 'at least one domain is required'];
-            }
-            [, $mac] = $this->lookupIdentity($ip);
-            if (empty($mac)) {
-                return ['status' => 'failed', 'error' => 'no known MAC address for this device yet -- has it been seen on the network?'];
-            }
-            $reservedIp = $this->findDhcpReservationIp($mac);
-            if ($reservedIp === null) {
-                return [
-                    'status' => 'failed',
-                    'error' => 'this device has no static DHCP reservation -- add one in ' .
-                        'Services > Dnsmasq DNS & DHCP > Hosts before creating a domain block',
-                ];
-            }
-            if ($reservedIp !== $ip) {
-                return [
-                    'status' => 'failed',
-                    'error' => "this device's DHCP reservation is for {$reservedIp}, not {$ip} -- " .
-                        'its current lease may not have renewed to the reserved address yet',
-                ];
-            }
+        [$ips, $error] = $this->resolveDevices($devicesRaw);
+        if ($error !== null) {
+            return ['status' => 'failed', 'error' => $error];
+        }
+        $error = $this->validateDevicesForType($type, $ips, $domains);
+        if ($error !== null) {
+            return ['status' => 'failed', 'error' => $error];
         }
 
         $backend = new \OPNsense\Core\Backend();
         $result = json_decode($backend->configdpRun('gowiththeflow rule_create', [
-            $type, $ip, $domains, $schedule, $this->logged_in_user ?: 'unknown', $reason,
+            $type, $name, implode(',', $ips), $domains, $schedule, $this->logged_in_user ?: 'unknown', $reason,
         ]), true);
         if (!is_array($result)) {
             return ['status' => 'failed', 'error' => 'no response from the create action'];
@@ -235,13 +319,58 @@ class BlockrulesController extends DbApiControllerBase
         if (!$this->request->isPost()) {
             return ['status' => 'failed'];
         }
+        $name = trim((string)$this->request->getPost('name'));
+        $devicesRaw = (string)($this->request->getPost('devices') ?: '[]');
         $domains = $this->request->getPost('domains') ?: '';
         $schedule = $this->request->getPost('schedule') ?: '';
 
+        if ($name === '') {
+            return ['status' => 'failed', 'error' => 'a name is required'];
+        }
+        [$ips, $error] = $this->resolveDevices($devicesRaw);
+        if ($error !== null) {
+            return ['status' => 'failed', 'error' => $error];
+        }
+
+        // editAction() never changes a rule's type -- but the per-device
+        // guard needs to know which one applies, and trusting a hidden
+        // form field for that is trivially spoofable, so read the type
+        // back from the rule itself instead.
+        $db = $this->openDb();
+        $type = null;
+        if ($db !== null) {
+            $stmt = $db->prepare('SELECT rule_type FROM block_rules WHERE id = :id');
+            $stmt->bindValue(':id', (int)$id, SQLITE3_INTEGER);
+            $row = $stmt->execute()->fetchArray(SQLITE3_ASSOC);
+            $type = $row !== false ? $row['rule_type'] : null;
+        }
+        if ($type === null) {
+            return ['status' => 'failed', 'error' => "no such rule: {$id}"];
+        }
+        $error = $this->validateDevicesForType($type, $ips, $domains);
+        if ($error !== null) {
+            return ['status' => 'failed', 'error' => $error];
+        }
+
         $backend = new \OPNsense\Core\Backend();
-        $result = json_decode($backend->configdpRun('gowiththeflow rule_edit', [$id, $domains, $schedule]), true);
+        $result = json_decode($backend->configdpRun('gowiththeflow rule_edit', [
+            $id, $name, implode(',', $ips), $domains, $schedule,
+        ]), true);
         if (!is_array($result)) {
             return ['status' => 'failed', 'error' => 'no response from the edit action'];
+        }
+        return $result;
+    }
+
+    public function duplicateAction($id)
+    {
+        if (!$this->request->isPost()) {
+            return ['status' => 'failed'];
+        }
+        $backend = new \OPNsense\Core\Backend();
+        $result = json_decode($backend->configdpRun('gowiththeflow rule_duplicate', [$id]), true);
+        if (!is_array($result)) {
+            return ['status' => 'failed', 'error' => 'no response from the duplicate action'];
         }
         return $result;
     }

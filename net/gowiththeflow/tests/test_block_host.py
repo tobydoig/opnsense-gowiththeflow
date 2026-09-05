@@ -1,4 +1,5 @@
 import argparse
+import json
 
 import block_host
 import block_rules_engine
@@ -46,7 +47,7 @@ def test_cmd_block_creates_a_matching_always_host_rule(tmp_path, monkeypatch):
     rules = block_rules_engine.list_rules(conn)
     assert len(rules) == 1
     assert rules[0]["rule_type"] == "host"
-    assert rules[0]["local_ip"] == NOW_IP
+    assert json.loads(rules[0]["devices"]) == [{"ip": NOW_IP, "hostname": None, "mac": None}]
     assert rules[0]["schedule_json"] is None
     assert rules[0]["created_by"] == "admin"
 

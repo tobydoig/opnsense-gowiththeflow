@@ -14,6 +14,7 @@ always has been.
 
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 import time
@@ -216,11 +217,17 @@ CREATE INDEX IF NOT EXISTS idx_blocked_hosts_at ON blocked_hosts(blocked_at);
 CREATE TABLE IF NOT EXISTS block_rules (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   rule_type TEXT NOT NULL CHECK (rule_type IN ('host', 'domain')),
-  local_ip TEXT NOT NULL,
-  -- Snapshotted at rule-creation time, same rationale as blocked_hosts'
-  -- own hostname/mac columns above.
-  mac TEXT,
-  hostname TEXT,
+  -- User-facing label for this rule -- required, since a rule now
+  -- covers a whole group of devices rather than being identified by
+  -- one device's own IP.
+  name TEXT NOT NULL,
+  -- JSON array of per-device snapshots (ip/hostname/mac, same
+  -- rationale as blocked_hosts' own hostname/mac columns above --
+  -- snapshotted at rule-creation/edit time, not live-joined):
+  -- [{"ip": "...", "hostname": "..."|null, "mac": "..."|null}, ...].
+  -- A device is looked up by IP within this array wherever the old
+  -- schema would have matched on the bare local_ip column.
+  devices TEXT NOT NULL,
   -- CSV domain list, NULL for rule_type='host' -- deliberately the same
   -- shape as Unbound's own dnsbl.blocklist.wildcards field, so no
   -- translation is needed when applying a domain rule.
@@ -248,21 +255,28 @@ CREATE TABLE IF NOT EXISTS block_rules (
   -- boundary -- an accepted, honestly-labeled tradeoff.
   last_effective_state TEXT,
   last_evaluated_at INTEGER,
-  -- Stable key (e.g. 'gowiththeflow:rule:<id>') used to find/own only
-  -- this plugin's own row in Unbound's dnsbl.blocklist -- never touches
-  -- a user's own manually-configured blocklists. NULL for rule_type='host'.
+  -- Stable key PREFIX (e.g. 'gowiththeflow:rule:<id>') used to find/own
+  -- only this plugin's own rows in Unbound's dnsbl.blocklist -- never
+  -- touches a user's own manually-configured blocklists. NULL for
+  -- rule_type='host'. A domain rule with N devices owns N dnsbl rows,
+  -- one per device, each keyed '<this prefix>:<device_ip>' -- see
+  -- block_rules_engine.py's own note on why (sidesteps needing to know
+  -- whether Unbound's source_nets field accepts multiple values in one
+  -- row: N devices is just N independent rows sharing the same domains).
   unbound_description TEXT,
   created_at INTEGER NOT NULL,
   created_by TEXT,
   reason TEXT,
   updated_at INTEGER NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_block_rules_local_ip ON block_rules(local_ip);
--- Two independent "block everything" rules for the same device is
--- meaningless; domain rules have no such limit (e.g. youtube.com and
--- reddit.com as two separate rules with different schedules is real).
-CREATE UNIQUE INDEX IF NOT EXISTS idx_block_rules_one_host_rule
-  ON block_rules(local_ip) WHERE rule_type = 'host';
+-- No index on `devices` (or a "one host rule per device" uniqueness
+-- constraint, unlike the old single-column local_ip this replaces) --
+-- a device is now inside a JSON array rather than a plain column, so
+-- that guard moved to block_rules_engine.
+-- devices_conflicting_with_other_host_rules(), an application-level
+-- check with the exact same rule_type='host'-only scope the old
+-- partial unique index had. This table stays small (tens of rows), so
+-- a full scan for that check costs nothing.
 """
 
 
@@ -297,7 +311,56 @@ def connect(db_path: str) -> sqlite3.Connection:
 _CATEGORY_TABLES = ("live_sessions", "connections_raw", "rollup_hourly", "rollup_daily")
 
 
+def _migrate_block_rules_to_device_groups(conn: sqlite3.Connection) -> None:
+    """block_rules used to identify a rule by one device (local_ip/mac/
+    hostname columns); a rule now covers a named group of devices
+    (name/devices columns, devices a JSON array of per-device
+    snapshots). SCHEMA_SQL's own CREATE TABLE IF NOT EXISTS is a no-op
+    against an existing old-shaped table, so this reshape -- not just an
+    ADD COLUMN -- has to happen before it runs: rename the old table out
+    of the way, let SCHEMA_SQL create the new-shaped one fresh, then
+    re-insert each old row as a one-device group named after its
+    hostname (falling back to its IP if it never had one). Built via
+    json.dumps(), not raw SQL string concatenation -- a hostname
+    containing a quote must never produce broken JSON.
+
+    A no-op on a fresh install (no block_rules table yet, so
+    `PRAGMA table_info` returns nothing) or an already-migrated one (a
+    `devices` column already exists)."""
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(block_rules)")}
+    if not cols or "devices" in cols or "local_ip" not in cols:
+        return
+    conn.execute("ALTER TABLE block_rules RENAME TO block_rules_v1_migrating")
+    conn.commit()
+    conn.executescript(SCHEMA_SQL)  # creates the new-shaped block_rules
+    conn.commit()
+    old_rows = conn.execute("SELECT * FROM block_rules_v1_migrating").fetchall()
+    for row in old_rows:
+        devices = json.dumps([{"ip": row["local_ip"], "hostname": row["hostname"], "mac": row["mac"]}])
+        conn.execute(
+            """
+            INSERT INTO block_rules
+                (id, rule_type, name, devices, domains, schedule_json, enabled,
+                 manual_override_state, override_until, last_effective_state,
+                 last_evaluated_at, unbound_description, created_at, created_by,
+                 reason, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                row["id"], row["rule_type"], row["hostname"] or row["local_ip"], devices,
+                row["domains"], row["schedule_json"], row["enabled"], row["manual_override_state"],
+                row["override_until"], row["last_effective_state"], row["last_evaluated_at"],
+                row["unbound_description"], row["created_at"], row["created_by"], row["reason"],
+                row["updated_at"],
+            ),
+        )
+    conn.commit()
+    conn.execute("DROP TABLE block_rules_v1_migrating")
+    conn.commit()
+
+
 def init_schema(conn: sqlite3.Connection) -> None:
+    _migrate_block_rules_to_device_groups(conn)
     conn.executescript(SCHEMA_SQL)
     conn.commit()
     # SCHEMA_SQL's CREATE TABLE IF NOT EXISTS is a no-op against a

@@ -1,3 +1,4 @@
+import json
 import os
 
 import db
@@ -396,6 +397,87 @@ def test_init_schema_skips_hostname_index_on_a_pre_rename_legacy_schema(tmp_path
     # connections_raw was never hand-crafted with an old shape here, so
     # it gets created fresh (with peer_hostname) and its index normally.
     assert "idx_raw_hostname" in indexes
+
+
+def test_init_schema_migrates_block_rules_to_named_device_groups(tmp_path):
+    # Simulates a real pre-existing install from before block_rules
+    # covered a group of devices: hand-create the old one-device-per-row
+    # shape, confirm init_schema() reshapes it into name/devices without
+    # losing any row, and that a hostname-less row falls back to its IP
+    # as the auto-generated name.
+    conn = db.connect(str(tmp_path / "flows.db"))
+    conn.execute(
+        """
+        CREATE TABLE block_rules (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          rule_type TEXT NOT NULL,
+          local_ip TEXT NOT NULL,
+          mac TEXT,
+          hostname TEXT,
+          domains TEXT,
+          schedule_json TEXT,
+          enabled INTEGER NOT NULL DEFAULT 1,
+          manual_override_state TEXT,
+          override_until INTEGER,
+          last_effective_state TEXT,
+          last_evaluated_at INTEGER,
+          unbound_description TEXT,
+          created_at INTEGER NOT NULL,
+          created_by TEXT,
+          reason TEXT,
+          updated_at INTEGER NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO block_rules
+            (id, rule_type, local_ip, mac, hostname, domains, schedule_json, enabled,
+             created_at, created_by, reason, updated_at)
+        VALUES (1, 'host', '192.168.1.50', 'aa:bb:cc:dd:ee:ff', 'quest3s', NULL, NULL, 1,
+                1000, 'toby', 'testing', 1000)
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO block_rules
+            (id, rule_type, local_ip, mac, hostname, domains, schedule_json, enabled,
+             created_at, created_by, reason, updated_at)
+        VALUES (2, 'host', '192.168.1.51', NULL, NULL, NULL, NULL, 1,
+                2000, 'toby', NULL, 2000)
+        """
+    )
+    conn.commit()
+
+    db.init_schema(conn)  # must not raise, and must reshape both rows
+
+    rows = {r["id"]: r for r in conn.execute("SELECT * FROM block_rules ORDER BY id")}
+    assert set(rows) == {1, 2}
+
+    quest3s = rows[1]
+    assert quest3s["name"] == "quest3s"
+    assert json.loads(quest3s["devices"]) == [
+        {"ip": "192.168.1.50", "hostname": "quest3s", "mac": "aa:bb:cc:dd:ee:ff"}
+    ]
+    assert quest3s["created_by"] == "toby"
+
+    # No hostname -- falls back to the IP as the auto-generated name.
+    nameless = rows[2]
+    assert nameless["name"] == "192.168.1.51"
+    assert json.loads(nameless["devices"]) == [
+        {"ip": "192.168.1.51", "hostname": None, "mac": None}
+    ]
+
+
+def test_init_schema_block_rules_migration_is_idempotent(tmp_path):
+    conn = db.connect(str(tmp_path / "flows.db"))
+    db.init_schema(conn)  # fresh install -- already the new shape
+    db.init_schema(conn)  # must not raise, must not touch anything
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(block_rules)")}
+    assert "devices" in cols
+    assert "local_ip" not in cols
+    tables = {r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert "block_rules_v1_migrating" not in tables
 
 
 def _query_event(**overrides):
