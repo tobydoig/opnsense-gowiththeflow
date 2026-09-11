@@ -23,6 +23,19 @@ class HistoryController extends DbApiControllerBase
             // pair. When that's the case, bytes_in/bytes_out (stored
             // relative to r1.local_ip) are swapped so the filtered host's
             // own in/out are never shown backwards.
+            // local_hostname is a scalar subquery ("most recent wins"),
+            // never a LEFT JOIN against local_host_identity -- its ip
+            // column isn't unique (a mac keeps its last-known ip until
+            // that mac is seen again, so an old device and a new one can
+            // both currently have a row claiming the same ip after a DHCP
+            // reassignment). A plain LEFT JOIN here was a real, confirmed
+            // bug: with a GROUP BY in play, matching more than one
+            // local_host_identity row per local_ip doesn't produce
+            // duplicate output rows the way it would without aggregation
+            // (see LiveController's own version of this bug) -- it
+            // silently multiplies every SUM() below by however many rows
+            // matched, inflating bytes/connection totals with no visible
+            // sign anything was wrong.
             $sql = "
                 SELECT
                   r1.local_ip, r1.peer_ip, r1.peer_is_local,
@@ -42,7 +55,8 @@ class HistoryController extends DbApiControllerBase
                    WHERE r2.local_ip = r1.local_ip AND r2.peer_ip = r1.peer_ip
                      AND r2.bucket_start >= :cutoff AND r2.dpi_protocol IS NOT NULL
                    ORDER BY r2.bucket_start DESC LIMIT 1) AS dpi_protocol,
-                  lhi.hostname AS local_hostname,
+                  (SELECT hostname FROM local_host_identity WHERE ip = r1.local_ip
+                   ORDER BY updated_at DESC LIMIT 1) AS local_hostname,
                   SUM(CASE WHEN :local_ip != '' AND r1.peer_is_local = 1 AND r1.peer_ip = :local_ip
                            THEN r1.bytes_out ELSE r1.bytes_in END) AS bytes_in,
                   SUM(CASE WHEN :local_ip != '' AND r1.peer_is_local = 1 AND r1.peer_ip = :local_ip
@@ -50,7 +64,6 @@ class HistoryController extends DbApiControllerBase
                   SUM(r1.conn_count) AS conn_count,
                   MAX(r1.bucket_start) AS last_seen
                 FROM $table r1
-                LEFT JOIN local_host_identity lhi ON lhi.ip = r1.local_ip
                 WHERE r1.bucket_start >= :cutoff
             ";
             if ($localHost !== '') {

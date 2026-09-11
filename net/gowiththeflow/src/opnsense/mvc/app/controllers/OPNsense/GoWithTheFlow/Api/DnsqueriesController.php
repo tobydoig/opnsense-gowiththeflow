@@ -36,13 +36,19 @@ class DnsqueriesController extends DbApiControllerBase
             // with MAX() come from the same row that produced the max
             // value, so `rcode`/`answers` here are genuinely the latest
             // ones, not an arbitrary bucket's.
+            // local_hostname is a scalar subquery ("most recent wins"), not
+            // a LEFT JOIN -- local_host_identity.ip isn't unique (see
+            // HistoryController's own comment on this exact bug), and with
+            // SUM(d.count) grouped below, a plain join would silently
+            // multiply the displayed query count by however many identity
+            // rows matched.
             $sql = "
                 SELECT
                   d.local_ip, d.query_name, d.query_type, d.rcode, d.answers,
                   SUM(d.count) AS count, MAX(d.last_seen) AS last_seen,
-                  lhi.hostname AS local_hostname
+                  (SELECT hostname FROM local_host_identity WHERE ip = d.local_ip
+                   ORDER BY updated_at DESC LIMIT 1) AS local_hostname
                 FROM dns_query_log d
-                LEFT JOIN local_host_identity lhi ON lhi.ip = d.local_ip
                 WHERE d.bucket_start >= :cutoff
             ";
             if ($localHost !== '') {

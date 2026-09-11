@@ -29,11 +29,28 @@ class LiveController extends DbApiControllerBase
             // also a local host), name it via the same local_host_identity
             // lookup local_ip already uses, rather than the stored (always
             // NULL in that case) column.
+            //
+            // local_hostname is a scalar subquery, NOT a LEFT JOIN, for the
+            // same reason the peer_hostname CASE below already is one:
+            // local_host_identity.ip is not unique -- a MAC's row keeps
+            // whatever ip it last had until that mac is seen again, so two
+            // different macs (e.g. a guest's phone weeks ago, then a real
+            // device today) can both currently have a row claiming the
+            // SAME ip once a DHCP lease gets reassigned. A plain
+            // `LEFT JOIN ... ON lhi.ip = ls.local_ip` fans out into one
+            // output row per matching lhi row when that happens -- this
+            // was a real, confirmed bug: a single live session displayed
+            // as two rows with two different local hostnames for the same
+            // ip. "Most recent wins" (ORDER BY updated_at DESC LIMIT 1)
+            // picks exactly one, deterministically, matching the same idiom
+            // already used everywhere else in this project (block_host.py's
+            // _lookup_identity(), BlockrulesController's own lookupIdentity()).
             $sql = 'SELECT ls.proto, ls.local_ip, ls.local_port, ls.peer_ip, ls.peer_port,
                         ls.peer_is_local, ls.hostname_source, ls.category, ls.dpi_protocol, ls.state,
                         ls.first_seen, ls.last_seen, ls.last_activity,
                         ls.bytes_in, ls.bytes_out, ls.pkts_in, ls.pkts_out,
-                        lhi.hostname AS local_hostname,
+                        (SELECT hostname FROM local_host_identity WHERE ip = ls.local_ip
+                         ORDER BY updated_at DESC LIMIT 1) AS local_hostname,
                         CASE WHEN ls.peer_is_local = 1
                              THEN (SELECT hostname FROM local_host_identity WHERE ip = ls.peer_ip
                                    ORDER BY updated_at DESC LIMIT 1)
@@ -41,7 +58,6 @@ class LiveController extends DbApiControllerBase
                         END AS peer_hostname,
                         (SELECT 1 FROM blocked_hosts bh WHERE bh.local_ip = ls.local_ip) AS blocked
                  FROM live_sessions ls
-                 LEFT JOIN local_host_identity lhi ON lhi.ip = ls.local_ip
                  WHERE 1=1';
             if ($filterLocalIp !== '') {
                 $sql .= ' AND ls.local_ip = :local_ip';
@@ -110,17 +126,19 @@ class LiveController extends DbApiControllerBase
         $records = [];
         $db = $this->openDb();
         if ($db !== null) {
+            // local_hostname: same scalar-subquery fix as searchAction()
+            // above, for the same reason -- see its own comment.
             $result = $db->query(
                 'SELECT ls.proto, ls.local_ip, ls.local_port, ls.peer_ip, ls.peer_port,
                         ls.bytes_in, ls.bytes_out, ls.last_activity,
-                        lhi.hostname AS local_hostname,
+                        (SELECT hostname FROM local_host_identity WHERE ip = ls.local_ip
+                         ORDER BY updated_at DESC LIMIT 1) AS local_hostname,
                         CASE WHEN ls.peer_is_local = 1
                              THEN (SELECT hostname FROM local_host_identity WHERE ip = ls.peer_ip
                                    ORDER BY updated_at DESC LIMIT 1)
                              ELSE ls.peer_hostname
                         END AS peer_hostname
-                 FROM live_sessions ls
-                 LEFT JOIN local_host_identity lhi ON lhi.ip = ls.local_ip'
+                 FROM live_sessions ls'
             );
             while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
                 $row['row_id'] = sprintf(

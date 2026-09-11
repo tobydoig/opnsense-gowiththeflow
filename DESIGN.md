@@ -2374,6 +2374,67 @@
   purged) with no lingering state. Two full reboot-survival cycles
   clean (the second specifically re-confirming the arp_pins fix). 332
   tests passing.
+- **1.10.1 -- 1.10.0 was silently un-installable on nostromo, for a
+  reason none of the usual checks would ever surface.** The user
+  clicked "Check for updates" repeatedly; the Plugins status page kept
+  showing 1.9.11. `pkg search -r`, `pkg rquery`, and `pkg version -v -r`
+  all correctly showed 1.10.0 as available -- the catalog itself was
+  never the problem. The real cause only showed up in `pkg -d -d
+  upgrade -n os-gowiththeflow`'s solver debug trace: `+MANIFEST`'s
+  `deps` section pins an *exact* version per dependency (there's no
+  ">="/"any version" form in `pkg create -m`'s manifest format, unlike
+  a real ports Makefile's `RUN_DEPENDS`), and the pinned `ndpi` version
+  (`5.0.d20251224,1`, a rolling date-stamped snapshot build) no longer
+  matched what was actually available (`5.0.d20260502_1,1` by now) --
+  `py313-scapy`'s own pin still matched fine. Since pkg's solver must
+  satisfy every declared dependency as one atomic unit, the single
+  stale pin made the *entire* package unresolvable, and `pkg upgrade`
+  silently declined to touch it -- "Your packages are up to date" being
+  a genuinely misleading thing for it to say in this exact situation.
+  Read-only commands like `pkg version`/`pkg rquery` never check
+  dependencies at all, which is exactly why they kept disagreeing with
+  the real install path. Fixed by updating the pin to match what's
+  currently available; new proactive check in `build-pkg.sh` itself
+  queries `pkg rquery` for every pinned dependency on the build box and
+  warns loudly if a pin has drifted, *before* a version ships that
+  would repeat this -- confirmed live both that it warns correctly on a
+  deliberately-reverted pin and stays silent once corrected.
+- **1.10.2 -- real bug, reported by the user: a device showing under a
+  stale/wrong hostname on nostromo, plus duplicate rows on Live
+  Details for the same IP.** Root cause: `local_host_identity.ip` is
+  not unique -- a device's row keeps whatever ip it last had until
+  that exact mac is seen again, so once a DHCP lease gets reassigned
+  (a guest's phone visits once, leaves, and weeks later a real device
+  gets handed that same ip), *two* rows can legitimately both claim
+  the current ip at once, one stale and one current. Five query sites
+  across four controllers (`LiveController` x2, `HistoryController`,
+  `ToptalkersController`, `DnsqueriesController`) all displayed the
+  "local" host via a plain `LEFT JOIN local_host_identity lhi ON
+  lhi.ip = ...` -- with no `ORDER BY`, which of several matching rows
+  "wins" is undefined and can vary run to run (confirmed live: the
+  reported mismatch stopped reproducing right after an unrelated
+  daemon restart, not because the stale row was gone, but because
+  SQLite's own row-iteration order happened to change). Worse: a LEFT
+  JOIN with more than one matching right-side row doesn't just pick
+  the wrong one, it fans out into one output row per match -- for the
+  un-aggregated Live queries that's the literal duplicate-rows symptom
+  reported; for the three aggregated (`GROUP BY`/`SUM()`) queries in
+  History/Top Talkers/DNS Queries, the exact same fan-out instead
+  silently *multiplied* every byte/connection/query count by however
+  many identity rows matched, with no duplicate rows to make it
+  visible at all. Fixed by replacing every one of the five joins with
+  a scalar subquery (`ORDER BY updated_at DESC LIMIT 1`) -- the same
+  "most recent wins" idiom this project already used correctly for
+  every *peer*-side lookup (sitting right next to several of these
+  bugs in the same files) and for `block_host.py`'s own
+  `_lookup_identity()`, just never applied to the *local*-side lookup
+  until now. No PHP test harness exists in this project to add a
+  regression test to (same as `dnsbl_apply.php`); verified live
+  instead by inserting two real conflicting `local_host_identity` rows
+  and a matching `live_sessions` row into the dev VM's own database,
+  confirming the old query text produced exactly the reported
+  duplicate-row bug, and confirming the new query text collapses back
+  to exactly one row with the correct (most recent) hostname.
 - **Not yet started**: the staticOverrides grid editor, and proper repo
   signing before this pkg-repo is relied on for anything that matters.
   ("Scheduled traffic blocking" -- the user's original motivating

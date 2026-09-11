@@ -18,6 +18,33 @@ trap 'rm -rf "$WORK"' EXIT
 VERSION=$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' "${SCRIPT_DIR}/+MANIFEST" | head -1)
 ARCH=$(uname -m)
 
+# +MANIFEST's "deps" section pins an EXACT version per dependency (per
+# pkg-create(8)'s own manifest format -- there's no "any version"/">="
+# form available here, unlike a real ports Makefile's RUN_DEPENDS).
+# ndpi in particular is a rolling, date-stamped snapshot build that gets
+# rebuilt upstream periodically -- when that happens, this pin goes
+# stale silently: `pkg version -r`/`pkg rquery` still show the new
+# os-gowiththeflow version fine (they don't check dependencies at all),
+# but `pkg upgrade`'s actual solver can no longer satisfy the stale pin
+# and quietly refuses to touch the package at all, with no clear error
+# anywhere the GUI surfaces -- confirmed live this is exactly what
+# blocked nostromo from ever seeing 1.10.0 as installable, discovered
+# only via `pkg -d -d upgrade -n os-gowiththeflow`'s solver debug trace
+# ("cannot find variable dependency ndpi"). Check every pinned
+# dependency against what this build box's own configured repos
+# actually have right now, before ever publishing a version that could
+# repeat this.
+for dep in py313-scapy ndpi; do
+    pinned=$(sed -n "/\"${dep}\"/,/}/ s/.*\"version\": *\"\([^\"]*\)\".*/\1/p" "${SCRIPT_DIR}/+MANIFEST")
+    available=$(pkg rquery "%v" "$dep" 2>/dev/null | head -1)
+    if [ -z "$available" ]; then
+        echo "WARNING: could not query the currently-available version of ${dep} on this box -- unable to verify the +MANIFEST pin (${pinned})." >&2
+    elif [ "$pinned" != "$available" ]; then
+        echo "WARNING: +MANIFEST pins ${dep} ${pinned}, but this box's repos currently have ${available}." >&2
+        echo "         Update the pin before publishing, or this exact version will be un-installable everywhere (pkg's solver requires an exact match)." >&2
+    fi
+done
+
 STAGE="${WORK}/root"
 META="${WORK}/meta"
 mkdir -p "$STAGE" "$META" "$OUT"

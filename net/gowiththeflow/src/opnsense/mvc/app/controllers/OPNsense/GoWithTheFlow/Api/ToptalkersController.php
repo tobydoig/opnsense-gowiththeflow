@@ -23,10 +23,17 @@ class ToptalkersController extends DbApiControllerBase
             // contribution (bytes swapped, since they're stored relative
             // to the row's own local_ip) so every local host's ranking
             // reflects its total traffic -- internet + internal combined.
+            // local_hostname is a scalar subquery ("most recent wins"),
+            // not a LEFT JOIN -- local_host_identity.ip isn't unique (see
+            // HistoryController's own comment on this exact bug), and with
+            // a GROUP BY/SUM() in play here too, a plain join would
+            // silently multiply every ranking total by however many
+            // identity rows matched, with no visible sign anything broke.
             $sql = "
                 SELECT
                   c.ip AS local_ip,
-                  lhi.hostname AS local_hostname,
+                  (SELECT hostname FROM local_host_identity WHERE ip = c.ip
+                   ORDER BY updated_at DESC LIMIT 1) AS local_hostname,
                   SUM(c.bytes_in) AS bytes_in, SUM(c.bytes_out) AS bytes_out,
                   SUM(c.conn_count) AS conn_count,
                   COUNT(DISTINCT c.other_ip) AS unique_peer_hosts
@@ -37,7 +44,6 @@ class ToptalkersController extends DbApiControllerBase
                   SELECT peer_ip AS ip, local_ip AS other_ip, bytes_out AS bytes_in, bytes_in AS bytes_out, conn_count
                   FROM $table WHERE bucket_start >= :cutoff AND peer_is_local = 1
                 ) c
-                LEFT JOIN local_host_identity lhi ON lhi.ip = c.ip
                 GROUP BY c.ip
             ";
             $stmt = $db->prepare($sql);
