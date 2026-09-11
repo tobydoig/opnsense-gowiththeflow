@@ -64,4 +64,26 @@ class SettingsController extends ApiMutableModelControllerBase
         }
         return $result;
     }
+
+    /**
+     * Instant re-sync of the reservation-gate allowlist (pf table) and,
+     * if enabled, its ARP pins -- purely for immediate feedback right
+     * after adding a Dnsmasq reservation. The daemon's own periodic tick
+     * (gowiththeflowd.py's RESERVATION_GATE_INTERVAL_S) already does this
+     * automatically; this button doesn't replace that, just skips the
+     * wait. Needs Python (pf/arp/this plugin's own database), so shells
+     * out via configd like recategorizeAction() above.
+     */
+    public function syncReservationsAction()
+    {
+        if (!$this->request->isPost()) {
+            return ['status' => 'failed'];
+        }
+        $backend = new \OPNsense\Core\Backend();
+        $result = json_decode($backend->configdRun('gowiththeflow sync_reservations'), true);
+        if (!is_array($result)) {
+            return ['status' => 'failed', 'error' => 'no response from the sync_reservations action'];
+        }
+        return $result;
+    }
 }

@@ -21,6 +21,7 @@
         $("#reconfigureAct").after($("#act-clear-data").detach().show());
         $("#act-clear-data").after($("#act-reset-hostname-cache").detach().show());
         $("#act-reset-hostname-cache").after($("#act-recategorize").detach().show());
+        $("#act-recategorize").after($("#act-sync-reservations").detach().show());
 
         $("#act-clear-data").click(function(e) {
             stdDialogRemoveItem(
@@ -52,6 +53,27 @@
                 }); }
             );
         });
+
+        // Non-destructive/idempotent (a plain re-read-and-reconcile), so
+        // unlike the buttons above this runs directly without a confirm
+        // dialog first -- purely for instant feedback right after adding
+        // a reservation, alongside the automatic periodic sync the
+        // daemon already does on its own.
+        $("#act-sync-reservations").click(function(e) {
+            ajaxCall("/api/gowiththeflow/settings/syncReservations", {}, function (data) {
+                stdDialogInform(
+                    "{{ lang._('Sync Device Allowlist') }}",
+                    (data && data.status === 'ok')
+                        ? (data.enabled
+                            ? "{{ lang._('Done.') }} " + data.allowed_count + " {{ lang._('reserved device(s) allowed.') }}" +
+                                (data.pinned_count !== undefined && data.pinned_count > 0
+                                    ? " " + data.pinned_count + " {{ lang._('ARP pin(s) active.') }}" : "")
+                            : "{{ lang._('The reservation gate is currently disabled -- nothing to sync.') }}")
+                        : ((data && data.error) || "{{ lang._('Unknown error') }}"),
+                    "{{ lang._('Close') }}"
+                );
+            });
+        });
     });
 </script>
 
@@ -68,3 +90,4 @@
 <button id="act-clear-data" class="btn btn-default __mr" style="display: none;">{{ lang._('Clear All Data') }}</button>
 <button id="act-reset-hostname-cache" class="btn btn-default __mr" style="display: none;">{{ lang._('Reset Hostname Cache') }}</button>
 <button id="act-recategorize" class="btn btn-default __mr" style="display: none;">{{ lang._('Recategorize History') }}</button>
+<button id="act-sync-reservations" class="btn btn-default __mr" style="display: none;">{{ lang._('Sync Device Allowlist') }}</button>

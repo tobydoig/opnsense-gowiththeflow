@@ -280,6 +280,22 @@ def test_sync_pf_does_not_raise_on_a_nonzero_pfctl_exit(tmp_path, monkeypatch):
     assert result.returncode == 1
 
 
+def test_sync_pf_table_is_the_generic_primitive_sync_pf_delegates_to(tmp_path, monkeypatch):
+    # reservation_gate.py reuses this directly for its own, differently-
+    # sourced tables (gowiththeflow_allowed/gowiththeflow_protected_dests)
+    # -- confirms it works standalone, parameterized on table name/ips,
+    # with no dependency on blocked_hosts at all.
+    tbl_path = str(tmp_path / "allowed_hosts.tbl")
+    calls = []
+    monkeypatch.setattr(blocklist.subprocess, "run", lambda args, **kw: calls.append(args) or _FakeCompletedProcess())
+
+    blocklist.sync_pf_table("gowiththeflow_allowed", tbl_path, ["10.0.0.20", "10.0.0.5"])
+
+    with open(tbl_path, encoding="utf-8") as f:
+        assert f.read() == "10.0.0.5\n10.0.0.20\n"
+    assert calls == [["/sbin/pfctl", "-t", "gowiththeflow_allowed", "-T", "replace", "-f", tbl_path]]
+
+
 def test_kill_states_v4_kills_both_directions(monkeypatch):
     calls = []
     monkeypatch.setattr(

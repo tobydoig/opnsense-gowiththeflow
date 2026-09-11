@@ -31,6 +31,7 @@ import hostcache
 import live_ticks
 import localhost_identity
 import ptr_resolver
+import reservation_gate
 import rollup
 import sni_sniffer
 from pf_state_poller import PfStatePoller
@@ -52,6 +53,7 @@ LOCALHOST_REFRESH_INTERVAL_S = 5 * 60
 HOURLY_JOB_INTERVAL_S = 60 * 60
 DAILY_JOB_INTERVAL_S = 24 * 60 * 60
 SCHEDULE_RECONCILE_INTERVAL_S = 60
+RESERVATION_GATE_INTERVAL_S = 60
 PTR_TTL_S = 24 * 3600
 # Comfortably above the Live Overview chart's fixed 30-minute range --
 # pruned every poll cycle (not just hourly, see the prune_live_ticks
@@ -116,6 +118,13 @@ class Config:
     rollup_hourly_retention_days: int = 8
     rollup_daily_retention_days: int = 32
     dns_query_log_retention_days: int = 7
+    # Both off by default -- the reservation gate is by far the
+    # highest-blast-radius thing this plugin does (a bug risks the whole
+    # LAN's internet access, not one device's), and ARP pinning is its
+    # own independent hardening layer on top, not implied by the gate
+    # itself (see reservation_gate.py's own module docstring).
+    enable_reservation_gate: bool = False
+    enable_arp_pinning: bool = False
 
     @classmethod
     def load(cls, path: str) -> "Config":
@@ -145,6 +154,8 @@ class Config:
             rollup_hourly_retention_days=int(data.get("rollup_hourly_retention_days", 8)),
             rollup_daily_retention_days=int(data.get("rollup_daily_retention_days", 32)),
             dns_query_log_retention_days=int(data.get("dns_query_log_retention_days", 7)),
+            enable_reservation_gate=bool(data.get("enable_reservation_gate", False)),
+            enable_arp_pinning=bool(data.get("enable_arp_pinning", False)),
         )
 
 
@@ -161,6 +172,22 @@ def _reconcile_schedules(conn, now_i: int) -> None:
         block_rules_engine.reconcile_all(conn, now_i)
     except Exception as e:
         _log_error("gowiththeflow: schedule reconcile failed: %r" % (e,))
+
+
+def _reconcile_reservation_gate(conn, now_i: int, config: Config) -> None:
+    """Same nested-try/except shape as _reconcile_schedules() above --
+    reservation_gate.reconcile() already isolates a failed Dnsmasq read
+    from touching pf/arp state at all (see its own docstring), but a
+    genuinely unexpected failure (a DB error, a bug) must still not be
+    allowed to take the rest of the daemon down with it."""
+    try:
+        reservation_gate.reconcile(conn, now_i, {
+            "enable_reservation_gate": config.enable_reservation_gate,
+            "enable_arp_pinning": config.enable_arp_pinning,
+            "local_subnets": config.local_subnets,
+        })
+    except Exception as e:
+        _log_error("gowiththeflow: reservation gate reconcile failed: %r" % (e,))
 
 
 def run(config: Config) -> None:
@@ -257,6 +284,20 @@ def run(config: Config) -> None:
     # SCHEDULE_RECONCILE_INTERVAL_S.
     last_schedule_reconcile = time.time()
     _reconcile_schedules(conn, int(last_schedule_reconcile))
+
+    # Same "reconcile once at startup" reasoning as schedules above -- a
+    # restart must not leave a stale pf-allowed table or ARP pin set
+    # sitting for up to a full RESERVATION_GATE_INTERVAL_S. The ARP-pin
+    # bookkeeping specifically must be forgotten first, every startup
+    # (daemon restart or full reboot alike) -- arp_pins (SQLite) survives
+    # a restart, but the kernel's own ARP cache never does, so without
+    # this a surviving "already pinned" DB row would permanently skip
+    # the actual arp -S needed to restore it (found live on a real
+    # reboot: see reset_pin_tracking()'s own docstring for the full
+    # reasoning).
+    reservation_gate.reset_pin_tracking(conn)
+    last_reservation_gate = time.time()
+    _reconcile_reservation_gate(conn, int(last_reservation_gate), config)
 
     while True:
         try:
@@ -360,6 +401,10 @@ def run(config: Config) -> None:
             if now - last_schedule_reconcile >= SCHEDULE_RECONCILE_INTERVAL_S:
                 _reconcile_schedules(conn, now_i)
                 last_schedule_reconcile = now
+
+            if now - last_reservation_gate >= RESERVATION_GATE_INTERVAL_S:
+                _reconcile_reservation_gate(conn, now_i, config)
+                last_reservation_gate = now
 
             if now - last_hourly_job >= HOURLY_JOB_INTERVAL_S:
                 rollup.checkpoint_long_lived_sessions(conn, now_i)

@@ -49,5 +49,12 @@
   "rollup_daily_retention_days": {{ GoWithTheFlow.general.rollupDailyRetentionDays }},
   "dns_query_log_retention_days": {{ GoWithTheFlow.general.dnsQueryLogRetentionDays or 7 }},
   "cpu_limit_pct": {{ GoWithTheFlow.general.cpuLimitPct }},
-  "mem_limit_mb": {{ GoWithTheFlow.general.memLimitMB }}
+  "mem_limit_mb": {{ GoWithTheFlow.general.memLimitMB }},
+  {# Same "== '1' else 0" shape as enable_dpi above, not enable_dns_query_log's
+   # inverted default-on one -- both of these must default OFF, and the
+   # unrendered/empty-value quirk documented above conveniently already
+   # produces 0 in that case (empty string != '1'), so no extra fallback
+   # is needed for these two to be safe. #}
+  "enable_reservation_gate": {{ 1 if GoWithTheFlow.general.enableReservationGate == '1' else 0 }},
+  "enable_arp_pinning": {{ 1 if GoWithTheFlow.general.enableArpPinning == '1' else 0 }}
 }

@@ -277,6 +277,21 @@ CREATE TABLE IF NOT EXISTS block_rules (
 -- check with the exact same rule_type='host'-only scope the old
 -- partial unique index had. This table stays small (tens of rows), so
 -- a full scan for that check costs nothing.
+
+-- Which (ip, mac) static ARP pins reservation_gate.py currently has
+-- applied via `arp -S` -- the source of truth for its periodic
+-- reconcile's diff (add newly-reserved devices, remove stale pins whose
+-- reservation disappeared), so that diff never needs to parse `arp -an`
+-- output to guess which entries are "ours" (unlike local_host_identity's
+-- own read-only `arp -an` parsing, this table tracks pins THIS plugin
+-- itself wrote). Keyed by ip, not mac: a static ARP entry can only ever
+-- pin one mac to a given ip at a time, so ip is the natural key.
+CREATE TABLE IF NOT EXISTS arp_pins (
+  ip TEXT PRIMARY KEY,
+  mac TEXT NOT NULL,
+  applied_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_arp_pins_mac ON arp_pins(mac);
 """
 
 

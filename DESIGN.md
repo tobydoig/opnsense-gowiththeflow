@@ -2231,6 +2231,149 @@
   `pkg/+MANIFEST`'s `licenses` field, and `README.md`'s License section
   all updated together. Lines up with the source repo
   (`opnsense-gowiththeflow`) going public. Reboot-survival cycle clean.
+- **1.10.0 -- "only known/reserved devices may reach the WAN"**, a
+  default-deny allowlist gated on OPNsense's own Dnsmasq DHCP
+  reservation list. By far the highest-blast-radius feature this
+  plugin has -- a bug here risks the whole LAN's internet access, not
+  one device's -- so every design choice here got more scrutiny than
+  usual, including two real corrections found only by checking against
+  live OPNsense core source rather than assuming:
+  1. **pf cannot match on MAC address at all** (IP/port-layer only) --
+     "allow by known MAC" and "allow by DHCP reservation" collapse into
+     the same mechanism, since a reservation already binds a MAC to a
+     fixed IP that pf *can* enforce against. New `dnsmasq_reservations.php`
+     (mirrors `dnsbl_apply.php`'s "Python can't touch a PHP-model-owned
+     thing directly" shape) reads `\OPNsense\Dnsmasq\Dnsmasq()->hosts`
+     for every row with both `hwaddr` and `ip` set -- the exact rule
+     `BlockrulesController::findDhcpReservationIp()` already established
+     for a different feature, reused rather than re-derived.
+  2. **My own first instinct (scope the block to WAN-out) was wrong.**
+     pf is stateful: a pre-existing LAN-inbound pass rule (which
+     effectively every OPNsense box already has) creates connection
+     state before a packet is ever separately evaluated on WAN-out, so
+     a rule placed there would very likely have looked configured but
+     blocked nothing. Correct placement is the LAN-side interface(s),
+     **inbound** direction -- the point a connection is actually first
+     evaluated, before any state exists. Confirmed the `interface`
+     field takes comma-separated logical names directly (`FilterRule.php`'s
+     own docblock; `Rule.php`: `explode(',', $rule['interface'])`).
+  3. **A genuine improvement found via the same live check**: core's own
+     `dnsmasq_firewall()` hook (official Dnsmasq plugin, not a guess)
+     uses a built-in `'to' => '(self)'` literal for "every address
+     currently configured on this box" -- adopted instead of the
+     originally-planned `ifconfig`-parsed table for firewall-self
+     protection, removing a dependency on this plugin's own address
+     parsing staying correct for something this safety-critical. The
+     same hook also confirmed live that `new \OPNsense\<Plugin>\<Model>();
+     if (...) return;` is core's own sanctioned way to gate a plugin's
+     firewall rules on its own settings, not a guess this project had
+     to make first.
+  4. Four filter rules, in order: pass to `(self)`, pass to
+     `local_subnets` (`gowiththeflow_protected_dests`), pass from
+     `gowiththeflow_allowed`, block-all-with-log -- so DHCP (also
+     covered independently by core's own same-priority DHCP pass
+     rules), local DNS, LAN-to-LAN, and GUI/SSH stay unaffected for
+     *every* device, known or not; only an unregistered device's
+     genuinely non-local destination hits the catch-all.
+  5. **ARP pinning (`arp -S`) is a separate, independently-toggled
+     hardening layer**, not implied by the gate itself (the user's own
+     request, mid-design) -- ties each reserved IP to its expected MAC
+     in the firewall's own ARP table so a device can't simply claim
+     someone else's reserved IP via static config. New `arp_pins` table
+     (db.py) is this plugin's own record of what it applied, so the
+     periodic reconcile's diff never needs to parse `arp -an` to guess
+     which entries are its own. A real, documented, accepted gap: a
+     reservation with several comma-separated candidate MACs (e.g. a
+     laptop's wifi + ethernet) can't be ARP-pinned until one of them is
+     actually observed once via DHCP/ARP -- the ip stays pf-allowed
+     regardless, just not yet ARP-pinned, until then.
+  6. Both toggles (`enableReservationGate`, `enableArpPinning`) default
+     **off**, and off means genuinely off -- the pf rules aren't even
+     registered into the live ruleset, not "registered but harmless."
+     `reservation_gate.fetch_reservations()` returning `None` (a failed
+     Dnsmasq read) is a distinct sentinel from "zero reservations" and
+     touches no pf/arp state at all -- the one behavior this feature
+     could never get wrong, tested explicitly.
+  7. New "Sync Device Allowlist" Settings button (mirrors "Recategorize
+     History"'s button->configd->Python chain exactly) for instant
+     feedback after adding a reservation, alongside the daemon's own
+     automatic ~60s reconcile tick.
+  8. **Real bug found while writing tests, fixed before it ever ran
+     live**: `blocklist.render_table_file()`'s sort key
+     (`ipaddress.ip_address()`) crashed outright on a CIDR entry like
+     `10.0.0.0/24` -- fine for the existing plain-IP blocklist, broken
+     for this feature's `local_subnets`-populated protected-destinations
+     table. Fixed by sorting via `ip_network(..., strict=False)`
+     instead, which handles a bare address (as a /32) and a real network
+     with the same one code path. `blocklist.sync_pf_table()`
+     extracted as the shared pfctl-invocation primitive both this
+     feature and the original block-list now use.
+  Verified live on the dev VM, staged deliberately (confirmed the
+  toggle was provably inert first; added a reservation for the actual
+  test device before ever enabling the gate) -- and three more real
+  bugs turned up doing that, none guessable from the offline tests
+  alone:
+  9. **XML comments may not contain a double hyphen anywhere in their
+     body -- a hard XML spec rule.** Broke `GoWithTheFlow.xml` entirely
+     (this project's own "--" prose-dash comment convention, used
+     everywhere else without issue since it's only special inside an
+     actual `<!-- -->` block), which broke `configctl filter reload`
+     outright (`Error 255`) and very likely explains why the Settings
+     page's interface dropdown briefly rendered empty. Took two tries
+     to actually fix -- the first rewrite still had "--" in the very
+     sentence explaining the mistake.
+  10. **The Settings page's Save/Apply never triggered a filter
+      reload**, so flipping the gate on/off saved correctly but had zero
+      effect on the live ruleset until a manual `configctl filter
+      reload`. Root cause: `ApiMutableServiceControllerBase::
+      invokeFirewallReload()` defaults to `false` and never mattered
+      before, since the original block-a-host feature's rules are
+      always registered unconditionally. `ServiceController` now
+      overrides it to `true`.
+  11. **A real interface-scoping bug, confirmed on live traffic, not
+      just in the compiled ruleset**: `captureInterfaces` (reused for
+      the gate's LAN-side scope) legitimately includes both LAN and WAN
+      on this dev VM, for packet-capture visibility -- without
+      excluding the literal `wan` key, the default-deny block rule got
+      registered on the WAN interface too. Harmless here (no
+      WAN-inbound services configured), but on a real box with a VPN
+      endpoint or a port forward, a `quick` rule at this priority could
+      have silently broken it. Fixed by excluding the literal interface
+      key `wan` -- structurally guaranteed by OPNsense's own
+      `config.xml` shape for the primary WAN, not a naming convention a
+      user could rename away from. Documented gap: a true multi-WAN
+      setup with a second WAN-type interface under some other name
+      isn't excluded by this, since OPNsense's interface mapping
+      doesn't expose a plain "is this WAN" flag to check instead.
+  12. **Found live via a real reboot, not guessable from any test that
+      doesn't actually reboot the box**: `arp_pins` is a SQLite table,
+      so it survives a daemon restart or a full reboot; the *kernel's*
+      ARP cache never does. `diff_arp_pins()` saw a surviving "already
+      pinned" row for a reservation that hadn't changed at all and
+      concluded there was nothing to do -- permanently skipping the
+      actual `arp -S` needed to restore it, since nothing about an
+      unchanged reservation would ever look like a diff. New
+      `reset_pin_tracking()`, called once at daemon startup before the
+      first reconcile, forgets the bookkeeping (never touches the
+      actual ARP table) so the next reconcile treats every currently-
+      needed pin as new and reapplies it. Closely related, fixed at the
+      same time: `apply_arp_pins()` was writing the `arp_pins` row
+      unconditionally, even when the underlying `arp -S`/`arp -d`
+      genuinely failed (e.g. a real boot-time race: the daemon's own
+      startup reconcile can run before the interface is fully up) --
+      meaning a failed pin got recorded as a *successful* one and would
+      never have been retried by the periodic tick either. Both now
+      only update `arp_pins` on an actual, verified success.
+  Confirmed end-to-end against real traffic (not just the compiled
+  ruleset) via the firewall's own filter log: an unregistered device's
+  outbound packets logged `match, block, in` on the exact catch-all
+  rule; the same device's traffic passed with no block logged, correctly
+  NAT-rewritten and egressing on WAN, the moment a reservation existed
+  for it. Both toggles independently confirmed to fully disable their
+  own effect (pf rules gone from the compiled ruleset; every ARP pin
+  purged) with no lingering state. Two full reboot-survival cycles
+  clean (the second specifically re-confirming the arp_pins fix). 332
+  tests passing.
 - **Not yet started**: the staticOverrides grid editor, and proper repo
   signing before this pkg-repo is relied on for anything that matters.
   ("Scheduled traffic blocking" -- the user's original motivating

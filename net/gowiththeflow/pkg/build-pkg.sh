@@ -66,7 +66,8 @@ chmod +x \
     "${STAGE}/usr/local/opnsense/scripts/gowiththeflow/gowiththeflowd.py" \
     "${STAGE}/usr/local/opnsense/scripts/gowiththeflow/block_host.py" \
     "${STAGE}/usr/local/opnsense/scripts/gowiththeflow/block_rules.py" \
-    "${STAGE}/usr/local/opnsense/scripts/gowiththeflow/recategorize.py"
+    "${STAGE}/usr/local/opnsense/scripts/gowiththeflow/recategorize.py" \
+    "${STAGE}/usr/local/opnsense/scripts/gowiththeflow/reservation_sync.py"
 
 sed -e "s/%%VERSION%%/${VERSION}/" -e "s/%%ARCH%%/${ARCH}/" \
     "${SCRIPT_DIR}/version.json.tmpl" > "${STAGE}/usr/local/opnsense/version/gowiththeflow"

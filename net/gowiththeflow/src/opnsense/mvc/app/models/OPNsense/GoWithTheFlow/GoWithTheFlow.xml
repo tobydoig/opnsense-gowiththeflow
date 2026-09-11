@@ -1,7 +1,7 @@
 <model>
     <mount>/GoWithTheFlow</mount>
     <description>GoWithTheFlow settings</description>
-    <version>1.1.0</version>
+    <version>1.2.0</version>
     <items>
         <general>
             <enabled type="BooleanField">
@@ -53,6 +53,25 @@
             <debugLogging type="BooleanField">
                 <Default>0</Default>
             </debugLogging>
+            <!-- Both off by default; see reservation_gate.py's own
+                 module docstring for why this is by far the
+                 highest blast radius feature this plugin has: a bug
+                 risks the whole LAN's internet access, not one
+                 device's. ARP pinning is an independent hardening
+                 layer on top of the gate, not implied by it.
+
+                 Note for future edits: an XML comment body must never
+                 contain two consecutive hyphen characters, a hard XML
+                 spec rule; this exact comment broke model loading
+                 once already by using this project's usual prose dash
+                 convention here, twice in a row, including in the
+                 first attempt to explain the very same mistake. -->
+            <enableReservationGate type="BooleanField">
+                <Default>0</Default>
+            </enableReservationGate>
+            <enableArpPinning type="BooleanField">
+                <Default>0</Default>
+            </enableArpPinning>
         </general>
         <hostname>
             <enableDnsSniffing type="BooleanField">

@@ -75,6 +75,22 @@
     </field>
     <field>
         <type>header</type>
+        <label>Reservation gate</label>
+    </field>
+    <field>
+        <id>gowiththeflow.general.enableReservationGate</id>
+        <label>Only allow known/reserved devices to reach the WAN</label>
+        <type>checkbox</type>
+        <help>Default-deny for LAN-&gt;WAN traffic: only devices with a static DHCP reservation (both MAC and IP set) in Services &gt; Dnsmasq DNS &amp; DHCP &gt; Hosts may reach the internet. Unregistered devices still get a normal DHCP lease, still resolve local DNS, and remain reachable to this firewall's own GUI/SSH -- they just can't reach the WAN. Off by default -- add a reservation for every device you want to keep working before enabling this.</help>
+    </field>
+    <field>
+        <id>gowiththeflow.general.enableArpPinning</id>
+        <label>Pin reserved devices' MAC addresses via static ARP</label>
+        <type>checkbox</type>
+        <help>Independent hardening layer on top of the reservation gate above: ties each reserved IP to its expected MAC in this firewall's own ARP table, so a different device can't simply claim someone else's reserved IP via static configuration. Raises the bar considerably but isn't a complete defense against a determined on-LAN actor. Has no effect unless the reservation gate above is also enabled.</help>
+    </field>
+    <field>
+        <type>header</type>
         <label>Hostname resolution</label>
     </field>
     <field>

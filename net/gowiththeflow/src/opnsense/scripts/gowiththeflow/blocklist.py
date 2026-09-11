@@ -124,10 +124,17 @@ def refuse_reason_for_host_block(ip: str, local_subnets: list[str]) -> str | Non
 
 
 def render_table_file(ips: list[str]) -> str:
-    """One address per line, deduplicated and sorted, trailing newline --
-    matches pf's own table-file format (see pfctl(8)'s TABLES section).
-    An empty list renders as an empty string, a valid (empty) table."""
-    unique_sorted = sorted(set(ips), key=ipaddress.ip_address)
+    """One address (or CIDR network) per line, deduplicated and sorted,
+    trailing newline -- matches pf's own table-file format (see
+    pfctl(8)'s TABLES section, which accepts both plain addresses and
+    networks as table entries). An empty list renders as an empty
+    string, a valid (empty) table. Sorted via ip_network(..., strict=False)
+    rather than ip_address() -- a plain address parses fine as a /32 (or
+    /128) network too, so this one sort key correctly handles both this
+    module's own plain-IP blocklist entries and reservation_gate.py's
+    CIDR-network protected-destinations entries without needing two
+    code paths."""
+    unique_sorted = sorted(set(ips), key=lambda x: ipaddress.ip_network(x, strict=False))
     if not unique_sorted:
         return ""
     return "\n".join(unique_sorted) + "\n"
@@ -193,21 +200,32 @@ def remove_block(conn: sqlite3.Connection, ip: str) -> None:
     conn.commit()
 
 
+def sync_pf_table(pf_table: str, tbl_path: str, ips: list[str]) -> subprocess.CompletedProcess:
+    """The generic primitive underneath sync_pf() -- rewrites `pf_table`'s
+    backing file to exactly `ips` and tells pf to reload just that one
+    table. Idempotent and cheap to call repeatedly (a `-T replace`
+    against an already-correct table is a no-op). Factored out (rather
+    than reservation_gate.py duplicating sync_pf()'s own pfctl-invocation
+    shape for its own, differently-sourced tables) so there is exactly
+    one place that knows how to talk to pfctl about table contents.
+    Returns the CompletedProcess rather than raising on a non-zero exit
+    -- callers decide whether/how to surface a pfctl failure."""
+    write_table_file(tbl_path, ips)
+    return subprocess.run(
+        [PFCTL, "-t", pf_table, "-T", "replace", "-f", tbl_path],
+        capture_output=True, text=True, check=False,
+    )
+
+
 def sync_pf(conn: sqlite3.Connection, tbl_path: str) -> subprocess.CompletedProcess:
     """Rewrites the pf table's backing file from blocked_hosts (the
     source of truth) and tells pf to reload just that one table --
-    idempotent and cheap to call repeatedly (a `-T replace` against an
-    already-correct table is a no-op), which is what lets the daemon's
-    own startup replay and periodic reconcile share this exact function
-    with block_host.py's CLI actions without needing to coordinate.
-    Returns the CompletedProcess rather than raising on a non-zero exit
-    -- callers decide whether/how to surface a pfctl failure."""
+    idempotent and cheap to call repeatedly, which is what lets the
+    daemon's own startup replay and periodic reconcile share this exact
+    function with block_host.py's CLI actions without needing to
+    coordinate."""
     ips = [row["local_ip"] for row in list_blocked(conn)]
-    write_table_file(tbl_path, ips)
-    return subprocess.run(
-        [PFCTL, "-t", PF_TABLE, "-T", "replace", "-f", tbl_path],
-        capture_output=True, text=True, check=False,
-    )
+    return sync_pf_table(PF_TABLE, tbl_path, ips)
 
 
 def kill_states(ip: str) -> list[subprocess.CompletedProcess]:

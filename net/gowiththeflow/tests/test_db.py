@@ -546,3 +546,14 @@ def test_record_dns_query_event_different_local_host_is_a_separate_row(tmp_path)
     db.record_dns_query_event(conn, _query_event(local_ip="192.168.1.51"))
     rows = conn.execute("SELECT local_ip FROM dns_query_log").fetchall()
     assert {r["local_ip"] for r in rows} == {"192.168.1.50", "192.168.1.51"}
+
+
+def test_init_schema_creates_arp_pins(tmp_path):
+    # reservation_gate.py's own record of which static ARP pins it has
+    # applied -- the source of truth for its periodic reconcile's diff.
+    conn = db.connect(str(tmp_path / "flows.db"))
+    db.init_schema(conn)
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(arp_pins)")}
+    assert cols == {"ip", "mac", "applied_at"}
+    conn.execute("INSERT INTO arp_pins (ip, mac, applied_at) VALUES ('10.0.0.20', 'aa:bb:cc:dd:ee:ff', 1000)")
+    conn.commit()

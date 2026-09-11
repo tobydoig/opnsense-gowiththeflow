@@ -37,6 +37,7 @@ usr/local/opnsense/scripts/gowiththeflow/correlator.py
 usr/local/opnsense/scripts/gowiththeflow/db.py
 usr/local/opnsense/scripts/gowiththeflow/dns_sniffer.py
 usr/local/opnsense/scripts/gowiththeflow/dnsbl_apply.php
+usr/local/opnsense/scripts/gowiththeflow/dnsmasq_reservations.php
 usr/local/opnsense/scripts/gowiththeflow/domain_categories/ads-tracking
 usr/local/opnsense/scripts/gowiththeflow/domain_categories/ai
 usr/local/opnsense/scripts/gowiththeflow/domain_categories/banking
@@ -60,6 +61,8 @@ usr/local/opnsense/scripts/gowiththeflow/manual_categories.py
 usr/local/opnsense/scripts/gowiththeflow/pf_state_poller.py
 usr/local/opnsense/scripts/gowiththeflow/ptr_resolver.py
 usr/local/opnsense/scripts/gowiththeflow/recategorize.py
+usr/local/opnsense/scripts/gowiththeflow/reservation_gate.py
+usr/local/opnsense/scripts/gowiththeflow/reservation_sync.py
 usr/local/opnsense/scripts/gowiththeflow/rollup.py
 usr/local/opnsense/scripts/gowiththeflow/sni_sniffer.py
 usr/local/opnsense/service/conf/actions.d/actions_gowiththeflow.conf
