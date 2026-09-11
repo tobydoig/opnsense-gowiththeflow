@@ -112,8 +112,8 @@
             const localHosts = response.local_hosts || {};
             const labels = buckets.map(function (ts) {
                 return selected_bucket === 'day'
-                    ? new Date(ts * 1000).toLocaleDateString()
-                    : new Date(ts * 1000).toLocaleString();
+                    ? formatTimestampGWTF(ts).slice(0, 10)
+                    : formatTimestampGWTF(ts);
             });
 
             const datasets = Object.keys(series).map(function (ip, i) {
@@ -207,7 +207,10 @@
         if (unixSeconds === undefined || unixSeconds === null) {
             return "";
         }
-        return new Date(unixSeconds * 1000).toLocaleString();
+        const d = new Date(unixSeconds * 1000);
+        const pad = (n) => String(n).padStart(2, "0");
+        return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ` +
+            `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
     }
 </script>
 

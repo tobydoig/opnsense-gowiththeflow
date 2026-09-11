@@ -2435,6 +2435,30 @@
   confirming the old query text produced exactly the reported
   duplicate-row bug, and confirming the new query text collapses back
   to exactly one row with the correct (most recent) hostname.
+- **1.10.3 -- UI bug, reported by the user: Last Activity/Last Seen on
+  Live Details displayed as e.g. "9/11/2026, 8:44:19 PM"**, which reads
+  as 11 September to a UK user but is actually `Date.prototype
+  .toLocaleString()`'s US-locale mm/dd/yyyy rendering (this codebase
+  never sets a `lang`/locale option, so it always fell back to the
+  browser/server default, which happened to be US English). Fixed the
+  one shared `formatTimestampGWTF()` helper -- duplicated verbatim in
+  `live.volt`, `history.volt`, and `dnsqueries.volt`, no shared JS
+  module exists to fix it in one place -- to build an explicit
+  `YYYY-MM-DD HH:MM:SS` string from the `Date`'s own local-time getters
+  instead of calling `toLocaleString()` at all, unambiguous regardless
+  of the viewer's locale. Also fixed the same underlying call in
+  `history.volt`'s chart-label code (`renderHistoryChart()`), which had
+  its own separate, unrelated `toLocaleDateString()`/`toLocaleString()`
+  calls for the day-bucket-vs-finer-bucket x-axis labels; switched both
+  to route through the same fixed helper for consistency. Confirmed the
+  Last Activity/Last Seen bootgrid columns already sort correctly
+  regardless of display format -- they're declared `data-type="numeric"`
+  with the formatter applied only for display, so bootgrid always
+  sorted on the underlying raw unix-timestamp value in
+  `row[column.id]`, never on the formatted text -- no sort-related
+  change was needed. Left `live.volt`'s live-overview chart tick labels
+  (`toLocaleTimeString()`, time-only, no date component) as-is since a
+  time-only string carries no mm/dd-vs-dd/mm ambiguity to begin with.
 - **Not yet started**: the staticOverrides grid editor, and proper repo
   signing before this pkg-repo is relied on for anything that matters.
   ("Scheduled traffic blocking" -- the user's original motivating
