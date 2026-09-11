@@ -35,6 +35,7 @@ import manual_categories
 CATEGORY_SOURCES: dict[str, list[str]] = {
     "Ads/Tracking": ["category-ads"],
     "Cloud Infrastructure": ["category-cdn-!cn", "cloudflare", "akamai", "fastly", "aws"],
+    "Adult": ["category-porn"],
     "Social Media": [
         "category-social-media-!cn", "tiktok", "snapchat", "pinterest", "reddit", "oculus",
     ],

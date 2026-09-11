@@ -2459,6 +2459,35 @@
   change was needed. Left `live.volt`'s live-overview chart tick labels
   (`toLocaleTimeString()`, time-only, no date component) as-is since a
   time-only string carries no mm/dd-vs-dd/mm ambiguity to begin with.
+- **1.10.4 -- new category, requested by the user after noticing "a few
+  interesting domains" in their own real traffic**: added `"Adult":
+  ["category-porn"]` to `CATEGORY_SOURCES` in `categories.py`. No other
+  code changed -- `category_updater.resolve_top_level_files()` already
+  derives its whole fetch set (~360 files once `category-porn`'s own
+  `include:` chain is followed) directly from `CATEGORY_SOURCES`'s
+  values, so this one line is genuinely the entire mechanism change.
+  Placed right after Cloud Infrastructure (before every company-wide
+  category) purely defensively, matching this file's own established
+  "narrower/more specific categories before broad ones" ordering
+  concern -- not because any real overlap was found, since
+  `category-porn`'s own include chain (confirmed by fetching it live)
+  is exclusively standalone adult sites, not a subset of any
+  general-purpose company's domains the way `aws`/`google` were.
+  Verified live on the dev VM: hot-patched `categories.py`, forced a
+  `category_updater.refresh()` (confirmed `category-porn` fetched,
+  362 files cached total), then confirmed `CategoryMatcher.categorize()`
+  correctly returns "Adult" for real adult-site hostnames pulled in via
+  that chain (e.g. pornhub.com, xvideos.com) without disturbing
+  existing categorization (google.com/netflix.com unchanged). The full
+  332-test suite still passes unchanged, since no test hardcodes the
+  exact category set. A user who wants to categorize the "Recategorize
+  History" button re-checks *every* already-logged hostname (not just
+  currently-uncategorized ones) against current rules on demand, since
+  category is otherwise stamped once at first-observation and never
+  revisited (see `recategorize.py`'s own docstring) -- so running it
+  after this change is what actually moves already-recorded adult-site
+  history from `NULL`/another category into "Adult", not just newly
+  observed traffic going forward.
 - **Not yet started**: the staticOverrides grid editor, and proper repo
   signing before this pkg-repo is relied on for anything that matters.
   ("Scheduled traffic blocking" -- the user's original motivating
