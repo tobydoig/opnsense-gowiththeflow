@@ -16,15 +16,24 @@ from this source; every lease-derived record is just labeled "dhcp_lease"
 regardless of whether it happens to be a static reservation -- a
 documented simplification, not a silent gap. `arp -an` parsing is the
 last-resort fallback for devices with no lease record at all.
+
+A third, lowest-priority source fills in hostname only (never IP): a
+Dnsmasq reservation's own configured "Host" name (see
+fetch_reservation_hostnames()), for a MAC whose live lease/ARP data
+carries no hostname at all -- e.g. a device that never sends a DHCP
+hostname (client-shaped devices like VR headsets commonly don't), but
+that the user has still given a real name in its reservation.
 """
 
 from __future__ import annotations
 
 import json
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 _NO_HOSTNAME_PLACEHOLDER = "*"
+PHP_BIN = "/usr/local/bin/php"
+DNSMASQ_RESERVATIONS_SCRIPT = "/usr/local/opnsense/scripts/gowiththeflow/dnsmasq_reservations.php"
 
 
 @dataclass(frozen=True)
@@ -85,19 +94,72 @@ def parse_arp_output(arp_text: str) -> list[LocalHostIdentity]:
     return identities
 
 
+def fetch_reservation_hostnames() -> dict[str, str]:
+    """mac -> a Dnsmasq reservation's own configured "Host" name, for
+    every reservation that has one set -- read via dnsmasq_reservations.php
+    (Python has no other way to reach Dnsmasq's PHP-model-owned config,
+    same reasoning reservation_gate.py's own fetch_reservations() already
+    established). Used only to backfill a hostname when the live DHCP
+    lease/ARP data has none at all (see merge_identities()) -- a real gap
+    found live: a device that never sends a DHCP hostname (e.g. a VR
+    headset with no option-12 support) showed as a bare IP forever in
+    the GUI even though the user had given it a perfectly good name in
+    its own reservation.
+
+    Unlike fetch_reservations()'s own None-vs-[] sentinel distinction,
+    a failure here has no dangerous blast radius -- it can only leave a
+    device showing as a bare IP for one more 5-minute refresh cycle,
+    exactly as it already would without this feature at all -- so
+    returning {} on any failure (rather than a None sentinel the caller
+    has to specially handle) is the simpler, still-correct choice."""
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            [PHP_BIN, "-f", DNSMASQ_RESERVATIONS_SCRIPT],
+            capture_output=True, text=True, check=True, timeout=15,
+        )
+        rows = json.loads(result.stdout)
+    except (subprocess.SubprocessError, OSError, ValueError, KeyError, TypeError):
+        return {}
+
+    hostnames: dict[str, str] = {}
+    for row in rows:
+        mac = str(row.get("mac") or "").strip().lower()
+        host = str(row.get("host") or "").strip()
+        if mac and host:
+            hostnames[mac] = host
+    return hostnames
+
+
 def merge_identities(
-    lease_identities: list[LocalHostIdentity], arp_identities: list[LocalHostIdentity]
+    lease_identities: list[LocalHostIdentity],
+    arp_identities: list[LocalHostIdentity],
+    reservation_hostnames: dict[str, str] | None = None,
 ) -> dict[str, LocalHostIdentity]:
     """Merges lease-derived and ARP-derived identities keyed by MAC, with
     lease data always winning for a MAC that has one (leases can carry a
     hostname; ARP never does) -- ARP only fills in devices Dnsmasq has no
     lease record for at all (e.g. a statically-IP-configured device that
-    never went through DHCP)."""
+    never went through DHCP).
+
+    `reservation_hostnames` (see fetch_reservation_hostnames()) then
+    backfills the hostname -- and only the hostname, IP/source stay
+    exactly as observed live -- for any resulting identity that still
+    has none at all, whether that's a lease with no reported hostname or
+    an ARP-only entry. A hostname genuinely observed live always wins
+    over a configured one; this only ever fills a gap, never overrides."""
     merged: dict[str, LocalHostIdentity] = {}
     for identity in lease_identities:
         merged[identity.mac] = identity
     for identity in arp_identities:
         merged.setdefault(identity.mac, identity)
+    if reservation_hostnames:
+        for mac, identity in merged.items():
+            if identity.hostname is None:
+                host = reservation_hostnames.get(mac)
+                if host:
+                    merged[mac] = replace(identity, hostname=host)
     return merged
 
 
@@ -120,8 +182,10 @@ def write_identities(
 
 def refresh(conn: sqlite3.Connection, now: int) -> int:
     """Live entrypoint, wired up by gowiththeflowd.py on a 5-minute timer:
-    runs `configctl dnsmasq list leases` and `arp -an`, merges, and writes.
-    Not exercised by Stage A6's unit tests -- proven in Phase B.
+    runs `configctl dnsmasq list leases` and `arp -an`, merges (backfilling
+    any still-missing hostname from Dnsmasq's own reservation names, see
+    fetch_reservation_hostnames()), and writes. Not exercised by Stage A6's
+    unit tests -- proven in Phase B.
 
     Uses absolute paths for both commands -- real bug caught running this
     under rc.d on the OPNsense 26.7 test VM: the service's PATH doesn't
@@ -146,7 +210,8 @@ def refresh(conn: sqlite3.Connection, now: int) -> int:
     arp_raw = subprocess.run(
         ["/usr/sbin/arp", "-an"], capture_output=True, text=True, check=True, timeout=15,
     ).stdout
+    reservation_hostnames = fetch_reservation_hostnames()
 
-    merged = merge_identities(parse_leases_json(leases_raw), parse_arp_output(arp_raw))
+    merged = merge_identities(parse_leases_json(leases_raw), parse_arp_output(arp_raw), reservation_hostnames)
     write_identities(conn, merged, now)
     return len(merged)

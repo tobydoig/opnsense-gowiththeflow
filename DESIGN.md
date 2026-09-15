@@ -2488,6 +2488,61 @@
   after this change is what actually moves already-recorded adult-site
   history from `NULL`/another category into "Adult", not just newly
   observed traffic going forward.
+- **1.10.5 -- real gap, found while investigating a user report of two
+  devices showing as bare IPs (not hostnames) on Top Talkers, despite
+  both having Dnsmasq static reservations.** One (xps13) turned out to
+  already work correctly -- a stale browser view, not a bug. The other
+  (a Quest 3S headset) was genuine: its live DHCP lease has
+  `"hostname":"*"`, dnsmasq's own placeholder for "this client reported
+  no hostname at all" (confirmed live against the real lease data on
+  the user's box) -- common for VR/IoT clients that don't send DHCP
+  option 12. `local_host_identity` correctly stored this as `hostname =
+  NULL`, so every "most recent wins" query resolving it (see 1.10.2)
+  was working exactly as designed; there was just never any hostname
+  anywhere in the pipeline to resolve. But the user's own Dnsmasq
+  reservation for that device already has a real name in the
+  reservation's own "Host" field (confirmed against the actual
+  `OPNsense\Dnsmasq` model: `hosts` array items carry `host`
+  independently of whatever the DHCP client itself reports) --
+  `localhost_identity.py` never consulted it at all.
+
+  Added a third, lowest-priority hostname source: `dnsmasq_reservations.php`
+  (already used by 1.x's reservation-gate feature, reading
+  `OPNsense\Dnsmasq`'s `hosts` model) now also emits each reservation's
+  `host` field alongside `mac`/`ip` -- purely additive, so
+  `reservation_gate.py`'s own `fetch_reservations()` (which only reads
+  the `mac`/`ip` keys) needed no changes at all. New
+  `localhost_identity.fetch_reservation_hostnames()` reads that same
+  script and returns `{mac: host}` for every reservation with a
+  non-blank name; `merge_identities()` now takes this as a third,
+  optional argument and backfills the hostname -- and *only* the
+  hostname, never ip/source -- for any lease- or ARP-derived identity
+  that still has none at all. A hostname genuinely observed live always
+  wins; this only ever fills a gap.
+
+  Unlike `reservation_gate.py`'s own `fetch_reservations()`, a failure
+  reading reservations here has no dangerous blast radius -- worst case
+  a device shows as a bare IP for one more 5-minute refresh cycle,
+  exactly as before this feature existed -- so `fetch_reservation_hostnames()`
+  deliberately returns `{}` on any failure rather than needing its own
+  None-vs-empty sentinel distinction.
+
+  Verified live on the dev VM against a real (pre-existing test)
+  Dnsmasq reservation with a configured Host name: confirmed the
+  updated `dnsmasq_reservations.php` now emits `host` correctly,
+  `fetch_reservation_hostnames()` parses it, and `merge_identities()`
+  both backfills a hostname-less lease correctly and leaves an
+  already-named lease untouched. 8 new unit tests added
+  (`test_localhost_identity.py`); full suite (340 tests) passes.
+
+  Also: `build-pkg.sh`'s own dependency-drift check (added in 1.10.1
+  for exactly this reason) caught real drift on this release --
+  py313-scapy and ndpi had both moved on since 1.10.4 (2.7.0 ->
+  2.7.0_1; the ndpi snapshot rolled forward entirely, 5.0.d20260502_1,1
+  -> 6.0.d20260828,1). Confirmed nostromo's own configured repo has the
+  same two versions available (`pkg rquery` matched exactly) before
+  updating the pins and re-building -- the whole point of that check
+  is to catch this before a release ships un-installable, not after.
 - **Not yet started**: the staticOverrides grid editor, and proper repo
   signing before this pkg-repo is relied on for anything that matters.
   ("Scheduled traffic blocking" -- the user's original motivating
