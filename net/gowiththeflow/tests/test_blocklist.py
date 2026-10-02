@@ -296,7 +296,7 @@ def test_sync_pf_table_is_the_generic_primitive_sync_pf_delegates_to(tmp_path, m
     assert calls == [["/sbin/pfctl", "-t", "gowiththeflow_allowed", "-T", "replace", "-f", tbl_path]]
 
 
-def test_kill_states_v4_kills_both_directions(monkeypatch):
+def test_kill_states_v4_kills_both_directions_and_nat(monkeypatch):
     calls = []
     monkeypatch.setattr(
         blocklist.subprocess, "run",
@@ -306,6 +306,7 @@ def test_kill_states_v4_kills_both_directions(monkeypatch):
     assert calls == [
         ["/sbin/pfctl", "-k", "10.0.0.5"],
         ["/sbin/pfctl", "-k", "0.0.0.0/0", "-k", "10.0.0.5"],
+        ["/sbin/pfctl", "-k", "nat", "-k", "10.0.0.5"],
     ]
 
 
@@ -319,6 +320,7 @@ def test_kill_states_v6_uses_the_v6_wildcard(monkeypatch):
     assert calls == [
         ["/sbin/pfctl", "-k", "fe80::1"],
         ["/sbin/pfctl", "-k", "::/0", "-k", "fe80::1"],
+        ["/sbin/pfctl", "-k", "nat", "-k", "fe80::1"],
     ]
 
 

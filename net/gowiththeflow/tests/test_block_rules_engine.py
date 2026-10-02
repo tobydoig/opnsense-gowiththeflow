@@ -522,3 +522,39 @@ def test_reconcile_all_skips_a_bad_rule_without_aborting_the_others(tmp_path, mo
     assert good_row["last_effective_state"] == "blocked"
     bad_row = conn.execute("SELECT last_effective_state FROM block_rules WHERE id = ?", (bad_id,)).fetchone()
     assert bad_row["last_effective_state"] is None
+
+
+def test_reconcile_all_kills_states_for_hosts_that_were_already_blocked(tmp_path, monkeypatch):
+    # No block transition happens here, so only the sweep can kill a state
+    # that slipped past the original block-time kill.
+    conn = _fresh_conn(tmp_path)
+    monkeypatch.setattr(blocklist.subprocess, "run", lambda args, **kw: _FakeCompletedProcess())
+    monkeypatch.setattr(block_rules_engine, "TABLE_FILE_PATH", str(tmp_path / "blocked_hosts.tbl"))
+    _insert_rule(conn, rule_type="host", devices=[_device(ip="10.0.0.5")], schedule_json=None)
+    blocklist.add_block(conn, "10.0.0.5", None, None, "admin", None, NOW)
+    blocklist.add_block(conn, "10.0.0.9", None, None, "admin", None, NOW)  # manual block, no rule
+    killed = []
+    monkeypatch.setattr(blocklist, "kill_states", lambda ip: killed.append(ip))
+
+    block_rules_engine.reconcile_all(conn, NOW)
+
+    assert sorted(killed) == ["10.0.0.5", "10.0.0.9"]
+
+
+def test_reconcile_all_sweep_keeps_going_after_one_host_fails(tmp_path, monkeypatch):
+    conn = _fresh_conn(tmp_path)
+    blocklist.add_block(conn, "10.0.0.5", None, None, "admin", None, NOW)
+    blocklist.add_block(conn, "10.0.0.6", None, None, "admin", None, NOW)
+    killed = []
+
+    def _kill(ip):
+        if ip == "10.0.0.5":
+            raise OSError("pfctl missing")
+        killed.append(ip)
+
+    monkeypatch.setattr(blocklist, "kill_states", _kill)
+    monkeypatch.setattr(block_rules_engine, "_log_error", lambda msg: None)
+
+    block_rules_engine.reconcile_all(conn, NOW)
+
+    assert killed == ["10.0.0.6"]

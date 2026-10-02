@@ -236,12 +236,20 @@ def kill_states(ip: str) -> list[subprocess.CompletedProcess]:
     states where it's on the receiving end instead (e.g. behind a port
     forward). "0 states killed" is pf's normal response when nothing
     matches, not a failure -- callers should not treat a non-zero exit
-    here as exceptional."""
+    here as exceptional.
+
+    Both of those match a state's *post*-NAT addresses, so neither ever
+    matches the WAN-side state of an outbound NAT'd connection (its
+    source there is the firewall's own WAN address, not this host) --
+    a third call, `-k nat`, matches on the pre-NAT address instead.
+    Found live: a blocked phone's VPN tunnel kept its 3h+ old WAN state
+    through every kill, so the connection never actually dropped."""
     is_v6 = ipaddress.ip_address(ip).version == 6
     wildcard = "::/0" if is_v6 else "0.0.0.0/0"
     return [
         subprocess.run([PFCTL, "-k", ip], capture_output=True, text=True, check=False),
         subprocess.run([PFCTL, "-k", wildcard, "-k", ip], capture_output=True, text=True, check=False),
+        subprocess.run([PFCTL, "-k", "nat", "-k", ip], capture_output=True, text=True, check=False),
     ]
 
 

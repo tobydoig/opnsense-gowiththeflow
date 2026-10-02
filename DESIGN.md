@@ -2561,6 +2561,29 @@
   `test_block_rules_engine.py` (fails on the old code); full suite
   (341 tests) passes. `reservation_gate.py` checked too -- it syncs
   its pf tables before killing states, so it was already correct.
+- **1.10.7 -- follow-up to 1.10.6: the phone's tunnel was still up
+  after the upgrade, which showed two more gaps.** `pfctl -vss` showed
+  the connection as two states: a LAN-side one aged ~31 min (created
+  in the 1.10.6 race at block time) and a WAN-side NAT'd one aged
+  **3h50m** -- the original connection, which had survived the
+  block-time kill. Both `pfctl -k` forms `kill_states()` used match a
+  state's *post*-NAT addresses, and on the WAN side the source is the
+  firewall's own WAN address, so neither ever matched. pfctl(8) has a
+  pre-NAT form for exactly this: `pfctl -k nat -k <ip>`, now
+  `kill_states()`'s third call (confirmed on the dev VM it exits 0 with
+  "killed 0 states" when nothing matches, same as the other two; not
+  verified live against a real NAT'd state there, since the VM's
+  host-only LAN doesn't NAT out a WAN).
+
+  Second gap: 1.10.6 only kills states at the moment a block *starts*,
+  so a state that had already slipped through (this one, from before
+  the upgrade) was never touched again. `reconcile_all()` now ends with
+  `_sweep_blocked_states()`, which runs `kill_states()` for every
+  `blocked_hosts` row (manual blocks included) on every 60s pass. Cost
+  is three pfctl calls per blocked host per minute, and "0 states
+  killed" is the normal result. Each host is wrapped in its own
+  try/except so one failure can't skip the rest. Three new/updated
+  tests; full suite (343) passes.
 - **Not yet started**: the staticOverrides grid editor, and proper repo
   signing before this pkg-repo is relied on for anything that matters.
   ("Scheduled traffic blocking" -- the user's original motivating

@@ -452,4 +452,27 @@ def reconcile_all(conn: sqlite3.Connection, now: int) -> list[RuleDecision]:
             continue
         if decision is not None:
             decisions.append(decision)
+    _sweep_blocked_states(conn)
     return decisions
+
+
+def _sweep_blocked_states(conn: sqlite3.Connection) -> None:
+    """Kills any state still involving a blocked host, every pass -- not
+    just at the moment a block starts. A state that slips past the
+    block-time kill (a race, a pf matching gap like the pre-NAT one
+    kill_states() now covers, or one left over from before an upgrade)
+    would otherwise live on for as long as the device keeps it busy,
+    since pf never re-checks rules for an established state. Found
+    live: a phone's VPN tunnel ran for hours through a scheduled block.
+    Covers every blocked_hosts row, manual blocks included. Cheap:
+    "0 states killed" is the normal outcome."""
+    try:
+        ips = [row["local_ip"] for row in blocklist.list_blocked(conn)]
+    except Exception as e:
+        _log_error("gowiththeflow: blocked-state sweep failed to list blocked hosts: %r" % (e,))
+        return
+    for ip in ips:
+        try:
+            blocklist.kill_states(ip)
+        except Exception as e:
+            _log_error("gowiththeflow: blocked-state sweep failed for %s: %r" % (ip, e))
