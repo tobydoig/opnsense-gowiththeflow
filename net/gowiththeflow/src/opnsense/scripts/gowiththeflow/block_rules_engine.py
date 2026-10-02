@@ -355,8 +355,8 @@ def _apply_host_rule(conn: sqlite3.Connection, row: sqlite3.Row, should_be_block
             changed = True
     if changed:
         blocklist.sync_pf(conn, TABLE_FILE_PATH)
-    for ip in newly_blocked:
-        blocklist.kill_states(ip)
+    if newly_blocked:
+        blocklist.kill_states_for(newly_blocked)
 
 
 def _run_dnsbl_apply(action: str, description: str, domains: str | None, source_ip: str, rule_id: int) -> None:
@@ -464,15 +464,13 @@ def _sweep_blocked_states(conn: sqlite3.Connection) -> None:
     would otherwise live on for as long as the device keeps it busy,
     since pf never re-checks rules for an established state. Found
     live: a phone's VPN tunnel ran for hours through a scheduled block.
-    Covers every blocked_hosts row, manual blocks included. Cheap:
-    "0 states killed" is the normal outcome."""
+    Covers every blocked_hosts row, manual blocks included. One
+    kill_states_for() call for all of them, so the state table is listed
+    once per tick, not once per host. "0 states killed" is the normal
+    outcome."""
     try:
         ips = [row["local_ip"] for row in blocklist.list_blocked(conn)]
+        if ips:
+            blocklist.kill_states_for(ips)
     except Exception as e:
-        _log_error("gowiththeflow: blocked-state sweep failed to list blocked hosts: %r" % (e,))
-        return
-    for ip in ips:
-        try:
-            blocklist.kill_states(ip)
-        except Exception as e:
-            _log_error("gowiththeflow: blocked-state sweep failed for %s: %r" % (ip, e))
+        _log_error("gowiththeflow: blocked-state sweep failed: %r" % (e,))

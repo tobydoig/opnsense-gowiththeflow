@@ -419,13 +419,14 @@ def test_apply_rule_kills_states_only_after_the_pf_table_includes_the_host(tmp_p
     monkeypatch.setattr(block_rules_engine, "TABLE_FILE_PATH", str(tmp_path / "blocked_hosts.tbl"))
     real_sync_pf = blocklist.sync_pf
     monkeypatch.setattr(blocklist, "sync_pf", lambda *a, **kw: events.append("sync") or real_sync_pf(*a, **kw))
-    monkeypatch.setattr(blocklist, "kill_states", lambda ip: events.append(f"kill:{ip}"))
+    monkeypatch.setattr(blocklist, "kill_states_for", lambda ips: events.append(f"kill:{','.join(ips)}"))
     devices = [_device(ip="10.0.0.5", hostname=None), _device(ip="10.0.0.6", hostname=None)]
     rule_id = _insert_rule(conn, rule_type="host", devices=devices, schedule_json=None)
 
     block_rules_engine.apply_rule(conn, rule_id, NOW)
 
-    assert events == ["sync", "kill:10.0.0.5", "kill:10.0.0.6"]
+    # The sweep at the end of reconcile_all() isn't involved here: apply_rule() alone.
+    assert events == ["sync", "kill:10.0.0.5,10.0.0.6"]
 
 
 def test_apply_rule_does_not_reblock_an_already_blocked_host(tmp_path, monkeypatch):
@@ -533,28 +534,25 @@ def test_reconcile_all_kills_states_for_hosts_that_were_already_blocked(tmp_path
     _insert_rule(conn, rule_type="host", devices=[_device(ip="10.0.0.5")], schedule_json=None)
     blocklist.add_block(conn, "10.0.0.5", None, None, "admin", None, NOW)
     blocklist.add_block(conn, "10.0.0.9", None, None, "admin", None, NOW)  # manual block, no rule
-    killed = []
-    monkeypatch.setattr(blocklist, "kill_states", lambda ip: killed.append(ip))
+    sweeps = []
+    monkeypatch.setattr(blocklist, "kill_states_for", lambda ips: sweeps.append(sorted(ips)))
 
     block_rules_engine.reconcile_all(conn, NOW)
 
-    assert sorted(killed) == ["10.0.0.5", "10.0.0.9"]
+    assert sweeps == [["10.0.0.5", "10.0.0.9"]]  # one call for every blocked host
 
 
-def test_reconcile_all_sweep_keeps_going_after_one_host_fails(tmp_path, monkeypatch):
+def test_reconcile_all_sweep_failure_is_logged_not_raised(tmp_path, monkeypatch):
     conn = _fresh_conn(tmp_path)
     blocklist.add_block(conn, "10.0.0.5", None, None, "admin", None, NOW)
-    blocklist.add_block(conn, "10.0.0.6", None, None, "admin", None, NOW)
-    killed = []
+    logged = []
 
-    def _kill(ip):
-        if ip == "10.0.0.5":
-            raise OSError("pfctl missing")
-        killed.append(ip)
+    def _kill(ips):
+        raise OSError("pfctl missing")
 
-    monkeypatch.setattr(blocklist, "kill_states", _kill)
-    monkeypatch.setattr(block_rules_engine, "_log_error", lambda msg: None)
+    monkeypatch.setattr(blocklist, "kill_states_for", _kill)
+    monkeypatch.setattr(block_rules_engine, "_log_error", logged.append)
 
     block_rules_engine.reconcile_all(conn, NOW)
 
-    assert killed == ["10.0.0.6"]
+    assert len(logged) == 1 and "sweep" in logged[0]

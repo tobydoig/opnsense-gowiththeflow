@@ -24,12 +24,14 @@ from __future__ import annotations
 
 import ipaddress
 import os
+import re
 import sqlite3
 import subprocess
 import tempfile
 
 PF_TABLE = "gowiththeflow_blocked"
 PFCTL = "/sbin/pfctl"
+_STATE_ID_RE = re.compile(r"\bid:\s*([0-9a-f]+)\s+creatorid:\s*([0-9a-f]+)")
 
 
 def normalize_ip(value: str | None) -> str | None:
@@ -243,14 +245,90 @@ def kill_states(ip: str) -> list[subprocess.CompletedProcess]:
     source there is the firewall's own WAN address, not this host) --
     a third call, `-k nat`, matches on the pre-NAT address instead.
     Found live: a blocked phone's VPN tunnel kept its 3h+ old WAN state
-    through every kill, so the connection never actually dropped."""
-    is_v6 = ipaddress.ip_address(ip).version == 6
-    wildcard = "::/0" if is_v6 else "0.0.0.0/0"
-    return [
-        subprocess.run([PFCTL, "-k", ip], capture_output=True, text=True, check=False),
-        subprocess.run([PFCTL, "-k", wildcard, "-k", ip], capture_output=True, text=True, check=False),
-        subprocess.run([PFCTL, "-k", "nat", "-k", ip], capture_output=True, text=True, check=False),
-    ]
+    through every kill, so the connection never actually dropped.
+
+    Even all three miss some states, so kill_states_for() finishes by
+    killing whatever is left by state id -- see its docstring."""
+    return kill_states_for([ip])
+
+
+def kill_states_for(ips: list[str]) -> list[subprocess.CompletedProcess]:
+    """kill_states() for several hosts at once, sharing one state-table
+    listing between them (the periodic sweep calls this with every
+    blocked host each tick).
+
+    The host-matching `pfctl -k` forms run first, then any state still
+    involving one of these hosts -- in any address slot, pre- or
+    post-NAT, either direction -- is killed by id. Found live: a LAN-side
+    state created *outbound* towards a blocked iPad (`185.184.195.132:4500
+    -> 192.168.200.226:53146`, an IPsec NAT-T tunnel) matched none of
+    `-k <ip>`, `-k 0.0.0.0/0 -k <ip>` or `-k nat -k <ip>` ("killed 0
+    states" from each, run by hand on nostromo), and carried 1.6GB
+    through a block for 1h25m. Matching on the listing ourselves doesn't
+    depend on how pf maps a state's direction onto "source"."""
+    results = []
+    for ip in ips:
+        is_v6 = ipaddress.ip_address(ip).version == 6
+        wildcard = "::/0" if is_v6 else "0.0.0.0/0"
+        results.append(subprocess.run([PFCTL, "-k", ip], capture_output=True, text=True, check=False))
+        results.append(subprocess.run([PFCTL, "-k", wildcard, "-k", ip], capture_output=True, text=True, check=False))
+        results.append(subprocess.run([PFCTL, "-k", "nat", "-k", ip], capture_output=True, text=True, check=False))
+    if not ips:
+        return results
+
+    listing = subprocess.run([PFCTL, "-vvs", "state"], capture_output=True, text=True, check=False, timeout=15)
+    if listing.returncode != 0:
+        results.append(listing)
+        return results
+    for state_id in state_ids_involving(listing.stdout, ips):
+        results.append(subprocess.run([PFCTL, "-k", "id", "-k", state_id], capture_output=True, text=True, check=False))
+    return results
+
+
+def _normalize_ip(text: str) -> str | None:
+    try:
+        return str(ipaddress.ip_address(text.split("%", 1)[0]))
+    except ValueError:
+        return None
+
+
+def _addr_of(token: str) -> str | None:
+    """The address in one `pfctl -s state` endpoint token: 'ip:port'
+    (IPv4), 'ip[port]' (IPv6), or a bare address, optionally wrapped in
+    parentheses (the pre-NAT address on a NAT'd state's line)."""
+    token = token.strip("()")
+    if "[" in token:
+        token = token.split("[", 1)[0]
+    bare = _normalize_ip(token)
+    if bare is not None:
+        return bare
+    if ":" in token:
+        return _normalize_ip(token.rpartition(":")[0])
+    return None
+
+
+def state_ids_involving(text: str, ips: list[str]) -> list[str]:
+    """Parses `pfctl -vvs state` output and returns "id/creatorid" (the
+    form `pfctl -k id -k ...` takes) for every state with one of `ips`
+    anywhere on its header line. Header lines start in column 0; the
+    detail lines under them, including "id: ... creatorid: ...", are
+    indented."""
+    wanted = {_normalize_ip(ip) for ip in ips}
+    found = []
+    involved = False
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        if not line[0].isspace():
+            tokens = line.split()
+            involved = ("<-" in tokens or "->" in tokens) and any(_addr_of(tok) in wanted for tok in tokens)
+            continue
+        if involved:
+            match = _STATE_ID_RE.search(line)
+            if match:
+                found.append(f"{match.group(1)}/{match.group(2)}")
+                involved = False
+    return found
 
 
 def rules_present() -> bool:

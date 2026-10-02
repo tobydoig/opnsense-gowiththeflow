@@ -2584,6 +2584,36 @@
   killed" is the normal result. Each host is wrapped in its own
   try/except so one failure can't skip the rest. Three new/updated
   tests; full suite (343) passes.
+- **1.10.8 -- 1.10.7's sweep was running but still missed the state
+  that mattered.** A second blocked device (an iPad on an IPsec NAT-T
+  VPN, UDP 4500) kept moving ~18MB/min. Its WAN-side NAT'd state was
+  always under a minute old (the sweep's `-k nat` call was killing it
+  every tick; pf then recreated it, since outbound filter rules see the
+  post-NAT source and `from <gowiththeflow_blocked>` can't match there),
+  but its LAN-side state `185.184.195.132:4500 -> 192.168.200.226:53146`
+  was 1h25m old. Run by hand on nostromo, `pfctl -k <ip>` and
+  `pfctl -k 0.0.0.0/0 -k <ip>` each reported "killed 0 states" against
+  it; only `-k nat` killed anything (the WAN one). That state was
+  created *outbound* on the LAN (`->`, the first packet came from the
+  server towards the iPad), and pfctl's host-matching kill evidently
+  doesn't map that direction onto source/destination the way its man
+  page reads. Since that state carries the traffic, the block never
+  held.
+
+  Fix: stop depending on how pfctl's host matching treats direction.
+  New `blocklist.kill_states_for(ips)` runs the three host-matching
+  forms as before, then lists `pfctl -vvs state` once, and kills by id
+  (`pfctl -k id -k <id>/<creatorid>`) every remaining state with one of
+  the IPs anywhere on its header line, including inside the pre-NAT
+  parentheses. Parsing is a new `state_ids_involving()`, tested against
+  the real nostromo output. Addresses are compared exactly, so
+  `192.168.200.22` doesn't match `192.168.200.226`. `kill_states(ip)` is
+  now `kill_states_for([ip])`, so block_host.py and reservation_gate.py
+  get the same behaviour. The sweep and `_apply_host_rule()` pass every
+  host in one call, so the state table is listed once per tick, not
+  once per host. Kill-by-id syntax confirmed on the dev VM ("killed 0
+  states", exit 0, for an id that doesn't exist); full suite (349)
+  passes.
 - **Not yet started**: the staticOverrides grid editor, and proper repo
   signing before this pkg-repo is relied on for anything that matters.
   ("Scheduled traffic blocking" -- the user's original motivating

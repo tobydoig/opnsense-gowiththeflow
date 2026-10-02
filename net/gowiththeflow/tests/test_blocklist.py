@@ -307,6 +307,7 @@ def test_kill_states_v4_kills_both_directions_and_nat(monkeypatch):
         ["/sbin/pfctl", "-k", "10.0.0.5"],
         ["/sbin/pfctl", "-k", "0.0.0.0/0", "-k", "10.0.0.5"],
         ["/sbin/pfctl", "-k", "nat", "-k", "10.0.0.5"],
+        ["/sbin/pfctl", "-vvs", "state"],
     ]
 
 
@@ -321,7 +322,97 @@ def test_kill_states_v6_uses_the_v6_wildcard(monkeypatch):
         ["/sbin/pfctl", "-k", "fe80::1"],
         ["/sbin/pfctl", "-k", "::/0", "-k", "fe80::1"],
         ["/sbin/pfctl", "-k", "nat", "-k", "fe80::1"],
+        ["/sbin/pfctl", "-vvs", "state"],
     ]
+
+
+# Real `pfctl -vvs state` output from nostromo (FreeBSD 15.1): the first
+# state is the LAN-side one that none of the host-matching -k forms killed.
+NOSTROMO_STATES = """\
+No ALTQ support in kernel
+ALTQ related functions disabled
+all udp 185.184.195.132:4500 -> 192.168.200.226:53146       MULTIPLE:MULTIPLE
+   age 01:25:42, expires in 00:00:59, 1230497:393379 pkts, 1605654000:64363904 bytes, rule 83, rlabel fae559338f65e11c53669fc3642c93c2, allow-opts
+   id: 678ff86a00000000 creatorid: 4dcefeed
+all udp 192.168.0.2:42391 (192.168.200.226:53146) -> 185.184.195.132:4500       MULTIPLE:MULTIPLE
+   age 00:00:36, expires in 00:01:00, 769:1485 pkts, 160764:1789116 bytes, rule 85, rlabel ae43533a95ff88358b460ad9acb72327, allow-opts
+   id: 678ff86a00000001 creatorid: 4dcefeed
+all tcp 192.168.0.2:39414 (192.168.200.174:57190) -> 157.240.225.54:443       ESTABLISHED:ESTABLISHED
+   [2471135751 + 521228] wscale 8  [2164899303 + 73177] wscale 8
+   age 00:10:00, expires in 23:59:59, 10:10 pkts, 1000:1000 bytes, rule 87
+   id: 678ff86a00000002 creatorid: 4dcefeed
+all udp 185.184.192.216:443 <- 192.168.200.155:57734       MULTIPLE:MULTIPLE
+   age 00:31:37, expires in 00:01:00, 120814:207190 pkts, 76005256:158732200 bytes, rule 70
+   id: 678ff86a00000003 creatorid: 4dcefeed
+all tcp 192.168.200.15:51000 -> 192.168.200.226:443       ESTABLISHED:ESTABLISHED
+   age 00:00:05, expires in 23:59:59, 1:1 pkts, 60:60 bytes, rule 90
+   id: 678ff86a00000004 creatorid: 4dcefeed
+all tcp 2a02:db8::15[51000] -> 2a02:db8::99[443]       ESTABLISHED:ESTABLISHED
+   age 00:00:05, expires in 23:59:59, 1:1 pkts, 60:60 bytes, rule 91
+   id: 678ff86a00000005 creatorid: 4dcefeed
+all tcp 192.168.200.15:51001 -> 192.168.200.22:443       ESTABLISHED:ESTABLISHED
+   age 00:00:05, expires in 23:59:59, 1:1 pkts, 60:60 bytes, rule 90
+   id: 678ff86a00000006 creatorid: 4dcefeed
+"""
+
+
+def test_state_ids_involving_matches_any_slot_direction_and_pre_nat():
+    ids = blocklist.state_ids_involving(NOSTROMO_STATES, ["192.168.200.226"])
+    assert ids == [
+        "678ff86a00000000/4dcefeed",  # outbound LAN state, host as destination
+        "678ff86a00000001/4dcefeed",  # WAN state, host only in the pre-NAT parens
+        "678ff86a00000004/4dcefeed",  # local peer -> host
+    ]
+
+
+def test_state_ids_involving_does_not_match_a_prefix_of_another_address():
+    # 192.168.200.22 must not match 192.168.200.226 (or the reverse).
+    assert blocklist.state_ids_involving(NOSTROMO_STATES, ["192.168.200.22"]) == ["678ff86a00000006/4dcefeed"]
+
+
+def test_state_ids_involving_handles_several_hosts_and_ipv6():
+    ids = blocklist.state_ids_involving(NOSTROMO_STATES, ["192.168.200.155", "192.168.200.174", "2a02:db8::99"])
+    assert ids == ["678ff86a00000002/4dcefeed", "678ff86a00000003/4dcefeed", "678ff86a00000005/4dcefeed"]
+
+
+def test_kill_states_kills_leftover_states_by_id(monkeypatch):
+    calls = []
+
+    def _run(args, **k):
+        calls.append(args)
+        return _FakeCompletedProcess(stdout=NOSTROMO_STATES if args[1:] == ["-vvs", "state"] else "")
+
+    monkeypatch.setattr(blocklist.subprocess, "run", _run)
+    blocklist.kill_states("192.168.200.226")
+    assert calls[4:] == [
+        ["/sbin/pfctl", "-k", "id", "-k", "678ff86a00000000/4dcefeed"],
+        ["/sbin/pfctl", "-k", "id", "-k", "678ff86a00000001/4dcefeed"],
+        ["/sbin/pfctl", "-k", "id", "-k", "678ff86a00000004/4dcefeed"],
+    ]
+
+
+def test_kill_states_for_lists_states_once_for_several_hosts(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        blocklist.subprocess, "run",
+        lambda args, **k: calls.append(args) or _FakeCompletedProcess(),
+    )
+    blocklist.kill_states_for(["10.0.0.5", "10.0.0.6"])
+    assert calls.count(["/sbin/pfctl", "-vvs", "state"]) == 1
+    assert len(calls) == 7  # 3 host-matching kills each, plus the one listing
+
+
+def test_kill_states_for_returns_a_failed_listing_without_killing_by_id(monkeypatch):
+    calls = []
+
+    def _run(args, **k):
+        calls.append(args)
+        return _FakeCompletedProcess(returncode=1, stderr="boom") if args[1:] == ["-vvs", "state"] else _FakeCompletedProcess()
+
+    monkeypatch.setattr(blocklist.subprocess, "run", _run)
+    results = blocklist.kill_states_for(["10.0.0.5"])
+    assert results[-1].returncode == 1
+    assert not any("id" in call for call in calls)
 
 
 def test_rules_present_true_when_table_name_appears_in_ruleset(monkeypatch):
