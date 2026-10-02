@@ -2543,6 +2543,24 @@
   same two versions available (`pkg rquery` matched exactly) before
   updating the pins and re-building -- the whole point of that check
   is to catch this before a release ships un-installable, not after.
+- **1.10.6 -- real bug, found live on nostromo: a scheduled block let an
+  already-connected VPN keep running.** A phone blocked by a scheduled
+  host rule for 11 minutes was still moving ~24MB/min on Top Talkers.
+  `pfctl -ss` showed a live UDP state to the VPN server (LAN side and
+  NAT'd WAN side) even though `pfctl -t gowiththeflow_blocked -T show`
+  already listed the phone's IP. Cause: `block_rules_engine._apply_host_rule()`
+  called `blocklist.kill_states(ip)` inside its per-device loop, i.e.
+  *before* the single `sync_pf()` after the loop -- so states were
+  killed while the IP was still missing from the pf table. The VPN
+  client reconnected in that gap, the new state passed, and pf never
+  re-evaluates rules for an established state, so it outlived the
+  block indefinitely while kept busy. `block_host.py`'s manual block
+  already did sync-then-kill correctly; only the scheduled/rule path
+  had it backwards. Fixed by collecting newly blocked IPs during the
+  loop and killing their states after the sync. New ordering test in
+  `test_block_rules_engine.py` (fails on the old code); full suite
+  (341 tests) passes. `reservation_gate.py` checked too -- it syncs
+  its pf tables before killing states, so it was already correct.
 - **Not yet started**: the staticOverrides grid editor, and proper repo
   signing before this pkg-repo is relied on for anything that matters.
   ("Scheduled traffic blocking" -- the user's original motivating

@@ -410,6 +410,24 @@ def test_apply_rule_only_syncs_pf_once_regardless_of_group_size(tmp_path, monkey
     assert len(sync_calls) == 1
 
 
+def test_apply_rule_kills_states_only_after_the_pf_table_includes_the_host(tmp_path, monkeypatch):
+    # Killing states before the table sync leaves a gap where the device
+    # can reconnect (e.g. a VPN client) and the new state survives the block.
+    conn = _fresh_conn(tmp_path)
+    events = []
+    monkeypatch.setattr(blocklist.subprocess, "run", lambda args, **kw: _FakeCompletedProcess())
+    monkeypatch.setattr(block_rules_engine, "TABLE_FILE_PATH", str(tmp_path / "blocked_hosts.tbl"))
+    real_sync_pf = blocklist.sync_pf
+    monkeypatch.setattr(blocklist, "sync_pf", lambda *a, **kw: events.append("sync") or real_sync_pf(*a, **kw))
+    monkeypatch.setattr(blocklist, "kill_states", lambda ip: events.append(f"kill:{ip}"))
+    devices = [_device(ip="10.0.0.5", hostname=None), _device(ip="10.0.0.6", hostname=None)]
+    rule_id = _insert_rule(conn, rule_type="host", devices=devices, schedule_json=None)
+
+    block_rules_engine.apply_rule(conn, rule_id, NOW)
+
+    assert events == ["sync", "kill:10.0.0.5", "kill:10.0.0.6"]
+
+
 def test_apply_rule_does_not_reblock_an_already_blocked_host(tmp_path, monkeypatch):
     conn = _fresh_conn(tmp_path)
     add_block_calls = []

@@ -331,21 +331,32 @@ def _apply_host_rule(conn: sqlite3.Connection, row: sqlite3.Row, should_be_block
     loop, not per-device, since it unconditionally rewrites the whole pf
     table from *all* of blocked_hosts regardless of which device
     changed; calling it once per device would just repeat the same
-    full-table rewrite N times for no benefit."""
+    full-table rewrite N times for no benefit.
+
+    States are killed only AFTER that sync, same order as block_host.py:
+    killing them while the ip is still missing from the pf table lets
+    the device reconnect in that gap (a VPN client does so within
+    milliseconds), and the new state then outlives the block, since pf
+    never re-checks rules for an established state. Found live: a
+    phone's UDP VPN tunnel kept passing traffic through a scheduled
+    block."""
     devices = json.loads(row["devices"])
     changed = False
+    newly_blocked = []
     for device in devices:
         ip = device["ip"]
         currently_blocked = _is_host_blocked(conn, ip)
         if should_be_blocked and not currently_blocked:
             blocklist.add_block(conn, ip, device["hostname"], device["mac"], row["created_by"], row["reason"], now)
             changed = True
-            blocklist.kill_states(ip)
+            newly_blocked.append(ip)
         elif not should_be_blocked and currently_blocked:
             blocklist.remove_block(conn, ip)
             changed = True
     if changed:
         blocklist.sync_pf(conn, TABLE_FILE_PATH)
+    for ip in newly_blocked:
+        blocklist.kill_states(ip)
 
 
 def _run_dnsbl_apply(action: str, description: str, domains: str | None, source_ip: str, rule_id: int) -> None:
